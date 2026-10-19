@@ -1,7 +1,7 @@
 // Editor: canvas stack, tools, undo/redo, pages, save/export, replay.
 
 import { bridge } from './bridge.js'
-import { PALETTE } from './palette.js'
+import { PALETTE, QUICK_PALETTE } from './palette.js'
 import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor } from './paper.js'
 import { makeStroke, addPoint, drawStrokeOpaque, strokeIntersectsCircle, docEraseR } from './ink.js'
 import { Recorder, playReplay } from './replay.js'
@@ -188,17 +188,23 @@ function addPage() {
   setPage(S.pages.length - 1)
 }
 
-// ---------- pages strip ----------
+// ---------- pages rail (left, like the original app) ----------
 let thumbsQueued = null
 function refreshPages() {
   const bar = $('pagesBar')
   bar.innerHTML = ''
   S.pages.forEach((_, i) => {
+    const item = document.createElement('div')
+    item.className = 'pageItem' + (i === S.currentPage ? ' cur' : '')
+    const num = document.createElement('div')
+    num.className = 'num'
+    num.textContent = String(i + 1)
     const t = document.createElement('div')
-    t.className = 'pageThumb' + (i === S.currentPage ? ' cur' : '')
+    t.className = 'pageThumb'
     t.title = 'Page ' + (i + 1)
-    t.onclick = () => setPage(i)
-    bar.appendChild(t)
+    item.append(num, t)
+    item.onclick = () => setPage(i)
+    bar.appendChild(item)
     drawThumb(t, i)
   })
 }
@@ -207,15 +213,14 @@ function drawThumb(t, i) {
   const page = S.pages[i]
   const off = flattenToCanvas(page)
   const small = document.createElement('canvas')
-  small.width = 36; small.height = Math.round(36 * off.height / off.width)
+  small.width = 176; small.height = Math.round(176 * off.height / off.width)
   small.getContext('2d').drawImage(off, 0, 0, small.width, small.height)
   t.style.backgroundImage = `url(${small.toDataURL()})`
-  t.style.height = (36 * off.height / off.width) + 'px'
 }
 
 function refreshCurrentThumb() {
-  const t = $('pagesBar').children[S.currentPage]
-  if (t) drawThumb(t, S.currentPage)
+  const item = $('pagesBar').children[S.currentPage]
+  if (item) drawThumb(item.querySelector('.pageThumb'), S.currentPage)
 }
 
 // ---------- pointer drawing ----------
@@ -428,25 +433,45 @@ export async function saveCurrentPage() {
   }
 }
 
-// ---------- paper settings ----------
-function showFlyout() {
+// ---------- flyouts ----------
+function closeFlyoutCloser(getEl, onClosed) {
+  const onDown = e => {
+    const f = getEl()
+    if (f && f.contains(e.target)) { setTimeout(() => document.addEventListener('pointerdown', onDown, { capture: true, once: true }), 0); return }
+    const cur = getEl()
+    if (cur) cur.classList.add('hidden')
+    document.removeEventListener('pointerdown', onDown, true)
+    onClosed && onClosed()
+  }
+  setTimeout(() => document.addEventListener('pointerdown', onDown, { capture: true, once: true }), 0)
+}
+
+function showFlyoutNear(id, anchor) {
+  const f = $(id)
+  const btn = anchor.getBoundingClientRect()
+  f.style.left = Math.min(btn.left - 12, window.innerWidth - 300) + 'px'
+  f.style.top = (btn.bottom + 6) + 'px'
+  f.classList.remove('hidden')
+  closeFlyoutCloser(() => $(id))
+}
+
+let libCloser = null
+function toggleLibraryFlyout() {
+  const f = $('libraryFlyout')
+  if (!f.classList.contains('hidden')) { f.classList.add('hidden'); libCloser = null; return }
+  f.classList.remove('hidden')
+  libCloser = true
+  closeFlyoutCloser(() => (libCloser ? $('libraryFlyout') : null), () => { libCloser = null })
+}
+
+function syncPaperFlyout() {
   const page = current(); if (!page) return
-  const f = $('paperFlyout')
   $('paperSize').value = page.paper.size
   $('paperOrient').value = page.paper.orientation
   $('paperTpl').value = page.paper.template
   $('paperBg').value = hexToCss(page.paper.bg, '#ffffff')
-  const btn = $('btnPaper').getBoundingClientRect()
-  f.style.left = Math.min(btn.left, window.innerWidth - 260) + 'px'
-  f.style.top = (btn.bottom + 8) + 'px'
-  f.classList.remove('hidden')
-  setTimeout(() => document.addEventListener('pointerdown', outsideFlyout, { capture: true, once: true }), 0)
 }
-function outsideFlyout(e) {
-  const f = $('paperFlyout')
-  if (f.contains(e.target)) { setTimeout(() => document.addEventListener('pointerdown', outsideFlyout, { capture: true, once: true }), 0); return }
-  f.classList.add('hidden')
-}
+
 function applyPaper() {
   const page = current(); if (!page) return
   page.paper = {
@@ -508,19 +533,33 @@ function toggleReplay() {
   replayStop = playReplay(viewport, page, () => { replayStop = null })
 }
 
-// ---------- init / events ----------
+// ---------- title / rename ----------
 function updateTitle() {
-  $('noteTitle').textContent = S.note ? S.note.name : 'No note'
+  const name = S.note ? S.note.name : 'No note'
+  const label = `${name} (${S.currentPage + 1}/${S.pages.length})`
+  $('btnTitle').textContent = label
+  document.title = `${label} - WriteCanvas`
 }
 
+async function renameOpenNote() {
+  if (!S.note) return
+  const { promptText } = await import('./ctx.js')
+  const name = await promptText('Note title', S.note.name)
+  if (!name || name === S.note.name) return
+  await bridge.renameItem(S.noteId, name)
+  S.note.name = name
+  updateTitle()
+}
+
+// ---------- init / events ----------
 export function init(app) {
   host = app
   el = {
     canvasHost: $('canvasHost'), stack: $('canvasStack'), inner: $('stackInner'),
   }
-  // palette swatches
+  // quick palette row (the 7 colors sampled from the original app)
   const pal = $('palette')
-  PALETTE.forEach(c => {
+  QUICK_PALETTE.forEach(c => {
     const s = document.createElement('div')
     s.className = 'swatch'
     s.style.background = c
@@ -528,14 +567,23 @@ export function init(app) {
     s.onclick = () => selectColor(c)
     pal.appendChild(s)
   })
+  const ext = $('extPalette')
+  PALETTE.forEach(c => {
+    const s = document.createElement('div')
+    s.className = 'swatch'
+    s.style.background = c
+    s.dataset.color = c
+    s.onclick = () => selectColor(c)
+    ext.appendChild(s)
+  })
   selectColor('#000000')
   $('colorPicker').addEventListener('input', e => selectColor(e.target.value))
 
-  // tools
-  document.querySelectorAll('#toolGroup .tool').forEach(b => {
+  // tools (segmented inside the pen flyout)
+  document.querySelectorAll('#penFlyout .tool').forEach(b => {
     b.onclick = () => {
       S.tool = b.dataset.tool
-      document.querySelectorAll('#toolGroup .tool').forEach(x => x.classList.toggle('active', x === b))
+      document.querySelectorAll('#penFlyout .tool').forEach(x => x.classList.toggle('active', x === b))
     }
   })
   $('width').addEventListener('input', e => {
@@ -547,9 +595,15 @@ export function init(app) {
     S.pen.opacity = parseFloat(e.target.value) / 100
     $('opacityVal').textContent = e.target.value + '%'
   })
+
+  $('btnMenu').onclick = () => toggleLibraryFlyout()
+  $('btnSave').onclick = saveCurrentPage
   $('btnUndo').onclick = undo
   $('btnRedo').onclick = redo
-  $('btnPaper').onclick = showFlyout
+  $('btnTitle').onclick = renameOpenNote
+  $('btnTune').onclick = () => showFlyoutNear('penFlyout', $('btnTune'))
+  $('curColorCircle').onclick = () => showFlyoutNear('penFlyout', $('btnTune'))
+  $('btnPaper').onclick = () => { syncPaperFlyout(); showFlyoutNear('paperFlyout', $('btnPaper')) }
   $('paperSize').onchange = applyPaper
   $('paperOrient').onchange = applyPaper
   $('paperTpl').onchange = applyPaper
@@ -619,4 +673,6 @@ export function selectColor(c) {
   S.pen.color = c
   document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('sel', s.dataset.color === c))
   $('colorPicker').value = hexToCss(c, '#000000')
+  $('curColorCircle').style.background = c
+  $('curDot').style.background = c
 }

@@ -12,3 +12,6 @@ export const PALETTE = [
 ]
 
 export const DEFAULT_INK = '#000000'
+
+// the 7-ink quick row shown in the original toolbar (pixel-sampled)
+export const QUICK_PALETTE = ['#FF0000', '#004DE6', '#26E600', '#FFFB0A', '#32FF5C', '#2EF0FF', '#000000']
