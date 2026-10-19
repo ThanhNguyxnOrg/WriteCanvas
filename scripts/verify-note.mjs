@@ -35,8 +35,11 @@ const gif = extractInkGif(buf)
 console.log('sINK:', gif ? `yes, ${gif.length} bytes, header=${gif.subarray(0, 6).toString('latin1')}` : 'no')
 if (gif) {
   if (gif.subarray(0, 6).toString('latin1') !== 'GIF89a') { console.error('FAIL sINK is not GIF89a'); process.exit(1) }
-  // 3 blocks minimum: header(6) + LSD(7) => first data block starts at 13 with an INTRODUCTOR 0x21 or 0x2C
-  if (gif.length < 14 || ![0x21, 0x2c].includes(gif[13])) { console.error('FAIL sINK GIF structure'); process.exit(1) }
+  // Logical screen descriptor: [10]=flags. GCT present -> palette follows LSD.
+  const flags = gif[10]
+  const gctBytes = (flags & 0x80) ? 3 * (1 << (1 + (flags & 0x07))) : 0
+  const firstBlock = 13 + gctBytes
+  if (gif.length < firstBlock + 1 || ![0x21, 0x2c].includes(gif[firstBlock])) { console.error('FAIL sINK GIF structure (first data block introducer)'); process.exit(1) }
 }
 
 const size = pngSize(buf)
