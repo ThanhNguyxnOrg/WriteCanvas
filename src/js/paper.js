@@ -23,6 +23,10 @@ export function paperDocSize(size, orientation) {
   return orientation === 'landscape' ? { w: h, h: w } : { w, h }
 }
 
+// line colors/spacing sampled from the live original app (ui-parity doc §4)
+const RULED_LINE = 'rgba(179,220,254,0.95)'   // #B3DCFE core
+const RULED_MARGIN = 'rgba(200,123,148,0.8)'  // pink-red margin core (#C87B94 blend)
+
 // Paint the paper background + template pattern at document resolution.
 export function renderPaper(ctx, paper) {
   const { w, h } = paperDocSize(paper.size, paper.orientation)
@@ -34,24 +38,24 @@ export function renderPaper(ctx, paper) {
 
   const tpl = paper.template
   if (tpl === 'ruled') {
-    ctx.strokeStyle = 'rgba(120,163,208,0.55)'
-    ctx.lineWidth = Math.max(1, docMM(0.22))
-    const step = docMM(8)
+    ctx.strokeStyle = RULED_LINE
+    ctx.lineWidth = Math.max(1, docMM(0.24))
+    const step = docMM(6.35) // quarter inch, as in the original
     for (let y = step; y < h; y += step) {
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke()
     }
-    ctx.strokeStyle = 'rgba(235,140,180,0.8)'
+    ctx.strokeStyle = RULED_MARGIN
     ctx.lineWidth = Math.max(1, docMM(0.3))
-    const mx = docMM(24)
+    const mx = docMM(12.7) // half inch margin, as in the original
     ctx.beginPath(); ctx.moveTo(mx, 0); ctx.lineTo(mx, h); ctx.stroke()
   } else if (tpl === 'grid') {
-    ctx.strokeStyle = 'rgba(120,163,208,0.5)'
+    ctx.strokeStyle = 'rgba(179,220,254,0.9)'
     ctx.lineWidth = Math.max(1, docMM(0.2))
-    const step = docMM(10)
+    const step = docMM(6.35)
     for (let x = step; x < w; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke() }
     for (let y = step; y < h; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke() }
   } else if (tpl === 'dotted') {
-    ctx.fillStyle = 'rgba(120,163,208,0.8)'
+    ctx.fillStyle = 'rgba(140,180,220,0.9)'
     const step = docMM(5)
     const r = Math.max(1.2, docMM(0.35))
     for (let y = step; y < h; y += step)
@@ -59,12 +63,12 @@ export function renderPaper(ctx, paper) {
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill()
       }
   } else if (tpl === 'graph') {
-    ctx.strokeStyle = 'rgba(120,163,208,0.35)'
+    ctx.strokeStyle = 'rgba(179,220,254,0.5)'
     ctx.lineWidth = Math.max(1, docMM(0.18))
     const sub = docMM(2)
     for (let x = sub; x < w; x += sub) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke() }
     for (let y = sub; y < h; y += sub) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke() }
-    ctx.strokeStyle = 'rgba(120,163,208,0.7)'
+    ctx.strokeStyle = 'rgba(179,220,254,0.95)'
     ctx.lineWidth = Math.max(1, docMM(0.3))
     const step = docMM(10)
     for (let x = step; x < w; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke() }
