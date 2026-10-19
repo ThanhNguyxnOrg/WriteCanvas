@@ -23,7 +23,7 @@ export const S = {
 // scratch canvas for per-stroke alpha compositing
 const scratch = document.createElement('canvas')
 const scratchCtx = scratch.getContext('2d')
-const DEFAULT_PAPER = () => ({ size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF' })
+const DEFAULT_PAPER = () => ({ size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF', borderLines: true })
 const newPage = paper => ({ paper: { ...paper }, strokes: [], rasterBitmap: null, undo: [], redo: [], dirty: false, recorder: new Recorder(), inkGif: null })
 let host = null // App context, set by init()
 
@@ -149,7 +149,7 @@ export async function openNote(id) {
   S.pages = res.pages.map((p, idx) => {
     const meta = p.paperMeta
     const paper = meta
-      ? { size: meta.size, orientation: meta.orientation, template: meta.template, bg: meta.bgColor || '#FFFFFFFF' }
+      ? { size: meta.size, orientation: meta.orientation, template: meta.template, bg: meta.bgColor || '#FFFFFFFF', borderLines: meta.borderLines !== false }
       : (S.note.paper ? { ...S.note.paper } : DEFAULT_PAPER())
     const page = newPage(paper)
     page.file = p.file
@@ -430,6 +430,7 @@ export async function saveCurrentPage() {
       template: paper.template,
       templatePath: templatePathFor(paper.template, paper.orientation),
       bgColor: '#FF' + rgb,
+      borderLines: paper.borderLines !== false,
       tool: { color: S.pen.color, widthMM: S.pen.widthMM, opacity: S.pen.opacity },
       paper: { ...paper },
     }
@@ -484,6 +485,7 @@ function syncPaperFlyout() {
   $('paperOrient').value = page.paper.orientation
   $('paperTpl').value = page.paper.template
   $('paperBg').value = hexToCss(page.paper.bg, '#ffffff')
+  $('paperBrl').checked = page.paper.borderLines !== false
 }
 
 function applyPaper() {
@@ -493,6 +495,7 @@ function applyPaper() {
     orientation: $('paperOrient').value,
     template: $('paperTpl').value,
     bg: '#FF' + $('paperBg').value.slice(1).toUpperCase(),
+    borderLines: $('paperBrl').checked,
   }
   renderPage(page)
   applyTransform()

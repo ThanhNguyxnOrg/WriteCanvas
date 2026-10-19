@@ -75,20 +75,20 @@ Class `InkNotes.Data.Models.PaperSizes.Standard`. Đo được: Letter = 2500×3
 
 | Template | Pitch (px @294.1dpi) | mm | Màu nét (RGBA trong asset) | Ghi chú |
 |---|---|---|---|---|
-| `ruled` | 55 | 4.75 | `rgb(65,168,253,102)` #41A8FD α0.4 | kẻ ngang, nét đầu y=55, Flatten trên trắng = #B3DCFE ✓ |
+| `ruled` | 55 | 4.75 | `rgb(65,168,253,102)` #41A8FD α0.4 | kẻ ngang. **Nét 2px [k·55−1, k·55] cả 2 hàng α102** (byte-check rows 54-55 ✓). Flatten #B3DCFE ✓ |
 | `ruled10` | 27 | 2.33 | `rgb(121,128,134,76)` #797A86 α0.3 | flatten ≈ #D7D9DB |
 | `ruled15` | 41 | 3.54 | như trên | |
-| `ruled20` | 55 | 4.75 | như trên | |
+| `ruled20` | 55 | 4.75 | như trên (byte-check rows 54-55 α76 đều ✓) | |
 | `ruled30` | 80 | 6.91 | như trên | |
 | `ruled40` | 110 | 9.50 | như trên | |
-| `dotted10` | 27 (lưới chấm) | 2.33 | chấm th=4px | |
-| `dotted20` | 55 | 4.75 | chấm th=8px | |
-| `graph` | 7 (lưới 2 chiều) | 0.60 | xám | ô cực nhỏ |
-| `isometric | tam giác ~16px | 1.38 | xám | lưới iso 3 hướng |
-| `math` | 55 (lưới 2 chiều) | 4.75 | **XANH** #41A8FD α0.4 | "Math paper" help topic |
+| `dotted10` | 27 (lưới chấm) | 2.33 | đĩa 4×4 AA, đỉnh α76, `rgb(117,117,117)`; alpha map [24/61/66/24, 66/76/76/61, 66/76/76/62, 24/62/66/24] | chấm bắt đầu ≡25 mod 27 |
+| `dotted20` | 55 | 4.75 | đĩa 8×8 AA, đỉnh α77, `rgb(121,121,121)` | chấm bắt đầu ≡52 mod 55 |
+| `graph` | 7 (lưới 2 chiều) | 0.60 | **mép 1px α75 `rgb(119,126,133)` tại x/y=0; lưới trong 2px α19 `rgb(121,121,134)`** (byte-check rows 6-7 ✓) | cực nhạt trên in/print |
+| `isometric` | tam giác: chéo ±30°, intercept pitch 38 + dọc xanh 37.6px (th1 α~0.06) + sp 188px (th2 α~0.21) | 1.38 | chéo `rgb(114,124,132,~27)`→flatten #EFF0F1; dọc `rgb(59,167,255)` | flatten dọc #F4FAFF, mạnh #D6ECFF |
+| `math` | 55 (lưới 2 chiều) | 4.75 | **XANH** #41A8FD α0.4, nét 2px căn giữa bội pitch | "Math paper" help topic |
 | `math10/15/20/30/40` | 27/41/55/80/110 | — | xám #797A86 α0.3 | lưới 2 chiều |
-| `music` | staff: 5 nét × 23px (1.99mm), cách staff 117px (10.1mm), nét đầu y=171 | — | `rgb(155,155,155)` | 19 staff |
-| `todo` | hàng 110px (9.5mm) từ y=219 + cột checkbox ~50px tại x≈196 | — | xám | |
+| `music` | staff: 5 nét × 23px (1.99mm), staff mỗi 209px, nét đầu y=171 | — | `rgb(155,155,155)` đặc, nét 2px [170,171] | nét giữa tại 171+23i, staff 171+209k |
+| `todo` | hàng 110px từ y=219 (nét 2px [218,219]) + checkbox 50×54 tại x[171,221], treo y=row+28..+81 | — | kẻ xám α76 + checkbox `rgb(155,155,155)` đặc | byte-check ✓ |
 | `blank` | — (asset 24×24 trắng) | — | — | |
 
 ### 3.3 Planner papers — `Assets/Paper/{Portrait,Landscape}/HighRes/` (2500×3235, đúng shape trang)
@@ -100,7 +100,7 @@ Class `InkNotes.Data.Models.PaperSizes.Standard`. Đo được: Letter = 2500×3
 - `PaperGridDataTemplate` + `_PaperGrid` + section headers `PaperPortrait` / `PaperLandscape` + `SectionHeading "Paper"` → picker dạng grid 3 mục.
 - Thumbnail picker nhanh: `Thumbnails/*.png` 98×98 (+`more.png` mở picker đầy đủ, `custom.png` = icon folder → **Custom paper = load ảnh từ thư mục**, có trang download `scrble.com/custom-paper`).
 - `PaperBackgroundColor` + `_backgroundColor` + `papercolors` → chọn màu nền giấy (11 màu trên).
-- **`BorderLines` / `_borderLine`** toggle → 2 đường lề đỏ dọc. Đo từ note thật: **x=120 và x=2380 (đối xứng, th=2px, `#C4728D` flatten)** = 120px @294.1dpi ≈ 0.41in. ↔ flag `sBRL` trong format file.
+- **`BorderLines` / `_borderLine`** toggle → 2 đường lề đỏ dọc. Byte-check note thật (row 1600): **[tuyệt x 119,120] và [2379,2380]** (đối xứng: 2px, inset 119, `rgb(196,114,141)` đặc = #C4728D). ↔ flag `sBRL` trong format file.
 - `WritingPaneOn/Off` + `_SetWritingPane` + font `Assets/scrble.ttf` → vùng "writing pane" (strip nét đứt trên UI — **không nằm trong raster đã lưu**, đã kiểm tra bằng mắt trên note thật).
 - SRTL: `RightToLeftWriting` setting.
 

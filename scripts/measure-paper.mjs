@@ -2,10 +2,11 @@
 // Usage: node scripts/measure-paper.mjs <dir-or-file> [more...]
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { inflateSync } from 'node:zlib'
 
 // ---------- minimal PNG decoder (8-bit, non-interlaced) ----------
-function decodePNG(buf) {
+export function decodePNG(buf) {
   if (buf.readUInt32BE(0) !== 0x89504e47) throw new Error('not PNG')
   let off = 8
   let ihdr = null
@@ -136,15 +137,16 @@ function analyze(file) {
     // sparse-dot fallback: block scan
     const y0 = Math.max(0, Math.round(h * 0.5) - 200)
     const rowHits = []
+    let dotColor = null
     for (let k = 0; k < 400 && y0 + k < h; k++) {
       let any = false
-      for (let x = 0; x < w; x += 2) if (dark(x, y0 + k)) { any = true; break }
+      for (let x = 0; x < w; x += 2) if (dark(x, y0 + k)) { any = true; if (!dotColor) dotColor = at(x, y0 + k); break }
       rowHits.push(any)
     }
     const rsegs = segments(i => rowHits[i], rowHits.length)
     if (rsegs.length > 1) {
       const pitch = rsegs.slice(1).map((s, i) => s[0] - rsegs[i][0])
-      parts.push(`dotrows: n=${rsegs.length} pitch=${median(pitch)} th=${median(rsegs.map(([a, b]) => b - a + 1))} first=${rsegs[0][0]}`)
+      parts.push(`dotrows: n=${rsegs.length} pitch=${median(pitch)} th=${median(rsegs.map(([a, b]) => b - a + 1))} first=${rsegs[0][0]} c=${dotColor}`)
     } else parts.push('dotrows: none')
     const x0 = Math.max(0, Math.round(w * 0.5) - 200)
     const colHits = []
@@ -163,16 +165,19 @@ function analyze(file) {
 }
 
 const args = process.argv.slice(2)
-for (const a of args) {
-  const st = statSync(a)
-  if (st.isDirectory()) {
-    if (a.includes('HighRes')) {
-      for (const f of readdirSync(a).filter(f => f.endsWith('.png')).sort()) analyze(join(a, f))
-    } else {
-      for (const f of readdirSync(a).filter(f => f.endsWith('.png')).sort()) {
-        const { w, h } = decodePNG(readFileSync(join(a, f)))
-        console.log(`${a.split(/[\\/]/).pop()}/${f} ${w}x${h}`)
+const invokedDirectly = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
+if (invokedDirectly) {
+  for (const a of args) {
+    const st = statSync(a)
+    if (st.isDirectory()) {
+      if (a.includes('HighRes')) {
+        for (const f of readdirSync(a).filter(f => f.endsWith('.png')).sort()) analyze(join(a, f))
+      } else {
+        for (const f of readdirSync(a).filter(f => f.endsWith('.png')).sort()) {
+          const { w, h } = decodePNG(readFileSync(join(a, f)))
+          console.log(`${a.split(/[\\/]/).pop()}/${f} ${w}x${h}`)
+        }
       }
-    }
-  } else analyze(a)
+    } else analyze(a)
+  }
 }
