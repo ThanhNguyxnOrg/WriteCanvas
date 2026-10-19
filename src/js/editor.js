@@ -17,6 +17,8 @@ export const S = {
   penSlots: DEFAULT_PEN_SLOTS.map(s => ({ ...s })),
   penIndex: 0,
   eraserMM: 3,
+  eraserMode: 'point',   // point eraser vs sheet (whole-page) eraser
+  textBoxSize: 55,       // S/M/L = 38/55/86 doc px
   zoom: 1,
   spaceDown: false,
   flyoutOpenTool: null,   // id of the toolbar flyout currently open
@@ -27,7 +29,7 @@ export const S = {
 const scratch = document.createElement('canvas')
 const scratchCtx = scratch.getContext('2d')
 const DEFAULT_PAPER = () => ({ size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF', borderLines: true })
-const newPage = paper => ({ paper: { ...paper }, strokes: [], rasterBitmap: null, undo: [], redo: [], dirty: false, recorder: new Recorder(), inkGif: null })
+const newPage = paper => ({ paper: { ...paper }, strokes: [], texts: [], rasterBitmap: null, undo: [], redo: [], dirty: false, recorder: new Recorder(), inkGif: null })
 let host = null // App context, set by init()
 
 function layer(id) { return $(id) }
@@ -39,10 +41,56 @@ function current() { return S.pages[S.currentPage] || null }
 function curPen() { return S.penSlots[S.penIndex] || S.penSlots[0] }
 function docSize(page) { return paperDocSize(page.paper.size, page.paper.orientation) }
 
+function drawStrokeItem(c, w, h, st) {
+  if (st.type === 'shape') drawShapeItem(c, st)
+  else drawStrokeAlpha(c, w, h, st)
+}
+
+// vector shapes (TextAndShape gallery) live as strokes so erase/undo/save keep
+// working; filled variants close the path and fill it, outline ones stroke it
+function drawShapeItem(c, st) {
+  const pts = st.pts
+  if (pts.length < 2) return
+  const path = new Path2D()
+  path.moveTo(pts[0].x, pts[0].y)
+  for (let i = 1; i < pts.length; i++) path.lineTo(pts[i].x, pts[i].y)
+  if (st.shape && st.shape.fill) {
+    path.closePath()
+    c.fillStyle = st.color
+    c.fill(path)
+  } else {
+    c.strokeStyle = st.color
+    c.lineWidth = Math.max(2, st.width || 8)
+    c.lineCap = 'round'; c.lineJoin = 'round'
+    c.stroke(path)
+  }
+}
+
+// CanvasTextBox objects render into the ink layer each frame (they are baked
+// into the saved PNG like the original does, but stay editable in-session)
+function drawTextObj(c, t) {
+  c.save()
+  c.fillStyle = t.color
+  c.font = `${t.italic ? 'italic ' : ''}${t.bold ? '600 ' : ''}${t.size}px "Segoe UI", sans-serif`
+  c.textBaseline = 'top'
+  const lines = String(t.txt).split('\n')
+  let y = t.y
+  for (const ln of lines) {
+    c.fillText(ln, t.x, y)
+    if (t.underline) {
+      const wpx = c.measureText(ln).width
+      c.fillRect(t.x, y + t.size * 1.06, wpx, Math.max(2, t.size * 0.07))
+    }
+    y += t.size * 1.25
+  }
+  c.restore()
+}
+
 function redrawInk(page) {
   const c = ctxOf('inkC'); const { w, h } = docSize(page)
   c.clearRect(0, 0, w, h)
-  for (const st of page.strokes) drawStrokeAlpha(c, w, h, st)
+  for (const st of page.strokes) drawStrokeItem(c, w, h, st)
+  if (page.texts) for (const t of page.texts) drawTextObj(c, t)
 }
 
 // ---------- flatten (paper + raster + strokes) ----------
@@ -53,7 +101,8 @@ function flattenToCanvas(page) {
   const c = off.getContext('2d')
   renderPaper(c, page.paper)
   if (page.rasterBitmap) { c.save(); c.imageSmoothingEnabled = true; c.drawImage(page.rasterBitmap, 0, 0); c.restore() }
-  for (const st of page.strokes) drawStrokeAlpha(c, w, h, st)
+  for (const st of page.strokes) drawStrokeItem(c, w, h, st)
+  if (page.texts) for (const t of page.texts) drawTextObj(c, t)
   return off
 }
 
@@ -245,7 +294,7 @@ let erasePending = null
 function onPointerDown(e) {
   const page = current(); if (!page) return
   const stack = $('stackInner')
-  stack.setPointerCapture(e.pointerId)
+  try { stack.setPointerCapture(e.pointerId) } catch { /* synthetic/test pointers */ }
   const isPan = S.tool === 'pan' || S.spaceDown || e.button === 1
   if (isPan) {
     const host = $('canvasHost')
@@ -259,7 +308,10 @@ function onPointerDown(e) {
   if (S.tool === 'pen') {
     live = { stroke: makeStroke(curPen(), docMM(curPen().widthMM)), drawnIdx: -1 }
     if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
+  } else if (S.tool === 'text') {
+    placeTextBox(page, x, y)
   } else if (S.tool === 'erase') {
+    if (S.eraserMode === 'sheet') { eraseSheet(page); return }
     erasePending = []
     eraseAt(page, x, y)
   }
@@ -330,6 +382,299 @@ function firstCommitPreCapture(page) {
   }
 }
 
+// ---------- shapes gallery (TextAndShapeFlyout: icons mirror Assets/Images) ----------
+const SHAPE_GALLERY = [
+  ['line', 0], ['arrow', 0],
+  ['circle', 0], ['circle', 1],
+  ['ellipse', 0], ['ellipse', 1],
+  ['rectangle', 0], ['rectangle', 1],
+  ['star', 0], ['star', 1],
+  ['polygon3', 0], ['polygon3', 1],
+  ['polygon4', 0], ['polygon4', 1],
+  ['polygon5', 0], ['polygon5', 1],
+  ['polygon6', 0], ['polygon6', 1],
+  ['polygon7', 0], ['polygon7', 1],
+  ['polygon8', 0], ['polygon8', 1],
+  ['polygon9', 0], ['polygon9', 1],
+  ['polygon10', 0], ['polygon10', 1],
+]
+
+// returns { lines: [ [{x,y}...], ... ] } — one polyline per pen path
+function buildShapePts(kind, cx, cy, R) {
+  const P = (x, y) => ({ x, y })
+  const withClose = pts => [...pts, pts[0]]
+  if (kind === 'line') return { lines: [[P(cx - R, cy), P(cx + R, cy)]] }
+  if (kind === 'arrow') {
+    const A = P(cx - R, cy), T = P(cx + R * 0.6, cy)
+    const B1 = P(T.x - R * 0.45, T.y - R * 0.42), B2 = P(T.x - R * 0.45, T.y + R * 0.42)
+    return { lines: [[A, T], [B1, T], [B2, T]] }
+  }
+  if (kind === 'circle') {
+    const pts = []
+    for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI * 2; pts.push(P(cx + R * Math.cos(a), cy + R * Math.sin(a))) }
+    return { lines: [pts] }
+  }
+  if (kind === 'ellipse') {
+    const ry = R * 0.62
+    const pts = []
+    for (let i = 0; i <= 64; i++) { const a = i / 64 * Math.PI * 2; pts.push(P(cx + R * Math.cos(a), cy + ry * Math.sin(a))) }
+    return { lines: [pts] }
+  }
+  if (kind === 'rectangle') {
+    return { lines: [withClose([P(cx - R, cy - R * 0.72), P(cx + R, cy - R * 0.72), P(cx + R, cy + R * 0.72), P(cx - R, cy + R * 0.72)])] }
+  }
+  if (kind === 'star') {
+    const pts = []
+    for (let i = 0; i <= 10; i++) {
+      const rr = i % 2 ? R * 0.42 : R
+      const a = -Math.PI / 2 + i * Math.PI / 5
+      pts.push(P(cx + rr * Math.cos(a), cy + rr * Math.sin(a)))
+    }
+    return { lines: [pts] }
+  }
+  const n = parseInt(kind.slice(7), 10) || 5
+  const pts = []
+  for (let i = 0; i <= n; i++) {
+    const a = -Math.PI / 2 + i * Math.PI * 2 / n
+    pts.push(P(cx + R * Math.cos(a), cy + R * Math.sin(a)))
+  }
+  return { lines: [pts] }
+}
+
+function drawShapeIcon(cv, kind, fill) {
+  const c = cv.getContext('2d')
+  c.clearRect(0, 0, cv.width, cv.height)
+  const { lines } = buildShapePts(kind, 18, 18, 12)
+  const path = new Path2D()
+  for (const ln of lines) {
+    path.moveTo(ln[0].x, ln[0].y)
+    for (let i = 1; i < ln.length; i++) path.lineTo(ln[i].x, ln[i].y)
+    if (fill && ln.length > 2) path.closePath()
+  }
+  if (fill && lines.length === 1 && lines[0].length > 2) {
+    c.fillStyle = '#3a3a3a'
+    c.fill(path)
+  } else {
+    c.strokeStyle = '#3a3a3a'
+    c.lineWidth = 1.6
+    c.lineCap = 'round'; c.lineJoin = 'round'
+    c.stroke(path)
+  }
+}
+
+function buildShapeGrid() {  const g = $('shapeGrid')
+  if (!g) return
+  SHAPE_GALLERY.forEach(([kind, fill]) => {
+    const b = document.createElement('button')
+    b.className = 'sh-card'
+    const name = kind.startsWith('polygon') ? `${kind.slice(7)}-sided` : kind
+    b.title = fill ? `${name} (filled)` : name
+    const cv = document.createElement('canvas')
+    cv.width = 36; cv.height = 36
+    drawShapeIcon(cv, kind, !!fill)
+    b.append(cv)
+    b.onclick = () => insertShape(kind, fill)
+    g.append(b)
+  })
+}
+
+function insertShape(kind, fill) {
+  const page = current(); if (!page) return
+  page.texts = page.texts || []
+  // drop at the viewport center (doc coords)
+  const host = $('canvasHost').getBoundingClientRect()
+  const inner = $('stackInner')
+  const rect = inner.getBoundingClientRect()
+  const scale = rect.width / inner.offsetWidth
+  const { w, h } = docSize(page)
+  const cx = clamp((host.left + host.width / 2 - rect.left) / scale, 700, w - 700)
+  const cy = clamp((host.top + host.height / 2 - rect.top) / scale, 700, h - 700)
+  const R = 620
+  const widthMM = clamp(curPen().widthMM, 1.2, 6)
+  const { lines } = buildShapePts(kind, cx, cy, R)
+  const strokes = lines.map(pts => ({
+    type: 'shape',
+    color: curPen().color,
+    opacity: 1,
+    width: docMM(widthMM),
+    pts,
+    shape: { kind, fill: !!fill },
+  }))
+  firstCommitPreCapture(page)
+  page.strokes.push(...strokes)
+  page.undo.push({ t: 'add', strokes })
+  page.redo = []
+  redrawInk(page)
+  page.recorder.capture(flattenToCanvas(page))
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+  closeToolFlyout('shapeFlyout')
+}
+
+// ---------- sheet eraser (whole-page one-tap erase) ----------
+function eraseSheet(page) {
+  const removed = page.strokes
+  if (!removed.length && !(page.texts && page.texts.length)) return
+  firstCommitPreCapture(page)
+  page.strokes = []
+  if (removed.length) page.undo.push({ t: 'erase', strokes: removed })
+  page.redo = []
+  redrawInk(page)
+  page.recorder.capture(flattenToCanvas(page))
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+}
+
+function drawEraserPreview() {
+  const cv = $('erWave'); if (!cv) return
+  const c = cv.getContext('2d')
+  c.clearRect(0, 0, cv.width, cv.height)
+  const r = 3 + S.eraserMM * 0.85
+  c.strokeStyle = '#888'
+  c.fillStyle = 'rgba(0,0,0,.16)'
+  c.beginPath(); c.arc(cv.width / 2, cv.height / 2, r, 0, Math.PI * 2)
+  c.fill(); c.stroke()
+}
+
+// ---------- text box (CanvasTextBox parity stub: session-editable, baked on save) ----------
+function wireTextTool() {
+  const b = $('btnTextTool')
+  if (b) b.onclick = startTextTool
+}
+
+let textEdit = null
+let hintTimer = null
+
+function showHint(msg) {
+  const h = $('shapeTextHint')
+  if (!h) return
+  h.textContent = msg
+  h.classList.remove('hidden')
+  clearTimeout(hintTimer)
+  hintTimer = setTimeout(() => h.classList.add('hidden'), 2600)
+}
+
+function startTextTool() {
+  S.tool = 'text'
+  syncToolButtons()
+  renderPenStack()
+  closeToolFlyout('shapeFlyout')
+  showHint('Tap on the page to place a text box')
+}
+
+function textStyle(el, obj) {
+  el.style.fontWeight = obj.bold ? '600' : '400'
+  el.style.fontStyle = obj.italic ? 'italic' : 'normal'
+  el.style.textDecoration = obj.underline ? 'underline' : 'none'
+  el.style.fontSize = obj.size + 'px'
+  el.style.color = obj.color
+  autoGrowText(el)
+}
+
+function autoGrowText(el) {
+  el.style.height = 'auto'
+  el.style.height = (el.scrollHeight + 2) + 'px'
+  el.style.width = Math.max(140, Math.min(1600, el.scrollWidth + 10)) + 'px'
+}
+
+function placeTextBox(page, x, y) {
+  if (textEdit) { textEdit.el.focus(); return }
+  if (!page.texts) page.texts = []
+  const obj = {
+    txt: '', x, y,
+    size: S.textBoxSize || 55,
+    color: curPen().color,
+    bold: false, italic: false, underline: false,
+  }
+  const inner = $('stackInner')
+  const el = document.createElement('textarea')
+  el.id = 'textEdit'
+  el.rows = 1
+  el.spellcheck = false
+  el.style.left = Math.round(x) + 'px'
+  el.style.top = Math.round(y) + 'px'
+  textStyle(el, obj)
+  inner.append(el)
+  const bar = buildTextEditBar(page, obj, el)
+  bar.style.left = el.style.left
+  bar.style.top = Math.max(4, Math.round(y) - 44 / S.zoom) + 'px'
+  // the bar is UI chrome: counter-scale so buttons stay screen-sized at any zoom
+  bar.style.transformOrigin = '0 0'
+  bar.style.transform = `scale(${1 / S.zoom})`
+  inner.append(bar)
+  el.addEventListener('input', () => autoGrowText(el))
+  el.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); finishText(true) }
+    else if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); finishText(false) }
+  })
+  el.addEventListener('blur', () => { if (textEdit) finishText(false) })
+  textEdit = { el, bar, page, obj }
+  el.focus()
+}
+
+function buildTextEditBar(page, obj, el) {
+  const bar = document.createElement('div')
+  bar.id = 'textEditBar'
+  bar.setAttribute('role', 'toolbar')
+  bar.setAttribute('aria-label', 'Text formatting')
+  const btn = (label, title, act, cls, small) => {
+    const b = document.createElement('button')
+    b.textContent = label
+    b.title = title
+    b.setAttribute('aria-label', title)
+    if (cls) b.className = cls
+    if (small) b.style.fontSize = small
+    b.addEventListener('mousedown', e => e.preventDefault()) // keep focus in the box
+    b.onclick = act
+    bar.append(b)
+    return b
+  }
+  const dB = btn('B', 'Bold', () => { obj.bold = !obj.bold; dB.classList.toggle('on', obj.bold); textStyle(el, obj) }, 'tt-b')
+  const dI = btn('I', 'Italic', () => { obj.italic = !obj.italic; dI.classList.toggle('on', obj.italic); textStyle(el, obj) }, 'tt-i')
+  const dU = btn('U', 'Underline', () => { obj.underline = !obj.underline; dU.classList.toggle('on', obj.underline); textStyle(el, obj) }, 'tt-u')
+  btn('A', 'Small text', () => { obj.size = 38; textStyle(el, obj) }, 'tt-sz', '11px')
+  btn('A', 'Medium text', () => { obj.size = 55; textStyle(el, obj) }, 'tt-sz', '14px')
+  btn('A', 'Large text', () => { obj.size = 86; textStyle(el, obj) }, 'tt-sz', '18px')
+  btn('\u2715', 'Discard text box', () => finishText(true), 'danger')
+  return bar
+}
+
+function finishText(discard) {
+  if (!textEdit) return
+  const { el, bar, page, obj } = textEdit
+  textEdit = null
+  obj.txt = el.value.replace(/\s+$/, '')
+  const committed = !!obj.txt
+  el.remove(); bar.remove()
+  if (discard || !committed) return
+  firstCommitPreCapture(page)
+  page.texts.push(obj)
+  page.undo.push({ t: 'text', obj })
+  page.redo = []
+  redrawInk(page)
+  page.recorder.capture(flattenToCanvas(page))
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+  S.tool = 'pen'
+  syncToolButtons()
+  renderPenStack()
+}
+
+// ---------- eraser flyout modes ----------
+function setEraserMode(mode) {
+  S.eraserMode = mode
+  $('erPoint').classList.toggle('active', mode === 'point')
+  $('erPoint').setAttribute('aria-pressed', mode === 'point' ? 'true' : 'false')
+  $('erSheet').classList.toggle('active', mode === 'sheet')
+  $('erSheet').setAttribute('aria-pressed', mode === 'sheet' ? 'true' : 'false')
+  const sizeRow = $('erSizeRow')
+  if (sizeRow) sizeRow.classList.toggle('hidden', mode === 'sheet')
+  if (mode === 'point') drawEraserPreview()
+}
+
 function onPointerUp(e) {
   const page = current(); if (!page) return
   if (pan) { pan = null; return }
@@ -368,11 +713,17 @@ function undo() {
   const a = page.undo.pop()
   if (!a) return
   if (a.t === 'add') {
-    const idx = page.strokes.lastIndexOf(a.stroke)
-    if (idx >= 0) page.strokes.splice(idx, 1)
+    for (const st of (a.strokes || [a.stroke])) {
+      const idx = page.strokes.lastIndexOf(st)
+      if (idx >= 0) page.strokes.splice(idx, 1)
+    }
     page.redo.push(a)
   } else if (a.t === 'erase') {
     page.strokes.push(...a.strokes)
+    page.redo.push(a)
+  } else if (a.t === 'text') {
+    const i = page.texts.indexOf(a.obj)
+    if (i >= 0) page.texts.splice(i, 1)
     page.redo.push(a)
   }
   redrawInk(page)
@@ -387,10 +738,14 @@ function redo() {
   const a = page.redo.pop()
   if (!a) return
   if (a.t === 'add') {
-    page.strokes.push(a.stroke)
+    if (a.strokes) page.strokes.push(...a.strokes)
+    else page.strokes.push(a.stroke)
     page.undo.push(a)
   } else if (a.t === 'erase') {
     page.strokes = page.strokes.filter(st => !a.strokes.includes(st))
+    page.undo.push(a)
+  } else if (a.t === 'text') {
+    page.texts.push(a.obj)
     page.undo.push(a)
   }
   redrawInk(page)
@@ -813,6 +1168,8 @@ export function init(app) {
   buildPaperThumbs()
   buildPaperPalette()
   syncPaperPanel()
+  buildShapeGrid()
+  wireTextTool()
 
   $('btnMenu').onclick = () => toggleLibraryFlyout()
   $('btnSave').onclick = () => { fillSaveFlyout(); openToolFlyout('saveFlyout', $('btnSave')) }
@@ -964,8 +1321,8 @@ function syncToolButtons() {
   }
 }
 
-// toggles whose tools land in later phases (laser, ruler, object, lasso, eye)
-// get pressed-state visuals for now
+// toggles: laser/ruler/lasso/eye land in later phases (pressed visual only);
+// object opens the shapes&text flyout; eraser toggles the eraser tool
 function wireToolbarToggles() {
   const eraserBtn = $('tbEraser')
   if (eraserBtn) eraserBtn.onclick = () => {
@@ -973,7 +1330,9 @@ function wireToolbarToggles() {
     renderPenStack()
     syncToolButtons()
   }
-  for (const id of ['tbLaser', 'tbRuler', 'tbObject', 'tbLasso', 'tbEye']) {
+  const objBtn = $('tbObject')
+  if (objBtn) objBtn.onclick = () => openToolFlyout('shapeFlyout', objBtn)
+  for (const id of ['tbLaser', 'tbRuler', 'tbLasso', 'tbEye']) {
     const b = document.getElementById(id)
     if (b) b.onclick = () => {
       const on = b.getAttribute('aria-pressed') !== 'true'
@@ -981,6 +1340,38 @@ function wireToolbarToggles() {
       b.classList.toggle('active', on)
     }
   }
+  // caret hot-zones under the toggles open the tool flyouts (MoreArrow parity)
+  document.querySelectorAll('.caret-zone').forEach(z => {
+    z.addEventListener('click', ev => {
+      ev.stopPropagation()
+      const b = z.closest('button')
+      const fly = z.dataset.fly
+      if (!fly || !$(fly) || !b) return // laser/ruler flyouts come later
+      if (fly === 'eraserFlyout') syncEraserFlyout()
+      openToolFlyout(fly, b)
+    })
+  })
+  const ep = $('erPoint'), esh = $('erSheet')
+  if (ep) ep.onclick = () => { setEraserMode('point'); syncEraserFlyout() }
+  if (esh) esh.onclick = () => { setEraserMode('sheet'); syncEraserFlyout() }
+  const ew = $('erWidth')
+  if (ew) ew.addEventListener('input', () => {
+    S.eraserMM = clamp(parseFloat(ew.value) || 3, 1, 30)
+    updateRangeFill(ew, 1, 30)
+    drawEraserPreview()
+  })
+}
+
+function syncEraserFlyout() {
+  $('erPoint').classList.toggle('active', S.eraserMode === 'point')
+  $('erPoint').setAttribute('aria-pressed', S.eraserMode === 'point' ? 'true' : 'false')
+  $('erSheet').classList.toggle('active', S.eraserMode === 'sheet')
+  $('erSheet').setAttribute('aria-pressed', S.eraserMode === 'sheet' ? 'true' : 'false')
+  $('erSizeRow').classList.toggle('hidden', S.eraserMode !== 'point')
+  const ew = $('erWidth')
+  if (Math.abs(parseFloat(ew.value) - S.eraserMM) > 0.01) ew.value = S.eraserMM
+  updateRangeFill(ew, 1, 30)
+  drawEraserPreview()
 }
 
 // ---------- pen flyout sync / wave preview ----------
@@ -1003,12 +1394,13 @@ function syncPenFlyout() {
 }
 
 // slider filled-portion variable for the WinUI-style range track
-function updateWidthFill() {
-  const el = $('width')
+function updateRangeFill(el, min, max) {
   if (!el) return
-  const v = parseFloat(el.value) || 0.5
-  el.style.setProperty('--fill', ((v - 0.5) / (12 - 0.5) * 100).toFixed(1) + '%')
+  const v = parseFloat(el.value) || min
+  el.style.setProperty('--fill', ((v - min) / (max - min) * 100).toFixed(1) + '%')
 }
+
+function updateWidthFill() { updateRangeFill($('width'), 0.5, 12) }
 
 // the size-preview wave: a fixed s-curve stroked by the current pen through
 // the real think engine, so it reacts to type/color/width like the original

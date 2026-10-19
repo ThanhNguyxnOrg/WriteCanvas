@@ -32,6 +32,9 @@
     <symbol id="ic-palette" viewBox="0 0 24 24"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.6 0 2.1-1 1.4-2-.9-1.7.2-3 1.8-3h2.3a3 3 0 0 0 3-3C20.5 7 16.7 3.5 12 3.5z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/><circle cx="8" cy="9" r="1.2" fill="currentColor"/><circle cx="12" cy="7.2" r="1.2" fill="currentColor"/><circle cx="15.8" cy="9" r="1.2" fill="currentColor"/></symbol>
     <symbol id="ic-pane" viewBox="0 0 24 24"><rect x="4" y="4.5" width="16" height="15" rx="1.2" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M12 4.5v15" stroke="currentColor" stroke-width="1.7"/></symbol>
     <symbol id="ic-paneoff" viewBox="0 0 24 24"><rect x="4" y="4.5" width="16" height="15" rx="1.2" stroke="currentColor" stroke-width="1.7" fill="none"/><rect x="6.6" y="7.1" width="10.8" height="9.8" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M4.2 4.4 19.8 19.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    <symbol id="ic-text" viewBox="0 0 24 24"><path d="M5.5 5h13M12 5v14m-3.2 0h6.4" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-eraserpoint" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.6" fill="currentColor"/><path d="M6.5 12a5.5 5.5 0 0 1 11 0" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" opacity=".5"/></symbol>
+    <symbol id="ic-erasersheet" viewBox="0 0 24 24"><rect x="5" y="4.5" width="14" height="15" rx="1.2" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M7.5 9l6 6m-6 0l6-6M13 7.5l4 4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" opacity=".75"/></symbol>
     <symbol id="pt-marker" viewBox="0 0 24 24"><path d="M5.6 4.6h12.8l-4.9 8.2v3.9l1.7 3.8h-6.4l1.7-3.8v-3.9z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="14.2" r="0.65" fill="currentColor"/></symbol>
     <symbol id="pt-pencil" viewBox="0 0 24 24"><path d="M6.4 4.6c1.7 1.5 3.6 1.5 5.6 0 2 1.5 3.9 1.5 5.6 0l-4.2 8.2v3.9l1.7 3.8H8.9l1.7-3.8v-3.9z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 13.6v6" stroke="currentColor" stroke-width="1.2" opacity=".55"/></symbol>
     <symbol id="pt-calligraphy" viewBox="0 0 24 24"><path d="M12 4.6l5 7.4-5 8.5-5-8.5z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 4.6v5m-2.2 0h4.4" stroke="currentColor" stroke-width="1.2" opacity=".55"/></symbol>
@@ -54,11 +57,11 @@
       <div id="tbTitle"><button id="btnTitle" title="Rename" aria-label="Rename note">No note</button><span id="tbPages"></span></div>
       <div class="tb-group" id="tbPens" role="listbox" aria-label="Pens"></div>
       <div class="tb-group" id="tbToggles">
-        <button class="tb-toggle" id="tbLaser" title="Laser pointer" aria-label="Laser pointer" aria-pressed="false"><svg><use href="#ic-laser"/></svg></button>
-        <button class="tb-toggle" id="tbRuler" title="Ruler" aria-label="Ruler" aria-pressed="false"><svg><use href="#ic-ruler"/></svg></button>
-        <button class="tb-toggle" id="tbObject" title="Objects" aria-label="Objects" aria-pressed="false"><svg><use href="#ic-object"/></svg></button>
-        <button class="tb-toggle" id="tbEraser" title="Eraser" aria-label="Eraser" aria-pressed="false"><svg><use href="#ic-eraser"/></svg></button>
-        <button class="tb-toggle" id="tbLasso" title="Select" aria-label="Select" aria-pressed="false"><svg><use href="#ic-lasso"/></svg></button>
+        <button class="tb-toggle" id="tbLaser" title="Laser pointer" aria-label="Laser pointer" aria-pressed="false"><svg><use href="#ic-laser"/></svg><span class="caret-zone" data-fly="laserFlyout"></span></button>
+        <button class="tb-toggle" id="tbRuler" title="Ruler" aria-label="Ruler" aria-pressed="false"><svg><use href="#ic-ruler"/></svg><span class="caret-zone" data-fly="rulerFlyout"></span></button>
+        <button class="tb-toggle" id="tbObject" title="Shapes and text" aria-label="Shapes and text" aria-pressed="false"><svg><use href="#ic-object"/></svg><span class="caret-zone" data-fly="shapeFlyout"></span></button>
+        <button class="tb-toggle" id="tbEraser" title="Eraser" aria-label="Eraser" aria-pressed="false"><svg><use href="#ic-eraser"/></svg><span class="caret-zone" data-fly="eraserFlyout"></span></button>
+        <button class="tb-toggle" id="tbLasso" title="Select" aria-label="Select" aria-pressed="false"><svg><use href="#ic-lasso"/></svg><span class="caret-zone"></span></button>
         <button class="tb-toggle no-arrow" id="tbEye" title="Eye" aria-label="Eye" aria-pressed="false"><svg><use href="#ic-eye"/></svg></button>
       </div>
       <div id="saveState" role="status"></div>
@@ -118,6 +121,27 @@
           <div id="libHead">Library</div>
           <div id="tree"></div>
         </div>
+        <div id="shapeFlyout" class="flyout hidden" role="dialog" aria-label="Shapes and text">
+          <div class="flyout-title">SHAPES &amp; TEXT</div>
+          <div id="shapeGrid" role="listbox" aria-label="Shapes"></div>
+          <div class="flyout-label">TEXT BOX</div>
+          <button id="btnTextTool" class="sh-textbtn"><svg><use href="#ic-text"/></svg>Text</button>
+        </div>
+
+        <div id="eraserFlyout" class="flyout hidden" role="dialog" aria-label="Eraser">
+          <div class="flyout-title">ERASER</div>
+          <div id="erModes" role="radiogroup" aria-label="Eraser mode">
+            <button id="erPoint" class="er-opt active" aria-pressed="true"><svg><use href="#ic-eraserpoint"/></svg>Point eraser</button>
+            <button id="erSheet" class="er-opt" aria-pressed="false"><svg><use href="#ic-erasersheet"/></svg>Sheet eraser</button>
+          </div>
+          <div id="erSizeRow">
+            <div class="flyout-label">SIZE</div>
+            <canvas id="erWave" width="280" height="44" aria-hidden="true"></canvas>
+            <input id="erWidth" type="range" min="1" max="30" step="0.5" value="5" aria-label="Eraser size">
+          </div>
+        </div>
+
+        <div id="shapeTextHint" class="hidden" role="status"></div>
       </section>
     </main>
 

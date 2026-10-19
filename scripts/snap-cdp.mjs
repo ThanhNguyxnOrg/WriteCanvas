@@ -53,11 +53,16 @@ await send(ws, 'Page.reload', { ignoreCache: true })
 await new Promise(r => setTimeout(r, 1500))
 
 if (clickId) {
-  // "slot:N" clicks a pen-stack slot (dynamically created, no id)
+  // "slot:N" clicks a pen-stack slot (dynamically created, no id);
+  // "sel:<css>" clicks any element; "js:<expr>" runs arbitrary setup JS
   const m = /^slot:(\d+)$/.exec(clickId)
   const expr = m
     ? `document.getElementById('tbPens').children[${m[1]}]?.click()`
-    : `document.getElementById(${JSON.stringify(clickId)})?.click()`
+    : clickId.startsWith('js:')
+      ? clickId.slice(3)
+      : clickId.startsWith('sel:')
+        ? `document.querySelector(${JSON.stringify(clickId.slice(4))})?.click()`
+        : `document.getElementById(${JSON.stringify(clickId)})?.click()`
   await evalJs(expr)
   await new Promise(r => setTimeout(r, 300))
 }
