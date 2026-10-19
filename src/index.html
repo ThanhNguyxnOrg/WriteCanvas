@@ -7,53 +7,47 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <!-- inline SVG icon set (flat, Segoe MDL2-shaped); licensed-free redraw -->
+  <svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="ic-menu" viewBox="0 0 24 24"><path d="M3 6.5h18M3 12h18M3 17.5h18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="ic-save" viewBox="0 0 24 24"><path d="M4.5 4.5h12.1L19.5 7.4v12.1H4.5z M7.5 4.5v5h8v-5 M7.5 12h9v7.5h-9z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-undo" viewBox="0 0 24 24"><path d="M8.5 6.5 4 11l4.5 4.5 M4 11h10a6 6 0 0 1 6 6" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-redo" viewBox="0 0 24 24"><path d="M15.5 6.5 20 11l-4.5 4.5 M20 11H10a6 6 0 0 0-6 6" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-page" viewBox="0 0 24 24"><path d="M6 3.5h9l4 4V20.5H6z M14.5 3.5V8h4.5" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-tune" viewBox="0 0 24 24"><path d="M7 4v6m0 4v6m10-16v10m0 4v2 M4.5 10h5 M14.5 14h5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="ic-export" viewBox="0 0 24 24"><path d="M12 3.5v11m0 0 4-4m-4 4-4-4 M4.5 17.5v3h15v-3" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-play" viewBox="0 0 24 24"><path d="M8 5.5 18 12 8 18.5z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-area" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1.5" stroke="currentColor" stroke-width="1.7" fill="none"/></symbol>
+  </svg>
+
   <div id="app">
     <aside id="sidebar">
-      <div class="side-head">
-        <span class="logo">WriteCanvas</span>
-        <div class="side-actions">
-          <button id="btnNewFolder" title="New folder (Ctrl+Shift+N)">+ Folder</button>
-          <button id="btnNewNote" title="New note (Ctrl+N)">+ Note</button>
-        </div>
-      </div>
-      <div id="tree"></div>
-      <div class="side-foot">
-        <button id="btnImport" title="Import PNG notes">Import…</button>
-        <button id="btnReveal" title="Open library folder">Folder</button>
-      </div>
+      <div id="pagesBar"></div>
+      <button id="btnAddPage" title="Add page">+</button>
     </aside>
 
     <main id="main">
       <header id="topbar">
-        <div class="group" id="toolGroup">
-          <button class="tool active" data-tool="pen" title="Pen (P)">✎</button>
-          <button class="tool" data-tool="erase" title="Eraser (E)">⌫</button>
-          <button class="tool" data-tool="pan" title="Pan (Space / P)">✋</button>
-        </div>
-        <div class="sep"></div>
-        <div class="group" id="tune">
-          <label>W <input id="width" type="range" min="0.5" max="12" step="0.5" value="2.5"><span id="widthVal">2.5mm</span></label>
-          <label>α <input id="opacity" type="range" min="10" max="100" step="5" value="100"><span id="opacityVal">100%</span></label>
-        </div>
-        <div class="sep"></div>
-        <div class="group">
+        <button id="btnMenu" title="Library (folders & notes)"><svg><use href="#ic-menu"/></svg></button>
+        <button id="btnSave" title="Save page (Ctrl+S)"><svg><use href="#ic-save"/></svg></button>
+        <button id="btnUndo" title="Undo (Ctrl+Z)" disabled><svg><use href="#ic-undo"/></svg></button>
+        <button id="btnRedo" title="Redo (Ctrl+Y)" disabled><svg><use href="#ic-redo"/></svg></button>
+        <button id="btnPlay" title="Play ink replay"><svg><use href="#ic-play"/></svg></button>
+        <button id="btnTune" title="Pen, eraser & color"><svg><use href="#ic-tune"/></svg></button>
+        <button id="btnPaper" title="Paper settings"><svg><use href="#ic-page"/></svg></button>
+        <button id="btnExport" title="Export (Ctrl+E)"><svg><use href="#ic-export"/></svg></button>
+
+        <button id="btnTitle" title="Rename">No note</button>
+
+        <div id="topRight">
+          <span id="curDots" title="Current tool accent"><span id="curDot"></span></span>
+          <span id="dotSpacer"></span>
           <div id="palette"></div>
-          <input id="colorPicker" type="color" value="#000000" title="Custom color">
+          <span id="dotSpacer2" style="width:10px"></span>
+          <button id="curColorCircle" title="Pen options"></button>
         </div>
-        <div class="sep"></div>
-        <div class="group">
-          <button id="btnUndo" title="Undo (Ctrl+Z)" disabled>↩</button>
-          <button id="btnRedo" title="Redo (Ctrl+Y)" disabled>↪</button>
-        </div>
-        <div class="sep"></div>
-        <div class="group">
-          <button id="btnPaper" title="Paper settings">▦</button>
-          <button id="btnPlay" title="Play ink replay">▶</button>
-          <button id="btnExport" title="Export (Ctrl+E)">⤓</button>
-        </div>
-        <div class="flex"></div>
-        <div id="noteTitle" class="title">No note</div>
-        <div id="saveState" class="state"></div>
+
+        <div id="saveState"></div>
       </header>
 
       <section id="viewport">
@@ -64,30 +58,48 @@
               <canvas id="rasterC"></canvas>
               <canvas id="inkC"></canvas>
               <canvas id="liveC"></canvas>
+              <div id="titleStrip"><span>TITLE</span></div>
             </div>
           </div>
         </div>
-        <div id="pagesBar"></div>
-        <button id="btnAddPage" title="Add page">+</button>
+
+        <div id="penFlyout" class="flyout hidden">
+          <div class="segTools">
+            <button class="tool active" data-tool="pen">Pen</button>
+            <button class="tool" data-tool="erase">Eraser</button>
+            <button class="tool" data-tool="pan">Pan</button>
+          </div>
+          <div class="flyout-row"><label>Width</label>
+            <input id="width" type="range" min="0.5" max="12" step="0.5" value="2.5"><span id="widthVal">2.5mm</span></div>
+          <div class="flyout-row"><label>Opacity</label>
+            <input id="opacity" type="range" min="10" max="100" step="5" value="100"><span id="opacityVal">100%</span></div>
+          <div class="flyout-row"><label>Colors</label><input id="colorPicker" type="color" value="#000000" title="Custom color"></div>
+          <div id="extPalette"></div>
+        </div>
+
+        <div id="paperFlyout" class="flyout hidden">
+          <div class="flyout-row"><label>Size</label>
+            <select id="paperSize">
+              <option value="letter">Letter</option><option value="a4">A4</option>
+              <option value="a5">A5</option><option value="square">Square</option>
+            </select></div>
+          <div class="flyout-row"><label>Orient.</label>
+            <select id="paperOrient"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></div>
+          <div class="flyout-row"><label>Template</label>
+            <select id="paperTpl">
+              <option value="ruled">Ruled</option><option value="grid">Grid</option>
+              <option value="dotted">Dotted</option><option value="graph">Graph</option>
+              <option value="black">Black</option><option value="blank">Blank</option>
+            </select></div>
+          <div class="flyout-row"><label>Background</label><input id="paperBg" type="color" value="#ffffff"></div>
+        </div>
+
+        <div id="libraryFlyout" class="hidden">
+          <div id="libHead">Library</div>
+          <div id="tree"></div>
+        </div>
       </section>
     </main>
-  </div>
-
-  <div id="paperFlyout" class="flyout hidden">
-    <div class="flyout-row"><label>Size</label>
-      <select id="paperSize">
-        <option value="letter">Letter</option><option value="a4">A4</option>
-        <option value="a5">A5</option><option value="square">Square</option>
-      </select></div>
-    <div class="flyout-row"><label>Orient.</label>
-      <select id="paperOrient"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></div>
-    <div class="flyout-row"><label>Template</label>
-      <select id="paperTpl">
-        <option value="ruled">Ruled</option><option value="grid">Grid</option>
-        <option value="dotted">Dotted</option><option value="graph">Graph</option>
-        <option value="black">Black</option><option value="blank">Blank</option>
-      </select></div>
-    <div class="flyout-row"><label>Background</label><input id="paperBg" type="color" value="#ffffff"></div>
   </div>
 
   <div id="ctxMenu" class="ctxmenu hidden"></div>
