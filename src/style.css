@@ -125,3 +125,18 @@ body {
 #dlgBox { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: 320px; }
 #dlgText { margin-bottom: 10px; font-size: 14px; }
 #dlgInput { width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); margin-bottom: 12px; }
+
+/* replay overlay (img for stored sINK GIF, canvas for session flipbook) */
+img.replay-gif, canvas.replay-gif {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 40; max-width: 80%; max-height: 80%;
+  border-radius: 8px; box-shadow: 0 12px 60px #000b; cursor: pointer;
+}
+img.replay-gif { background: #fff; }
+canvas.replay-gif { background: #fff; }
+
+#stackInner.panning { cursor: grab; }
+#stackInner.panning:active { cursor: grabbing; }
+
+#tree .row.current .name { font-weight: 600; }
+#dlgOk.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
