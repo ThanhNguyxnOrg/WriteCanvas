@@ -3,11 +3,11 @@
 :root {
   --chrome: #f3f3f3;      /* toolbar */
   --panel: #f2f2f2;       /* page rail / flyouts */
-  --navy: #01579b;        /* selected page card */
+  --navy: #0b63c5;        /* selected page card */
   --ink: #1a1a1a;         /* icons, text */
   --dim: #6d6d6d;
   --line: #e1e1e1;
-  --accent: #01579b;
+  --accent: #0b63c5;
   --danger: #d13438;
   --paper-white: #ffffff;
 }
@@ -20,7 +20,7 @@ body {
   color: var(--ink);
   overflow: hidden;
 }
-#app { position: relative; display: flex; height: 100vh; padding-top: 32px; }
+#app { position: relative; display: flex; flex-direction: column; height: 100vh; padding-top: 32px; }
 
 /* caption row (WinUI-style, actual caption buttons come from the OS overlay) */
 #capRow {
@@ -68,10 +68,10 @@ body.native-frame #capRow { display: none; }
 /* ---------- toolbar (rebuilt after the original UIA layout: 46x46 CSS
    buttons — UIA physical rects ÷ the 1.25 display scale — pen stack
    right-of-center, toggle row at the far right) ---------- */
-#main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#main { flex: 1; display: flex; min-height: 0; min-width: 0; }
 #topbar {
   position: relative; display: flex; align-items: center; gap: 4px;
-  height: 50px; padding: 0; overflow: hidden;
+  height: 64px; padding: 0; overflow: hidden;
   background: var(--chrome); border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
 }
@@ -152,16 +152,129 @@ body.native-frame #capRow { display: none; }
   color: #8f9bab; font-weight: 600;
 }
 
-/* ---------- flyouts / context menu ---------- */
+/* ---------- flyouts (WinUI SystemFlyout look: light gray, soft shadow) ---------- */
 .flyout {
-  position: fixed; z-index: 50; background: #fff;
-  border: 1px solid var(--line); border-radius: 4px; padding: 12px;
-  width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,.16);
+  position: fixed; z-index: 50;
+  background: #f2f2f2;
+  border: 1px solid rgba(0,0,0,.08); border-radius: 4px; padding: 10px 14px 14px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.22), 0 2px 6px rgba(0,0,0,.12);
 }
-.flyout-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
-.flyout-row label { width: 88px; font-size: 13px; color: var(--dim); }
-.flyout select, .flyout input[type=color] { flex: 1; }
+.flyout-title { font-size: 14px; font-weight: 600; color: var(--ink); margin: 2px 0 10px; }
+.flyout-label {
+  margin: 10px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 1.2px;
+  text-transform: uppercase; color: #555;
+}
 .hidden { display: none !important; }
+
+/* shared circle swatch (pen palette + background-color palette) */
+.ps {
+  width: 35px; height: 35px; border-radius: 50%; border: none; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); padding: 0;
+}
+.ps:hover { box-shadow: inset 0 0 0 1px rgba(0,0,0,.14), 0 0 0 3px #f2f2f2, 0 0 0 4px rgba(0,0,0,.25); }
+.ps.sel { box-shadow: inset 0 0 0 1px rgba(0,0,0,.14), 0 0 0 3px #f2f2f2, 0 0 0 5px rgba(0,0,0,.45); }
+.ps.rainbow { background: conic-gradient(#ff3860, #fd0, #26e600, #00aacc, #004de6, #b31564, #ff3860); }
+
+#penFlyout { width: 360px; }
+#penTypeRow { display: flex; gap: 2px; margin: 0 0 2px; justify-content: center; }
+#penTypeRow .penType {
+  width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: #222; cursor: pointer; border-radius: 50%;
+}
+#penTypeRow .penType svg { width: 26px; height: 30px; }
+#penTypeRow .penType.active { background: var(--accent); color: #fff; }
+#penTypeRow .penType:not(.active):hover { background: #e4e4e4; }
+#penPalette { display: grid; grid-template-columns: repeat(6, 35px); column-gap: 22px; row-gap: 22px; justify-content: center; }
+#wavePreview { display: block; width: 320px; height: 56px; margin: 2px auto 4px; }
+#penFlyout input[type="range"] {
+  -webkit-appearance: none; appearance: none; display: block; width: 320px; margin: 12px auto 4px;
+  height: 4px; border-radius: 2px; cursor: pointer; outline: none;
+  background: linear-gradient(to right, var(--accent) var(--fill, 10%), #b9b9b9 var(--fill, 10%));
+}
+#penFlyout input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 10px; height: 21px; border-radius: 3px;
+  background: var(--accent); border: none; box-shadow: 0 1px 2px rgba(0,0,0,.25);
+}
+#penFlyout input[type="range"]::-moz-range-thumb {
+  width: 10px; height: 21px; border-radius: 3px; background: var(--accent); border: none;
+}
+
+/* save flyout (Title + Project + Options/Save, like 06-save) */
+#saveFlyout { width: 190px; padding: 10px 12px 12px; }
+.fs-label { display: block; font-size: 13.5px; color: #111; margin: 6px 0 4px; text-align: left; }
+.fs-input { position: relative; }
+.fs-input input {
+  width: 100%; height: 30px; padding: 0 26px 0 8px; font-size: 13px;
+  border: 1px solid #b5b5b5; background: #fff;
+  color: var(--ink); outline: none;
+}
+.fs-input input:focus { border-bottom: 2px solid var(--accent); }
+.fs-clear {
+  position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 22px; border: none; background: transparent; color: #666;
+  cursor: pointer; font-size: 12px; border-radius: 50%;
+}
+.fs-clear:hover { background: #e0e0e0; }
+.fs-actions { display: flex; gap: 8px; margin-top: 12px; }
+.fs-btn {
+  height: 30px; padding: 0 12px; font-size: 13px; border-radius: 2px; border: none;
+  background: #e6e6e6; color: var(--ink); cursor: pointer;
+}
+.fs-btn:hover { background: #dcdcdc; }
+.fs-btn.accent { background: var(--accent); color: #fff; }
+.fs-btn.accent:hover { filter: brightness(1.07); background: var(--accent); }
+
+/* background-color flyout for the paper panel */
+#paperColorFlyout { width: 360px; }
+#paperPalette { display: grid; grid-template-columns: repeat(6, 35px); column-gap: 22px; row-gap: 22px; justify-content: center; }
+
+/* paper panel — full-width band under the toolbar (04-tune) */
+#paperPanel {
+  position: fixed; left: 4px; right: 4px; top: 96px; z-index: 48;
+  background: linear-gradient(180deg, rgba(223,233,244,.97), rgba(207,220,233,.97));
+  border-radius: 3px; padding: 12px 20px 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.24);
+  animation: pp-in .16s ease-out;
+}
+@keyframes pp-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.pp-label { font-size: 13px; font-weight: 600; color: #222; margin: 2px 0 8px; }
+#ppThumbs { display: flex; gap: 11px; overflow-x: auto; padding-bottom: 2px; }
+.pp-thumb {
+  width: 112px; flex: 0 0 auto; background: transparent; border: none; padding: 0;
+  cursor: pointer; text-align: center;
+}
+.pp-thumb canvas {
+  width: 112px; height: 94px; background: #fff; display: block;
+  border: 1px solid rgba(0,0,0,.22); border-radius: 1px;
+}
+.pp-thumb .cap { display: block; font-size: 12px; color: #222; margin-top: 6px; white-space: nowrap; }
+.pp-thumb.sel canvas { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pp-thumb:hover canvas { border-color: rgba(0,0,0,.45); }
+.pp-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.pp-btn {
+  height: 35px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px;
+  border-radius: 2px; border: none; background: transparent; color: var(--ink);
+  font-size: 13.5px; cursor: pointer; white-space: nowrap;
+}
+.pp-btn svg { width: 17px; height: 17px; }
+.pp-btn.accent { background: var(--accent); color: #fff; }
+.pp-btn.accent:hover { filter: brightness(1.07); background: var(--accent); }
+.pp-btn:not(.accent):hover { background: rgba(0,0,0,.07); }
+.pp-rule { width: 1px; height: 24px; background: rgba(0,0,0,.28); flex: none; }
+.pp-flex { flex: 1; }
+.pp-switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; color: #111; }
+.pp-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.pp-pill {
+  width: 40px; height: 20px; border-radius: 10px; background: #8a8a8a;
+  position: relative; transition: background .18s ease; flex: none;
+}
+.pp-knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: left .18s ease;
+}
+.pp-switch input:checked + .pp-pill { background: var(--accent); }
+.pp-switch input:checked + .pp-pill .pp-knob { left: 22px; }
+.align-right { margin-left: auto; }
 
 #libraryFlyout {
   position: absolute; z-index: 55; left: 6px; top: 56px; bottom: 10px;
@@ -211,42 +324,21 @@ body.native-frame #capRow { display: none; }
 #dlgOk.danger { background: var(--danger); color: #fff; }
 #dlgOk { font-weight: 600; }
 
-/* pen flyout (types + 6×5 palette + size wave) — interim controls until the
-   toolbar rebuild in step 3/4 */
-#penFlyout { width: 528px; }
-.segTools { display: flex; gap: 4px; margin-bottom: 4px; }
-.segTools button {
-  flex: 1; border: 1px solid var(--line); background: #fff; color: var(--ink);
-  padding: 6px 0; cursor: pointer; border-radius: 2px; font-size: 13px;
-}
-.segTools button.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+/* pen flyout types removed; palette lives above. Old segmented tool row CSS
+   is gone (tabs were not in the original pen flyout). */
 
-#penTypeRow { display: flex; gap: 8px; margin: 10px 0 2px; }
-#penTypeRow .penType {
-  width: 52px; height: 52px; display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; border-radius: 2px;
-}
-#penTypeRow .penType svg { width: 30px; height: 34px; }
-#penTypeRow .penType.active { background: var(--navy); border-color: var(--navy); color: #fff; }
-#penTypeRow .penType:not(.active):hover { background: #f4f4f4; }
+/* empty page thumbs are a light-blue placeholder until inked (06-save) */
+.pageThumb.placeholder { background: #cfe7f5 !important; box-shadow: inset 0 0 3px rgba(0,0,0,.08); }
 
-#penFlyout .flyout-label {
-  margin: 12px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 1.4px;
-  text-transform: uppercase; color: var(--ink); opacity: .8;
+/* accessibility polish layer */
+.fs-btn:focus-visible, .pp-btn:focus-visible, #penTypeRow .penType:focus-visible,
+.fs-clear:focus-visible, .ps:focus-visible, .pageItem:focus-visible {
+  outline: 2px solid #000; outline-offset: -2px;
 }
-
-#penPalette { display: grid; grid-template-columns: repeat(6, 44px); gap: 12px; justify-content: start; }
-#penPalette .ps {
-  width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); padding: 0;
+@media (prefers-reduced-motion: reduce) {
+  #paperPanel { animation: none; }
+  .pp-pill, .pp-knob { transition: none; }
 }
-#penPalette .ps:hover { box-shadow: inset 0 0 0 1px rgba(0,0,0,.14), 0 0 0 3px #fff, 0 0 0 4px rgba(0,0,0,.25); }
-#penPalette .ps.sel { box-shadow: inset 0 0 0 1px rgba(0,0,0,.14), 0 0 0 3px #fff, 0 0 0 5px var(--navy); }
-#penPalette .ps.rainbow {
-  background: conic-gradient(#ff3860, #fd0, #26e600, #00aacc, #004de6, #b31564, #ff3860);
-}
-#wavePreview { display: block; width: 100%; height: 64px; margin: 4px 0 8px; }
-#penFlyout input[type="range"] { width: 100%; }
 
 /* replay overlay */
 img.replay-gif, canvas.replay-gif {

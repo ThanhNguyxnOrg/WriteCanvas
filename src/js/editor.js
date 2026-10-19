@@ -1,7 +1,7 @@
 // Editor: canvas stack, tools, undo/redo, pages, save/export, replay.
 
 import { bridge } from './bridge.js'
-import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor } from './paper.js'
+import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
 import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, docEraseR, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
 import { Recorder, playReplay } from './replay.js'
 
@@ -19,6 +19,8 @@ export const S = {
   eraserMM: 3,
   zoom: 1,
   spaceDown: false,
+  flyoutOpenTool: null,   // id of the toolbar flyout currently open
+  writingPane: true,
 }
 
 // scratch canvas for the live-stroke alpha compositing
@@ -216,6 +218,13 @@ function refreshPages() {
 
 function drawThumb(t, i) {
   const page = S.pages[i]
+  // pages with no ink show the light-blue placeholder (06-save, page 2)
+  if (!page.strokes.length) {
+    t.style.backgroundImage = ''
+    t.classList.add('placeholder')
+    return
+  }
+  t.classList.remove('placeholder')
   const off = flattenToCanvas(page)
   const small = document.createElement('canvas')
   small.width = 176; small.height = Math.round(176 * off.height / off.width)
@@ -458,9 +467,43 @@ function showFlyoutNear(id, anchor) {
   f.classList.remove('hidden') // visible before measuring (display:none → 0)
   const btn = anchor.getBoundingClientRect()
   const w = f.offsetWidth || 300
-  f.style.left = Math.max(4, Math.min(btn.left - 12, window.innerWidth - w - 4)) + 'px'
-  f.style.top = (btn.bottom + 6) + 'px'
-  closeFlyoutCloser(() => $(id))
+  f.style.left = Math.max(4, Math.min(btn.left - 66, window.innerWidth - w - 4)) + 'px'
+  f.style.top = (btn.bottom + 4) + 'px'
+}
+
+// pen flyout centers itself under the slot it belongs to (02-pen-flyout)
+function showFlyoutCentered(id, anchor) {
+  const f = $(id)
+  f.classList.remove('hidden')
+  const btn = anchor.getBoundingClientRect()
+  const w = f.offsetWidth || 300
+  f.style.left = Math.max(4, Math.min(Math.round(btn.left + btn.width / 2 - w / 2), window.innerWidth - w - 4)) + 'px'
+  f.style.top = (btn.bottom + 4) + 'px'
+}
+
+function closeToolFlyout(id) {
+  const f = $(id)
+  if (f) f.classList.add('hidden')
+  if (S.flyoutOpenTool === id) S.flyoutOpenTool = null
+  renderPenStack()
+}
+
+// tool flyouts (opened from the toolbar) suppress the selected slot's filled
+// circle: the original drops the circle to a plain dot while a flyout is open
+// (02-pen-flyout, 06-save) but keeps it for the wide paper band (04-tune)
+function openToolFlyout(id, anchor, { centered = false } = {}) {
+  if (S.flyoutOpenTool === id) { closeToolFlyout(id); return } // re-click toggles
+  if (S.flyoutOpenTool) closeToolFlyout(S.flyoutOpenTool)
+  S.flyoutOpenTool = id
+  if (centered) showFlyoutCentered(id, anchor)
+  else showFlyoutNear(id, anchor)
+  closeFlyoutCloser(
+    () => (S.flyoutOpenTool === id ? $(id) : null),
+    () => {
+      if (S.flyoutOpenTool === id) { S.flyoutOpenTool = null; renderPenStack() }
+    },
+  )
+  renderPenStack()
 }
 
 let libCloser = null
@@ -472,29 +515,185 @@ function toggleLibraryFlyout() {
   closeFlyoutCloser(() => (libCloser ? $('libraryFlyout') : null), () => { libCloser = null })
 }
 
-function syncPaperFlyout() {
-  const page = current(); if (!page) return
-  $('paperSize').value = page.paper.size
-  $('paperOrient').value = page.paper.orientation
-  $('paperTpl').value = page.paper.template
-  $('paperBg').value = hexToCss(page.paper.bg, '#ffffff')
-  $('paperBrl').checked = page.paper.borderLines !== false
-}
+// ---------- paper panel (full-width band, mirrors 04-tune) ----------
+const PP_TPLS = ['blank', 'ruled', 'math', 'ruled10', 'ruled15', 'ruled20', 'ruled30', 'ruled40', 'math10', 'math15', 'math20', 'math30']
+const PP_CAPS = { blank: 'blank', ruled: 'ruled', math: 'math', ruled10: 'ruled 10', ruled15: 'ruled 15', ruled20: 'ruled 20', ruled30: 'ruled 30', ruled40: 'ruled 40', math10: 'math 10', math15: 'math 15', math20: 'math 20', math30: 'math 30' }
 
-function applyPaper() {
-  const page = current(); if (!page) return
-  page.paper = {
-    size: $('paperSize').value,
-    orientation: $('paperOrient').value,
-    template: $('paperTpl').value,
-    bg: '#FF' + $('paperBg').value.slice(1).toUpperCase(),
-    borderLines: $('paperBrl').checked,
-  }
+function markPaperChanged(page) {
   renderPage(page)
   applyTransform()
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
+}
+
+function togglePaperPanel() {
+  const p = $('paperPanel')
+  if (!p.classList.contains('hidden')) { p.classList.add('hidden'); return }
+  if (!current()) return
+  syncPaperPanel()
+  p.classList.remove('hidden')
+  // light-dismiss like every other surface; the selected pen slot keeps its
+  // circle while the wide band is open (04-tune)
+  closeFlyoutCloser(() => $('paperPanel'), null)
+}
+
+function syncPaperPanel() {
+  const page = current()
+  if (!page) return
+  document.querySelectorAll('#ppThumbs .pp-thumb').forEach(t => {
+    t.classList.toggle('sel', t.dataset.tpl === page.paper.template)
+  })
+  const orient = page.paper.orientation || 'portrait'
+  $('ppPortrait').classList.toggle('accent', orient === 'portrait')
+  $('ppPortrait').setAttribute('aria-pressed', orient === 'portrait' ? 'true' : 'false')
+  $('ppLandscape').classList.toggle('accent', orient !== 'portrait')
+  $('ppLandscape').setAttribute('aria-pressed', orient === 'portrait' ? 'false' : 'true')
+  $('paperBrl').checked = page.paper.borderLines !== false
+  syncWritingPaneButtons()
+}
+
+function syncWritingPaneButtons() {
+  // visual parity only — real writing pane lands with the ink-to-text stage
+  $('ppPaneOn').classList.toggle('accent', S.writingPane)
+  $('ppPaneOn').setAttribute('aria-pressed', S.writingPane ? 'true' : 'false')
+  $('ppPaneOff').classList.toggle('accent', !S.writingPane)
+  $('ppPaneOff').setAttribute('aria-pressed', S.writingPane ? 'false' : 'true')
+}
+
+function applyOrientation(orient) {
+  const page = current(); if (!page) return
+  page.paper.orientation = orient
+  markPaperChanged(page)
+  syncPaperPanel()
+}
+
+function applyBorderLines() {
+  const page = current(); if (!page) return
+  page.paper.borderLines = $('paperBrl').checked
+  markPaperChanged(page)
+}
+
+function setWritingPane(on) {
+  S.writingPane = on
+  syncWritingPaneButtons()
+}
+
+function buildPaperThumbs() {
+  const wrap = $('ppThumbs')
+  wrap.innerHTML = ''
+  PP_TPLS.forEach(id => {
+    const b = document.createElement('button')
+    b.className = 'pp-thumb'
+    b.dataset.tpl = id
+    b.title = PP_CAPS[id]
+    const cv = document.createElement('canvas')
+    cv.width = 236; cv.height = 198
+    drawTplPreview(cv, id)
+    const cap = document.createElement('span')
+    cap.className = 'cap'
+    cap.textContent = PP_CAPS[id]
+    b.append(cv, cap)
+    b.onclick = () => {
+      const page = current(); if (!page) return
+      page.paper.template = id
+      markPaperChanged(page)
+      syncPaperPanel()
+    }
+    wrap.append(b)
+  })
+}
+
+// 118×99 mini previews re-drawn procedurally at preview scale (no asset copy)
+function drawTplPreview(cv, id) {
+  const ctx = cv.getContext('2d')
+  ctx.fillStyle = '#fff'
+  ctx.fillRect(0, 0, cv.width, cv.height)
+  const t = TEMPLATES[id]
+  if (!t || !t.kind) return
+  // TEMPLATES store color as [r,g,b] + alpha (paper.js css() is private)
+  ctx.fillStyle = `rgba(${t.c[0]},${t.c[1]},${t.c[2]},${t.a ?? 1})`
+  const k = cv.width / 2500 // doc-size letter width → thumb scale
+  const w = cv.width, h = cv.height
+  const lh = Math.max(1, Math.round(2 * k))
+  if (t.kind === 'h') {
+    for (let y = t.step * k; y < h; y += t.step * k) ctx.fillRect(0, Math.round(y - 1), w, lh)
+  } else if (t.kind === 'grid') {
+    for (let y = t.step * k; y < h; y += t.step * k) ctx.fillRect(0, Math.round(y - 1), w, lh)
+    for (let x = t.step * k; x < w; x += t.step * k) ctx.fillRect(Math.round(x - 1), 0, lh, h)
+  }
+}
+
+function buildPaperPalette() {
+  const g = $('paperPalette')
+  g.innerHTML = ''
+  PEN_PALETTE.filter(c => c !== '#RAINBOW').forEach(c => {
+    const b = document.createElement('button')
+    b.className = 'ps'
+    b.style.background = c
+    b.dataset.color = c
+    b.title = c
+    b.onclick = () => applyPaperBg(c)
+    g.append(b)
+  })
+  const rb = document.createElement('button')
+  rb.className = 'ps rainbow'
+  rb.title = 'Custom color'
+  rb.onclick = () => $('paperBgPicker').click()
+  g.append(rb)
+  $('paperBgPicker').addEventListener('input', e => applyPaperBg(e.target.value))
+}
+
+function applyPaperBg(hex) {
+  const page = current(); if (!page) return
+  const h = String(hex).replace('#', '')
+  page.paper.bg = '#FF' + h.slice(-6).toUpperCase()
+  markPaperChanged(page)
+  closeToolFlyout('paperColorFlyout')
+}
+
+// ---------- save flyout (Title / Project / Options / Save, mirrors 06-save) ----------
+async function fillSaveFlyout() {
+  const today = new Date()
+  const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  // automatic note naming: an unnamed note suggests today's date
+  $('saveTitle').value = (S.note && S.note.name && S.note.name !== 'Untitled') ? S.note.name : iso
+  $('saveProject').value = await currentProjectName()
+}
+
+async function currentProjectName() {
+  if (!S.note || !S.note.parent) return ''
+  try {
+    const lib = await bridge.library()
+    const f = (lib.items || []).find(i => i.id === S.note.parent && i.type === 'folder')
+    return f ? f.name : ''
+  } catch { return '' }
+}
+
+async function saveFromFlyout() {
+  if (!S.noteId) return
+  const title = $('saveTitle').value.trim()
+  const project = $('saveProject').value.trim()
+  if (title && S.note && title !== S.note.name) {
+    await bridge.renameItem(S.noteId, title)
+    S.note.name = title
+    updateTitle()
+  }
+  const cur = await currentProjectName()
+  if (project !== cur) {
+    if (!project) {
+      await bridge.moveItem(S.noteId, 1)
+      if (S.note) S.note.parent = 1
+    } else {
+      const lib = await bridge.library()
+      const f = (lib.items || []).find(i => i.type === 'folder' && i.parent === 1 && i.name.toLowerCase() === project.toLowerCase())
+      const folder = f || await bridge.createFolder(project, 1)
+      await bridge.moveItem(S.noteId, folder.id)
+      if (S.note) S.note.parent = folder.id
+    }
+  }
+  await saveCurrentPage()
+  closeToolFlyout('saveFlyout')
 }
 
 // ---------- export ----------
@@ -572,7 +771,6 @@ export function init(app) {
     canvasHost: $('canvasHost'), stack: $('canvasStack'), inner: $('stackInner'),
   }
   selectColor('#000000')
-  $('colorPicker').addEventListener('input', e => selectColor(e.target.value))
 
   // pen flyout: 5 pen-type buttons + the 6×5 factory palette + wave preview
   const typeRow = $('penTypeRow')
@@ -582,7 +780,7 @@ export function init(app) {
     b.dataset.type = t
     b.title = PEN_TYPES[t].label
     b.innerHTML = `<svg><use href="#pt-${t}"/></svg>`
-    b.onclick = () => { curPen().type = t; syncPenFlyout() }
+    b.onclick = () => { curPen().type = t; syncPenFlyout(); closeToolFlyout('penFlyout') }
     typeRow.append(b)
   })
   const pgrid = $('penPalette')
@@ -591,45 +789,47 @@ export function init(app) {
     if (c === '#RAINBOW') {
       b.className = 'ps rainbow'
       b.title = 'Custom color'
+      // custom: keep the flyout open so the user can iterate
       b.onclick = () => $('colorPicker').click()
     } else {
       b.className = 'ps'
       b.style.background = c
       b.dataset.color = c
       b.title = c
-      b.onclick = () => selectColor(c)
+      b.onclick = () => { selectColor(c); closeToolFlyout('penFlyout') }
     }
     pgrid.append(b)
   })
+  $('colorPicker').addEventListener('input', e => selectColor(e.target.value))
   $('width').addEventListener('input', e => {
     curPen().widthMM = parseFloat(e.target.value)
+    updateWidthFill()
     drawWave()
   })
   loadPens()
   syncToolButtons()
   renderPenStack()
   syncPenFlyout()
-
-  // tools (segmented inside the pen flyout)
-  document.querySelectorAll('#penFlyout .tool').forEach(b => {
-    b.onclick = () => {
-      S.tool = b.dataset.tool
-      syncToolButtons()
-      renderPenStack()
-    }
-  })
+  buildPaperThumbs()
+  buildPaperPalette()
+  syncPaperPanel()
 
   $('btnMenu').onclick = () => toggleLibraryFlyout()
-  $('btnSave').onclick = saveCurrentPage
+  $('btnSave').onclick = () => { fillSaveFlyout(); openToolFlyout('saveFlyout', $('btnSave')) }
   $('btnUndo').onclick = undo
   $('btnRedo').onclick = redo
   $('btnTitle').onclick = renameOpenNote
   $('btnNew').onclick = () => host && host.cmdNewNote && host.cmdNewNote()
-  $('btnPaper').onclick = () => { syncPaperFlyout(); showFlyoutNear('paperFlyout', $('btnPaper')) }
-  $('paperSize').onchange = applyPaper
-  $('paperOrient').onchange = applyPaper
-  $('paperTpl').onchange = applyPaper
-  $('paperBg').addEventListener('input', applyPaper)
+  $('btnPaper').onclick = () => togglePaperPanel()
+  $('btnExport').onclick = exportMenu
+  $('btnSaveConfirm').onclick = saveFromFlyout
+  $('saveTitleClear').onclick = () => { $('saveTitle').value = ''; $('saveTitle').focus() }
+  $('paperBrl').addEventListener('change', applyBorderLines)
+  $('ppPortrait').onclick = () => applyOrientation('portrait')
+  $('ppLandscape').onclick = () => applyOrientation('landscape')
+  $('ppBgColor').onclick = () => openToolFlyout('paperColorFlyout', $('ppBgColor'))
+  $('ppPaneOn').onclick = () => setWritingPane(true)
+  $('ppPaneOff').onclick = () => setWritingPane(false)
   $('btnAddPage').onclick = addPage
   wireToolbarToggles()
 
@@ -710,7 +910,7 @@ function renderPenStack() {
   S.penSlots.forEach((pen, i) => {
     const b = document.createElement('button')
     const t = PEN_TYPES[pen.type] || PEN_TYPES.marker
-    const sel = i === S.penIndex && S.tool === 'pen'
+    const sel = i === S.penIndex && S.tool === 'pen' && !S.flyoutOpenTool
     b.className = 'tb-penslot' + (sel ? ' sel' : '')
     b.setAttribute('role', 'option')
     b.title = `${t.label} — ${pen.widthMM.toFixed(1)}mm`
@@ -726,7 +926,7 @@ function renderPenStack() {
       const d = Math.round(Math.max(8, Math.min(37, pen.widthMM * 10.1)))
       b.innerHTML = `<span class="dot" style="width:${d}px;height:${d}px;background:${pen.color}"></span>`
     }
-    b.onclick = () => onSelectPenSlot(i, b)
+    b.onclick = () => onSelectPenSlot(i)
     stack.appendChild(b)
   })
 }
@@ -740,13 +940,10 @@ function colorLuma(hex) {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
 }
 
-function onSelectPenSlot(i, btn) {
+function onSelectPenSlot(i) {
   if (S.penIndex === i && S.tool === 'pen') {
     // re-click the selected slot: toggle its config flyout (UWP behavior)
-    const flyout = $('penFlyout')
-    const wasOpen = flyout && !flyout.classList.contains('hidden')
-    hideFlyouts()
-    if (!wasOpen) showFlyoutNear('penFlyout', btn)
+    openToolFlyout('penFlyout', $('tbPens').children[i], { centered: true })
     return
   }
   S.penIndex = i
@@ -754,9 +951,7 @@ function onSelectPenSlot(i, btn) {
   syncToolButtons()
   renderPenStack()
   syncPenFlyout()
-  // renderPenStack() replaced the slot buttons, so the clicked element is
-  // detached (its rect is 0,0) — anchor to the fresh slot instead
-  showFlyoutNear('penFlyout', $('tbPens').children[i])
+  openToolFlyout('penFlyout', $('tbPens').children[i], { centered: true })
   savePens()
 }
 
@@ -767,9 +962,6 @@ function syncToolButtons() {
     eraser.classList.toggle('active', on)
     eraser.setAttribute('aria-pressed', on ? 'true' : 'false')
   }
-  document.querySelectorAll('#penFlyout .tool').forEach(b => {
-    b.classList.toggle('active', b.dataset.tool === S.tool)
-  })
 }
 
 // toggles whose tools land in later phases (laser, ruler, object, lasso, eye)
@@ -802,11 +994,20 @@ function syncPenFlyout() {
   document.querySelectorAll('#penPalette .ps').forEach(s => s.classList.toggle('sel', s.dataset.color === pen.color))
   $('colorPicker').value = hexToCss(pen.color, '#000000')
   if (Math.abs(parseFloat($('width').value) - pen.widthMM) > 0.01) $('width').value = pen.widthMM
+  updateWidthFill()
   const circ = document.getElementById('curColorCircle')
   const dot = document.getElementById('curDot')
   if (circ) circ.style.background = pen.color
   if (dot) dot.style.background = pen.color
   drawWave()
+}
+
+// slider filled-portion variable for the WinUI-style range track
+function updateWidthFill() {
+  const el = $('width')
+  if (!el) return
+  const v = parseFloat(el.value) || 0.5
+  el.style.setProperty('--fill', ((v - 0.5) / (12 - 0.5) * 100).toFixed(1) + '%')
 }
 
 // the size-preview wave: a fixed s-curve stroked by the current pen through
@@ -828,7 +1029,8 @@ function drawWave() {
     type: cur.type === 'pencil' ? 'pencil' : 'marker',
     color: cur.color,
     opacity: cur.opacity !== undefined ? cur.opacity : mid,
-    width: Math.max(3, cv.height * 0.16 * (cur.widthMM / 1.06)),
+    // the original previews a thin hairline wave scaled by the pen's width
+    width: clamp(cur.widthMM * 3.2, 2.6, 46),
     pts,
   })
 }
