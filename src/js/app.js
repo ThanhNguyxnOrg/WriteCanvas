@@ -56,6 +56,7 @@ async function main() {
       '<div style="padding:2rem;font-family:sans-serif;color:#e26" >No host bridge found — run WriteCanvas through Electron or Tauri.</div>'
     return
   }
+  if (bridge.platform !== 'win32') document.body.classList.add('native-frame')
 
   initEditor(App)
   initLib(App)

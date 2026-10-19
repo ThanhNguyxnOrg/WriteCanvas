@@ -20,10 +20,15 @@ async function saveConfig(cfg) {
 }
 
 async function createWindow() {
+  // On Windows we host our own UWP-style caption row (titleBarStyle hidden);
+  // other platforms keep the native frame.
+  const useWCO = process.platform === 'win32'
   win = new BrowserWindow({
     width: 1500, height: 960, minWidth: 1100, minHeight: 700,
-    backgroundColor: '#10151f',
+    backgroundColor: '#ffffff',
     autoHideMenuBar: false,
+    titleBarStyle: useWCO ? 'hidden' : 'default',
+    titleBarOverlay: useWCO ? { color: '#ffffff', symbolColor: '#1a1a1a', height: 32 } : undefined,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload.js'),
       contextIsolation: true,

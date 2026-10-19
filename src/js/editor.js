@@ -91,6 +91,7 @@ function zoomAt(cx, cy, factor) {
   const z2 = clamp(S.zoom * factor, 0.08, 8)
   if (z2 === S.zoom) return
   S.zoom = z2
+  S.hadZoom = true
   applyTransform()
   const hRect = host.getBoundingClientRect()
   requestAnimationFrame(() => {
@@ -110,6 +111,16 @@ function pageCoords(e) {
   const rect = inner.getBoundingClientRect()
   const scale = rect.width / inner.offsetWidth // = zoom
   return { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale }
+}
+
+// Fit-width zoom (with a little headroom), matching how the original always
+// shows the full page width.
+function fitZoom() {
+  const page = current(); if (!page) return
+  const host = $('canvasHost')
+  const avail = host.clientWidth - 48
+  S.zoom = clamp(avail / docSize(page).w, 0.08, 8)
+  applyTransform()
 }
 
 // ---------- page lifecycle ----------
@@ -147,6 +158,8 @@ export async function openNote(id) {
   })
   localStorage.setItem('wc:lastNote', String(id))
   if (host && host.selectNote) host.selectNote(id)
+  S.hadZoom = false
+  S.zoom = 1
   setPage(0)
   // decode rasters + capture replays (async, per page)
   for (let i = 0; i < res.pages.length; i++) {
@@ -176,6 +189,7 @@ function setPage(i) {
   S.currentPage = i
   const page = current()
   renderPage(page)
+  if (!S.hadZoom) fitZoom()
   applyTransform()
   refreshPages()
   updateTitle()
@@ -539,6 +553,8 @@ function updateTitle() {
   const label = `${name} (${S.currentPage + 1}/${S.pages.length})`
   $('btnTitle').textContent = label
   document.title = `${label} - WriteCanvas`
+  const cap = document.getElementById('capTitle')
+  if (cap) cap.textContent = document.title
 }
 
 async function renameOpenNote() {
@@ -583,7 +599,10 @@ export function init(app) {
   document.querySelectorAll('#penFlyout .tool').forEach(b => {
     b.onclick = () => {
       S.tool = b.dataset.tool
-      document.querySelectorAll('#penFlyout .tool').forEach(x => x.classList.toggle('active', x === b))
+      document.querySelectorAll('#penFlyout .tool').forEach(x => {
+        x.classList.toggle('active', x === b)
+        x.setAttribute('aria-pressed', x === b ? 'true' : 'false')
+      })
     }
   })
   $('width').addEventListener('input', e => {
@@ -660,7 +679,7 @@ export function init(app) {
     }
   })
   app.cmdZoom = arg => {
-    if (arg && arg.reset) { S.zoom = 1; applyTransform(); return }
+    if (arg && arg.reset) { S.zoom = 1; S.hadZoom = true; applyTransform(); return }
     zoomCenter(arg && arg.dir ? arg.dir : 1)
   }
 }

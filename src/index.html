@@ -21,6 +21,7 @@
   </svg>
 
   <div id="app">
+    <div id="capRow"><span id="capTitle">WriteCanvas</span></div>
     <aside id="sidebar">
       <div id="pagesBar"></div>
       <button id="btnAddPage" title="Add page">+</button>
@@ -28,26 +29,25 @@
 
     <main id="main">
       <header id="topbar">
-        <button id="btnMenu" title="Library (folders & notes)"><svg><use href="#ic-menu"/></svg></button>
-        <button id="btnSave" title="Save page (Ctrl+S)"><svg><use href="#ic-save"/></svg></button>
-        <button id="btnUndo" title="Undo (Ctrl+Z)" disabled><svg><use href="#ic-undo"/></svg></button>
-        <button id="btnRedo" title="Redo (Ctrl+Y)" disabled><svg><use href="#ic-redo"/></svg></button>
-        <button id="btnPlay" title="Play ink replay"><svg><use href="#ic-play"/></svg></button>
-        <button id="btnTune" title="Pen, eraser & color"><svg><use href="#ic-tune"/></svg></button>
-        <button id="btnPaper" title="Paper settings"><svg><use href="#ic-page"/></svg></button>
-        <button id="btnExport" title="Export (Ctrl+E)"><svg><use href="#ic-export"/></svg></button>
+        <button id="btnMenu" title="Library (folders & notes)" aria-label="Open library"><svg><use href="#ic-menu"/></svg></button>
+        <button id="btnSave" title="Save page (Ctrl+S)" aria-label="Save page"><svg><use href="#ic-save"/></svg></button>
+        <button id="btnUndo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg><use href="#ic-undo"/></svg></button>
+        <button id="btnRedo" title="Redo (Ctrl+Y)" aria-label="Redo" disabled><svg><use href="#ic-redo"/></svg></button>
+        <button id="btnPlay" title="Play ink replay" aria-label="Play ink replay"><svg><use href="#ic-play"/></svg></button>
+        <button id="btnTune" title="Pen, eraser & color" aria-label="Pen and color options"><svg><use href="#ic-tune"/></svg></button>
+        <button id="btnPaper" title="Paper settings" aria-label="Paper settings"><svg><use href="#ic-page"/></svg></button>
+        <button id="btnExport" title="Export (Ctrl+E)" aria-label="Export"><svg><use href="#ic-export"/></svg></button>
 
-        <button id="btnTitle" title="Rename">No note</button>
+        <button id="btnTitle" title="Rename" aria-label="Rename note">No note</button>
 
         <div id="topRight">
+          <div id="palette" role="group" aria-label="Quick colors"></div>
+          <span style="width:10px"></span>
+          <button id="curColorCircle" title="Pen options" aria-label="Pen options"></button>
           <span id="curDots" title="Current tool accent"><span id="curDot"></span></span>
-          <span id="dotSpacer"></span>
-          <div id="palette"></div>
-          <span id="dotSpacer2" style="width:10px"></span>
-          <button id="curColorCircle" title="Pen options"></button>
         </div>
 
-        <div id="saveState"></div>
+        <div id="saveState" role="status"></div>
       </header>
 
       <section id="viewport">
