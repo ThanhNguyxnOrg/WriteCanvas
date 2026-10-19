@@ -2,7 +2,7 @@
 
 import { bridge } from './bridge.js'
 import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor } from './paper.js'
-import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, docEraseR, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
+import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, docEraseR, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
 import { Recorder, playReplay } from './replay.js'
 
 const $ = id => document.getElementById(id)
@@ -455,10 +455,11 @@ function closeFlyoutCloser(getEl, onClosed) {
 
 function showFlyoutNear(id, anchor) {
   const f = $(id)
+  f.classList.remove('hidden') // visible before measuring (display:none → 0)
   const btn = anchor.getBoundingClientRect()
-  f.style.left = Math.min(btn.left - 12, window.innerWidth - 300) + 'px'
+  const w = f.offsetWidth || 300
+  f.style.left = Math.max(4, Math.min(btn.left - 12, window.innerWidth - w - 4)) + 'px'
   f.style.top = (btn.bottom + 6) + 'px'
-  f.classList.remove('hidden')
   closeFlyoutCloser(() => $(id))
 }
 
@@ -545,9 +546,11 @@ function toggleReplay() {
 // ---------- title / rename ----------
 function updateTitle() {
   const name = S.note ? S.note.name : 'No note'
-  const label = `${name} (${S.currentPage + 1}/${S.pages.length})`
-  $('btnTitle').textContent = label
-  document.title = `${label} - WriteCanvas`
+  const pages = ` (${S.currentPage + 1}/${S.pages.length})`
+  $('btnTitle').textContent = name
+  const pagesEl = document.getElementById('tbPages')
+  if (pagesEl) pagesEl.textContent = pages
+  document.title = `${name}${pages} ‎- WriteCanvas`
   const cap = document.getElementById('capTitle')
   if (cap) cap.textContent = document.title
 }
@@ -568,16 +571,6 @@ export function init(app) {
   el = {
     canvasHost: $('canvasHost'), stack: $('canvasStack'), inner: $('stackInner'),
   }
-  // quick palette row (the factory quick colors)
-  const pal = $('palette')
-  QUICK_PALETTE.forEach(c => {
-    const s = document.createElement('div')
-    s.className = 'swatch'
-    s.style.background = c
-    s.dataset.color = c
-    s.onclick = () => selectColor(c)
-    pal.appendChild(s)
-  })
   selectColor('#000000')
   $('colorPicker').addEventListener('input', e => selectColor(e.target.value))
 
@@ -613,16 +606,16 @@ export function init(app) {
     drawWave()
   })
   loadPens()
+  syncToolButtons()
+  renderPenStack()
   syncPenFlyout()
 
   // tools (segmented inside the pen flyout)
   document.querySelectorAll('#penFlyout .tool').forEach(b => {
     b.onclick = () => {
       S.tool = b.dataset.tool
-      document.querySelectorAll('#penFlyout .tool').forEach(x => {
-        x.classList.toggle('active', x === b)
-        x.setAttribute('aria-pressed', x === b ? 'true' : 'false')
-      })
+      syncToolButtons()
+      renderPenStack()
     }
   })
 
@@ -631,16 +624,14 @@ export function init(app) {
   $('btnUndo').onclick = undo
   $('btnRedo').onclick = redo
   $('btnTitle').onclick = renameOpenNote
-  $('btnTune').onclick = () => showFlyoutNear('penFlyout', $('btnTune'))
-  $('curColorCircle').onclick = () => showFlyoutNear('penFlyout', $('btnTune'))
+  $('btnNew').onclick = () => host && host.cmdNewNote && host.cmdNewNote()
   $('btnPaper').onclick = () => { syncPaperFlyout(); showFlyoutNear('paperFlyout', $('btnPaper')) }
   $('paperSize').onchange = applyPaper
   $('paperOrient').onchange = applyPaper
   $('paperTpl').onchange = applyPaper
   $('paperBg').addEventListener('input', applyPaper)
-  $('btnPlay').onclick = toggleReplay
-  $('btnExport').onclick = exportMenu
   $('btnAddPage').onclick = addPage
+  wireToolbarToggles()
 
   // pointer + wheel
   const inner = $('stackInner')
@@ -702,12 +693,102 @@ function stackInnerClass() {
 export function selectColor(c) {
   curPen().color = c
   document.querySelectorAll('.ps').forEach(s => s.classList.toggle('sel', s.dataset.color === c))
-  document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('sel', s.dataset.color === c))
   $('colorPicker').value = hexToCss(c, '#000000')
-  $('curColorCircle').style.background = c
-  $('curDot').style.background = c
+  const circ = document.getElementById('curColorCircle')
+  const dot = document.getElementById('curDot')
+  if (circ) circ.style.background = c
+  if (dot) dot.style.background = c
   drawWave()
   savePens()
+}
+
+// ---------- toolbar pen stack — 10 factory slots as in the original app ----------
+function renderPenStack() {
+  const stack = $('tbPens')
+  if (!stack) return
+  stack.innerHTML = ''
+  S.penSlots.forEach((pen, i) => {
+    const b = document.createElement('button')
+    const t = PEN_TYPES[pen.type] || PEN_TYPES.marker
+    const sel = i === S.penIndex && S.tool === 'pen'
+    b.className = 'tb-penslot' + (sel ? ' sel' : '')
+    b.setAttribute('role', 'option')
+    b.title = `${t.label} — ${pen.widthMM.toFixed(1)}mm`
+    b.setAttribute('aria-label', `Pen ${i + 1}: ${t.label} ${pen.widthMM.toFixed(1)}mm`)
+    if (sel) {
+      // original: the selected slot is a filled circle in the pen's own color
+      // (12-s.png: marker-black slot = black circle, white glyph); light pens
+      // flip the glyph dark for contrast
+      b.style.background = pen.color
+      b.style.color = colorLuma(pen.color) > 0.55 ? '#1a1a1a' : '#fff'
+      b.innerHTML = `<svg><use href="#pt-${pen.type || 'marker'}"/></svg>`
+    } else {
+      const d = Math.round(Math.max(8, Math.min(37, pen.widthMM * 10.1)))
+      b.innerHTML = `<span class="dot" style="width:${d}px;height:${d}px;background:${pen.color}"></span>`
+    }
+    b.onclick = () => onSelectPenSlot(i, b)
+    stack.appendChild(b)
+  })
+}
+
+function colorLuma(hex) {
+  const h = String(hex || '#000000').replace('#', '')
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h.padEnd(6, '0')
+  const r = parseInt(full.slice(0, 2), 16) || 0
+  const g = parseInt(full.slice(2, 4), 16) || 0
+  const b = parseInt(full.slice(4, 6), 16) || 0
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+}
+
+function onSelectPenSlot(i, btn) {
+  if (S.penIndex === i && S.tool === 'pen') {
+    // re-click the selected slot: toggle its config flyout (UWP behavior)
+    const flyout = $('penFlyout')
+    const wasOpen = flyout && !flyout.classList.contains('hidden')
+    hideFlyouts()
+    if (!wasOpen) showFlyoutNear('penFlyout', btn)
+    return
+  }
+  S.penIndex = i
+  S.tool = 'pen'
+  syncToolButtons()
+  renderPenStack()
+  syncPenFlyout()
+  // renderPenStack() replaced the slot buttons, so the clicked element is
+  // detached (its rect is 0,0) — anchor to the fresh slot instead
+  showFlyoutNear('penFlyout', $('tbPens').children[i])
+  savePens()
+}
+
+function syncToolButtons() {
+  const eraser = $('tbEraser')
+  if (eraser) {
+    const on = S.tool === 'erase'
+    eraser.classList.toggle('active', on)
+    eraser.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
+  document.querySelectorAll('#penFlyout .tool').forEach(b => {
+    b.classList.toggle('active', b.dataset.tool === S.tool)
+  })
+}
+
+// toggles whose tools land in later phases (laser, ruler, object, lasso, eye)
+// get pressed-state visuals for now
+function wireToolbarToggles() {
+  const eraserBtn = $('tbEraser')
+  if (eraserBtn) eraserBtn.onclick = () => {
+    S.tool = S.tool === 'erase' ? 'pen' : 'erase'
+    renderPenStack()
+    syncToolButtons()
+  }
+  for (const id of ['tbLaser', 'tbRuler', 'tbObject', 'tbLasso', 'tbEye']) {
+    const b = document.getElementById(id)
+    if (b) b.onclick = () => {
+      const on = b.getAttribute('aria-pressed') !== 'true'
+      b.setAttribute('aria-pressed', on ? 'true' : 'false')
+      b.classList.toggle('active', on)
+    }
+  }
 }
 
 // ---------- pen flyout sync / wave preview ----------
@@ -721,8 +802,10 @@ function syncPenFlyout() {
   document.querySelectorAll('#penPalette .ps').forEach(s => s.classList.toggle('sel', s.dataset.color === pen.color))
   $('colorPicker').value = hexToCss(pen.color, '#000000')
   if (Math.abs(parseFloat($('width').value) - pen.widthMM) > 0.01) $('width').value = pen.widthMM
-  $('curColorCircle').style.background = pen.color
-  $('curDot').style.background = pen.color
+  const circ = document.getElementById('curColorCircle')
+  const dot = document.getElementById('curDot')
+  if (circ) circ.style.background = pen.color
+  if (dot) dot.style.background = pen.color
   drawWave()
 }
 

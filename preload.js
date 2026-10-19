@@ -20,5 +20,8 @@ contextBridge.exposeInMainWorld('WriteCanvasHost', {
   async savePage(payload) { return ipcRenderer.invoke('note:savePage', payload) },
   async exportAs(bytes, defaultName, kind) { return ipcRenderer.invoke('export:saveAs', { bytes, defaultName, kind }) },
   async exportPDF(pages, paper) { return ipcRenderer.invoke('export:pdf', { pages, paper }) },
+  // QA helper: UI test scripts grab the window surface through the main
+  // process (CDP captureScreenshot stalls on the GPU-less compositor here)
+  async captureWindow() { return ipcRenderer.invoke('debug:captureWindow') },
   on(cmd, cb) { ipcRenderer.on('cmd', (_e, c, arg) => cb(c, arg)) },
 })

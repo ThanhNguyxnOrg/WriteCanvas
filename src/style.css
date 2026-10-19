@@ -35,7 +35,7 @@ body.native-frame #capRow { display: none; }
 
 /* ---------- left page rail (as in the original: pages live here) ---------- */
 #sidebar {
-  width: 310px; min-width: 310px; background: var(--panel);
+  width: 210px; min-width: 210px; background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex; flex-direction: column;
 }
@@ -53,7 +53,7 @@ body.native-frame #capRow { display: none; }
   padding-top: 2px; flex: 0 0 auto; min-height: 1.2em;
 }
 .pageThumb {
-  width: 176px; height: 236px; background: #fff center/cover no-repeat;
+  width: 140px; height: 186px; background: #fff center/cover no-repeat;
   border-radius: 2px; box-shadow: 0 0 3px rgba(0,0,0,.25); flex: 0 0 auto;
 }
 .pageItem.cur { background: var(--navy); }
@@ -65,52 +65,66 @@ body.native-frame #capRow { display: none; }
 }
 #btnAddPage:hover { background: #f6f6f6; }
 
-/* ---------- toolbar ---------- */
+/* ---------- toolbar (rebuilt after the original UIA layout: 46x46 CSS
+   buttons — UIA physical rects ÷ the 1.25 display scale — pen stack
+   right-of-center, toggle row at the far right) ---------- */
 #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #topbar {
-  position: relative; display: flex; align-items: center; gap: 2px;
-  height: 48px; padding: 0 148px 0 10px;
+  position: relative; display: flex; align-items: center; gap: 4px;
+  height: 50px; padding: 0; overflow: hidden;
   background: var(--chrome); border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
 }
-#topbar button, #topbar #palette, #topbar #topRight button {
-  -webkit-app-region: no-drag;
+#topbar button, #topbar .tb-penslot { -webkit-app-region: no-drag; }
+.tb-group { display: flex; align-items: center; flex: none; }
+#topbar button, .tb-penslot {
+  background: transparent; border: none; color: var(--ink); cursor: pointer;
+  width: 46px; height: 46px; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: 2px; padding: 0;
 }
-#topbar button {
-  background: transparent; border: none; color: var(--ink);
-  min-width: 40px; height: 40px; display: inline-flex; align-items: center;
-  justify-content: center; cursor: pointer; border-radius: 2px;
-  font-size: 15px;
-}
-#topbar button:hover:not(:disabled) { background: #e8e8e8; }
+#topbar button:hover:not(:disabled):not(.active):not(.sel) { background: #ededed; }
 #topbar button:active:not(:disabled) { background: #dedede; }
 #topbar button:focus-visible,
+.tb-penslot:focus-visible,
 .swatch:focus-visible,
-#btnTitle:focus-visible,
 #btnAddPage:focus-visible {
   outline: 2px solid #000; outline-offset: -2px;
 }
 #topbar button:disabled { opacity: .3; cursor: default; }
-#topbar button svg { width: 21px; height: 21px; display: block; }
-#topbar .icon-label { font-size: 13px; }
-#btnTitle {
-  position: absolute; left: 50%; transform: translateX(-50%);
-  font-size: 15px; height: 48px; padding: 0 18px; white-space: nowrap;
+#topbar button svg { width: 18px; height: 18px; display: block; }
+
+#tbTitle {
+  flex: 1 1 auto; min-width: 24px; display: flex; justify-content: center;
+  align-items: center; overflow: hidden; white-space: nowrap;
 }
-#topRight { margin-left: auto; display: flex; align-items: center; gap: 4px; }
-#curColorCircle {
-  width: 33px; height: 33px; border-radius: 50%; border: 2px solid #fff;
-  outline: 1px solid #00000026; background: #000; cursor: pointer;
+#tbTitle #btnTitle { width: auto; padding: 0 8px; font-size: 15px; overflow: hidden; text-overflow: ellipsis; }
+#tbPages { font-size: 15px; color: #555; white-space: nowrap; }
+
+/* toggles: glyph + small MoreArrow caret under it; active = filled circle */
+.tb-toggle { position: relative; }
+.tb-toggle svg { transform: translateY(-2px); }
+.tb-toggle::after {
+  content: ''; position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%);
+  border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
+  border-top: 3.5px solid currentColor; opacity: .45;
 }
-#curDots { color: var(--ink); align-self: flex-end; margin: 0 8px 10px 6px; }
-#curDots #curDot { display: block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
-#palette { display: flex; gap: 15px; align-items: center; }
-.swatch {
-  width: 16px; height: 16px; border-radius: 50%; cursor: pointer;
-  border: none; outline: none;
+.tb-toggle.no-arrow::after { content: none; }
+#topbar button.tb-toggle.active {
+  background: var(--navy); color: #fff; border-radius: 50%;
 }
-.swatch.sel { box-shadow: 0 0 0 2px #f3f3f3, 0 0 0 3.5px var(--ink); }
-#colorPicker { width: 24px; height: 24px; padding: 0; border: none; background: none; cursor: pointer; }
+#topbar button.tb-penslot.sel {
+  border-radius: 50%;
+  color: #fff; /* overridden inline by the pen color + contrast glyph */
+}
+#topbar button.tb-toggle.active:hover {
+  background: var(--navy); filter: brightness(1.08);
+}
+
+/* pen stack slots: colored dot scaled by pen width; selected = glyph in a filled circle */
+.tb-penslot .dot { display: block; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+#topbar button.tb-penslot.sel svg { width: 22px; height: 24px; }
+
+#saveState { display: none; }
 
 /* ---------- canvas viewport ---------- */
 #viewport { position: relative; flex: 1; background: var(--paper-white); overflow: hidden; display: flex; }
@@ -140,7 +154,7 @@ body.native-frame #capRow { display: none; }
 
 /* ---------- flyouts / context menu ---------- */
 .flyout {
-  position: absolute; z-index: 50; background: #fff;
+  position: fixed; z-index: 50; background: #fff;
   border: 1px solid var(--line); border-radius: 4px; padding: 12px;
   width: 280px; box-shadow: 0 4px 16px rgba(0,0,0,.16);
 }

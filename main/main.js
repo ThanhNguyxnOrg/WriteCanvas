@@ -24,7 +24,10 @@ async function createWindow() {
   // other platforms keep the native frame.
   const useWCO = process.platform === 'win32'
   win = new BrowserWindow({
-    width: 1500, height: 960, minWidth: 1100, minHeight: 700,
+    icon: path.join(__dirname, '..', 'src', 'img', 'writecanvas.png'),
+    // the original runs on a 1920-wide desktop UI; default to a size that
+    // fits the full toolbar (left tools + title + 10 pens + 6 toggles)
+    width: 1700, height: 1000, minWidth: 1420, minHeight: 760,
     backgroundColor: '#ffffff',
     autoHideMenuBar: false,
     titleBarStyle: useWCO ? 'hidden' : 'default',
@@ -212,6 +215,24 @@ function registerIpc() {
     await lib.persist()
     pushLibrary()
     return { file }
+  })
+
+  // QA helper for UI test scripts (CDP captureScreenshot stalls on this
+  // GPU-less compositor; go through webContents.capturePage instead)
+  ipcMain.handle('debug:captureWindow', async e => {
+    // a minimized / unpainted window has no display surface to capture
+    if (win.isMinimized()) win.restore()
+    win.show()
+    for (let i = 0; i < 3; i++) {
+      try {
+        await new Promise(r => setTimeout(r, 120))
+        const img = await e.sender.capturePage()
+        if (!img.isEmpty()) return img.toPNG()
+      } catch (err) {
+        if (i === 2) throw err
+      }
+    }
+    throw new Error('captureWindow: empty surface after 3 tries')
   })
 
   ipcMain.handle('export:saveAs', async (_e, { bytes, defaultName, kind }) => {
