@@ -197,16 +197,42 @@ body.native-frame #capRow { display: none; }
 #dlgOk.danger { background: var(--danger); color: #fff; }
 #dlgOk { font-weight: 600; }
 
-/* pen flyout (tools + width + opacity + extended palette) */
-#penFlyout { width: 300px; }
-#extPalette { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin: 8px 0; }
-#extPalette .swatch { width: 26px; height: 26px; justify-self: center; }
+/* pen flyout (types + 6×5 palette + size wave) — interim controls until the
+   toolbar rebuild in step 3/4 */
+#penFlyout { width: 528px; }
 .segTools { display: flex; gap: 4px; margin-bottom: 4px; }
 .segTools button {
   flex: 1; border: 1px solid var(--line); background: #fff; color: var(--ink);
   padding: 6px 0; cursor: pointer; border-radius: 2px; font-size: 13px;
 }
 .segTools button.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+
+#penTypeRow { display: flex; gap: 8px; margin: 10px 0 2px; }
+#penTypeRow .penType {
+  width: 52px; height: 52px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; border-radius: 2px;
+}
+#penTypeRow .penType svg { width: 30px; height: 34px; }
+#penTypeRow .penType.active { background: var(--navy); border-color: var(--navy); color: #fff; }
+#penTypeRow .penType:not(.active):hover { background: #f4f4f4; }
+
+#penFlyout .flyout-label {
+  margin: 12px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 1.4px;
+  text-transform: uppercase; color: var(--ink); opacity: .8;
+}
+
+#penPalette { display: grid; grid-template-columns: repeat(6, 44px); gap: 12px; justify-content: start; }
+#penPalette .ps {
+  width: 44px; height: 44px; border-radius: 50%; border: none; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); padding: 0;
+}
+#penPalette .ps:hover { box-shadow: inset 0 0 0 1px rgba(0,0,0,.14), 0 0 0 3px #fff, 0 0 0 4px rgba(0,0,0,.25); }
+#penPalette .ps.sel { box-shadow: inset 0 0 0 1px rgba(0,0,0,.14), 0 0 0 3px #fff, 0 0 0 5px var(--navy); }
+#penPalette .ps.rainbow {
+  background: conic-gradient(#ff3860, #fd0, #26e600, #00aacc, #004de6, #b31564, #ff3860);
+}
+#wavePreview { display: block; width: 100%; height: 64px; margin: 4px 0 8px; }
+#penFlyout input[type="range"] { width: 100%; }
 
 /* replay overlay */
 img.replay-gif, canvas.replay-gif {

@@ -1,9 +1,8 @@
 // Editor: canvas stack, tools, undo/redo, pages, save/export, replay.
 
 import { bridge } from './bridge.js'
-import { PALETTE, QUICK_PALETTE } from './palette.js'
 import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor } from './paper.js'
-import { makeStroke, addPoint, drawStrokeOpaque, strokeIntersectsCircle, docEraseR } from './ink.js'
+import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, docEraseR, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
 import { Recorder, playReplay } from './replay.js'
 
 const $ = id => document.getElementById(id)
@@ -14,13 +13,15 @@ export const S = {
   noteId: null, note: null,
   pages: [], currentPage: -1,
   tool: 'pen',
-  pen: { color: '#000000', widthMM: 2.5, opacity: 1 },
+  // 10 factory pen slots (original app's pen stack); S.penIndex selects one
+  penSlots: DEFAULT_PEN_SLOTS.map(s => ({ ...s })),
+  penIndex: 0,
   eraserMM: 3,
   zoom: 1,
   spaceDown: false,
 }
 
-// scratch canvas for per-stroke alpha compositing
+// scratch canvas for the live-stroke alpha compositing
 const scratch = document.createElement('canvas')
 const scratchCtx = scratch.getContext('2d')
 const DEFAULT_PAPER = () => ({ size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF', borderLines: true })
@@ -33,18 +34,8 @@ function ctxOf(id) { return $(id).getContext('2d') }
 let el = {}
 
 function current() { return S.pages[S.currentPage] || null }
+function curPen() { return S.penSlots[S.penIndex] || S.penSlots[0] }
 function docSize(page) { return paperDocSize(page.paper.size, page.paper.orientation) }
-
-// ---------- stroke alpha rendering ----------
-function drawStrokeAlpha(targetCtx, w, h, stroke) {
-  if (scratch.width !== w || scratch.height !== h) { scratch.width = w; scratch.height = h }
-  scratchCtx.clearRect(0, 0, w, h)
-  drawStrokeOpaque(scratchCtx, stroke)
-  targetCtx.save()
-  targetCtx.globalAlpha = clamp(stroke.opacity, 0.05, 1)
-  targetCtx.drawImage(scratch, 0, 0)
-  targetCtx.restore()
-}
 
 function redrawInk(page) {
   const c = ctxOf('inkC'); const { w, h } = docSize(page)
@@ -257,7 +248,7 @@ function onPointerDown(e) {
   const lc = ctxOf('liveC'); const { w, h } = docSize(page)
   lc.clearRect(0, 0, w, h)
   if (S.tool === 'pen') {
-    live = { stroke: makeStroke(S.pen.color, docMM(S.pen.widthMM), S.pen.opacity), drawnIdx: -1 }
+    live = { stroke: makeStroke(curPen(), docMM(curPen().widthMM)), drawnIdx: -1 }
     if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
   } else if (S.tool === 'erase') {
     erasePending = []
@@ -272,11 +263,12 @@ function drawLiveSlice(page) {
   const { w, h } = docSize(page)
   if (scratch.width !== w) scratch.width = w
   if (scratch.height !== h) scratch.height = h
-  // redraw the stroke opaque on the shared scratch once per new point, then
-  // composite at the stroke's opacity (no within-stroke darkening artifacts)
-  scratchCtx.clearRect(0, 0, w, h)
-  drawStrokeOpaque(scratchCtx, stroke)
-  lc.globalAlpha = clamp(stroke.opacity, 0.05, 1)
+  // stamp the full stroke (opaque coverage) on the shared scratch, then
+  // composite exactly once at the pen's alpha — no within-stroke darkening
+  drawStrokeMask(scratchCtx, w, h, stroke)
+  lc.clearRect(0, 0, w, h)
+  lc.globalAlpha = stroke.opacity != null ? clamp(stroke.opacity, 0.02, 1)
+    : (PEN_TYPES[stroke.type] || PEN_TYPES.marker).alpha
   lc.drawImage(scratch, 0, 0)
   lc.globalAlpha = 1
 }
@@ -431,7 +423,7 @@ export async function saveCurrentPage() {
       templatePath: templatePathFor(paper.template, paper.orientation),
       bgColor: '#FF' + rgb,
       borderLines: paper.borderLines !== false,
-      tool: { color: S.pen.color, widthMM: S.pen.widthMM, opacity: S.pen.opacity },
+      tool: (() => { const p = curPen(); return { type: p.type, color: p.color, widthMM: p.widthMM, opacity: p.opacity } })(),
       paper: { ...paper },
     }
     const frames = page.recorder.changed ? page.recorder.frames : []
@@ -576,7 +568,7 @@ export function init(app) {
   el = {
     canvasHost: $('canvasHost'), stack: $('canvasStack'), inner: $('stackInner'),
   }
-  // quick palette row (the 7 colors sampled from the original app)
+  // quick palette row (the factory quick colors)
   const pal = $('palette')
   QUICK_PALETTE.forEach(c => {
     const s = document.createElement('div')
@@ -586,17 +578,42 @@ export function init(app) {
     s.onclick = () => selectColor(c)
     pal.appendChild(s)
   })
-  const ext = $('extPalette')
-  PALETTE.forEach(c => {
-    const s = document.createElement('div')
-    s.className = 'swatch'
-    s.style.background = c
-    s.dataset.color = c
-    s.onclick = () => selectColor(c)
-    ext.appendChild(s)
-  })
   selectColor('#000000')
   $('colorPicker').addEventListener('input', e => selectColor(e.target.value))
+
+  // pen flyout: 5 pen-type buttons + the 6×5 factory palette + wave preview
+  const typeRow = $('penTypeRow')
+  PEN_TYPE_ORDER.forEach(t => {
+    const b = document.createElement('button')
+    b.className = 'penType'
+    b.dataset.type = t
+    b.title = PEN_TYPES[t].label
+    b.innerHTML = `<svg><use href="#pt-${t}"/></svg>`
+    b.onclick = () => { curPen().type = t; syncPenFlyout() }
+    typeRow.append(b)
+  })
+  const pgrid = $('penPalette')
+  PEN_PALETTE.forEach(c => {
+    const b = document.createElement('button')
+    if (c === '#RAINBOW') {
+      b.className = 'ps rainbow'
+      b.title = 'Custom color'
+      b.onclick = () => $('colorPicker').click()
+    } else {
+      b.className = 'ps'
+      b.style.background = c
+      b.dataset.color = c
+      b.title = c
+      b.onclick = () => selectColor(c)
+    }
+    pgrid.append(b)
+  })
+  $('width').addEventListener('input', e => {
+    curPen().widthMM = parseFloat(e.target.value)
+    drawWave()
+  })
+  loadPens()
+  syncPenFlyout()
 
   // tools (segmented inside the pen flyout)
   document.querySelectorAll('#penFlyout .tool').forEach(b => {
@@ -607,15 +624,6 @@ export function init(app) {
         x.setAttribute('aria-pressed', x === b ? 'true' : 'false')
       })
     }
-  })
-  $('width').addEventListener('input', e => {
-    S.pen.widthMM = parseFloat(e.target.value)
-    $('widthVal').textContent = S.pen.widthMM.toFixed(1) + 'mm'
-  })
-  $('widthVal').textContent = (S.pen.widthMM).toFixed(1) + 'mm'
-  $('opacity').addEventListener('input', e => {
-    S.pen.opacity = parseFloat(e.target.value) / 100
-    $('opacityVal').textContent = e.target.value + '%'
   })
 
   $('btnMenu').onclick = () => toggleLibraryFlyout()
@@ -692,9 +700,69 @@ function stackInnerClass() {
 }
 
 export function selectColor(c) {
-  S.pen.color = c
+  curPen().color = c
+  document.querySelectorAll('.ps').forEach(s => s.classList.toggle('sel', s.dataset.color === c))
   document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('sel', s.dataset.color === c))
   $('colorPicker').value = hexToCss(c, '#000000')
   $('curColorCircle').style.background = c
   $('curDot').style.background = c
+  drawWave()
+  savePens()
+}
+
+// ---------- pen flyout sync / wave preview ----------
+function syncPenFlyout() {
+  const pen = curPen()
+  document.querySelectorAll('#penTypeRow .penType').forEach(b => {
+    const on = b.dataset.type === pen.type
+    b.classList.toggle('active', on)
+    b.setAttribute('aria-pressed', on ? 'true' : 'false')
+  })
+  document.querySelectorAll('#penPalette .ps').forEach(s => s.classList.toggle('sel', s.dataset.color === pen.color))
+  $('colorPicker').value = hexToCss(pen.color, '#000000')
+  if (Math.abs(parseFloat($('width').value) - pen.widthMM) > 0.01) $('width').value = pen.widthMM
+  $('curColorCircle').style.background = pen.color
+  $('curDot').style.background = pen.color
+  drawWave()
+}
+
+// the size-preview wave: a fixed s-curve stroked by the current pen through
+// the real think engine, so it reacts to type/color/width like the original
+function drawWave() {
+  const cv = $('wavePreview')
+  if (!cv) return
+  const ctx = cv.getContext('2d')
+  ctx.clearRect(0, 0, cv.width, cv.height)
+  const cur = curPen()
+  const pts = []
+  for (let px = 6; px <= cv.width - 6; px += 2) {
+    const t = (px - 6) / (cv.width - 12)
+    const y = cv.height * 0.55 + Math.sin(t * Math.PI * 2 - 0.7) * cv.height * 0.22 - t * 5
+    pts.push({ x: px, y, p: 0.72 + 0.28 * Math.sin(t * Math.PI) })
+  }
+  const mid = PEN_TYPES[cur.type] ? PEN_TYPES[cur.type].alpha : 1
+  drawStrokeAlpha(ctx, cv.width, cv.height, {
+    type: cur.type === 'pencil' ? 'pencil' : 'marker',
+    color: cur.color,
+    opacity: cur.opacity !== undefined ? cur.opacity : mid,
+    width: Math.max(3, cv.height * 0.16 * (cur.widthMM / 1.06)),
+    pts,
+  })
+}
+
+function loadPens() {
+  try {
+    const raw = localStorage.getItem('wc:pens')
+    if (!raw) return
+    const d = JSON.parse(raw)
+    const arr = Array.isArray(d) ? d : d.slots
+    if (Array.isArray(arr) && arr.length === 10) {
+      S.penSlots = arr.map(p => ({ type: p && p.type || 'marker', color: p && p.color || '#000000', widthMM: +p.widthMM || 1.06, opacity: p && p.opacity }))
+      if (!Array.isArray(d)) S.penIndex = clamp(+d.index || 0, 0, 9)
+    }
+  } catch { /* corrupted state — keep factory slots */ }
+}
+
+function savePens() {
+  try { localStorage.setItem('wc:pens', JSON.stringify({ slots: S.penSlots, index: S.penIndex })) } catch { /* ignore */ }
 }
