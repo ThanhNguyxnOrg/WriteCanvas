@@ -42,7 +42,8 @@ export function currentNoteName() {
   return n ? n.name : ''
 }
 
-function selectNote(id) {
+// highlight + track the note opened in the editor
+export function selectNote(id) {
   currentNote = id
   selected = id
   render()

@@ -6,6 +6,7 @@ const fss = require('node:fs')
 const os = require('node:os')
 const { Library, sanitizeName, pageFileName } = require('./library')
 const { writeNotePng, readNoteMeta, extractInkGif } = require('./scrble-format')
+const { GIFEncoder, quantize, applyPalette } = require('gifenc')
 
 let win = null
 let lib = null
@@ -73,13 +74,8 @@ function menu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-// ---------- gifenc (ESM) ----------
-async function getGifenc() {
-  return import('gifenc')
-}
-
+// ---------- sINK replay GIF ----------
 async function encodeGif(frames) {
-  const { GIFEncoder, quantize, applyPalette } = await getGifenc()
   if (!frames.length) return null
   const gif = GIFEncoder()
   for (const f of frames) {
