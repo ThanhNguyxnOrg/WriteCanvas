@@ -54,27 +54,24 @@ function buildPNG(chunks) {
 }
 
 // Replace ancillary chunks of the given types (or add them), keeping original
-// critical chunks (IHDR/sRGB/gAMA/pHYs/IDAT/IEND) and their order.
+// critical chunks (IHDR/sRGB/gAMA/pHYs/IDAT/IEND) and their order. Chromium's
+// encoder splits the zlib stream across MANY IDAT chunks, so entries are
+// inserted only ONCE, after the LAST IDAT — inserting between IDATs breaks
+// the (required-to-be-consecutive) IDAT run and the PNG fails to decode.
 function upsertChunks(png, entries) {
   // entries: [{type, data}]
   const chunks = parseChunks(png)
   const replaceTypes = new Set(entries.map(e => e.type))
   const kept = []
-  let inserted = false
   for (const c of chunks) {
     if (replaceTypes.has(c.type)) continue // drop originals we're replacing
     kept.push(c)
-    // Insert custom chunks right after the last IDAT (original layout) or, if
-    // none seen yet, before IEND later. sINK/s* chunks must precede IEND.
-    if (c.type === 'IDAT') {
-      kept.push(...entries.map(e => ({ type: e.type, data: e.data })))
-      inserted = true
-    }
   }
-  if (!inserted) {
-    // PNG without IDAT? shouldn't happen for our notes; put before IEND
-    kept.splice(Math.max(0, kept.length - 1), 0, ...entries.map(e => ({ type: e.type, data: e.data })))
-  }
+  const types = kept.map(c => c.type)
+  const lastIdat = types.lastIndexOf('IDAT')
+  // s* chunks must precede IEND; after the last IDAT keeps IDAT consecutive.
+  const at = lastIdat >= 0 ? lastIdat + 1 : Math.max(0, kept.length - 1)
+  kept.splice(at, 0, ...entries.map(e => ({ type: e.type, data: e.data })))
   return buildPNG(kept)
 }
 

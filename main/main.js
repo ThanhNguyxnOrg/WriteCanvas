@@ -5,11 +5,14 @@ const fs = require('node:fs/promises')
 const fss = require('node:fs')
 const os = require('node:os')
 const { Library, sanitizeName, pageFileName } = require('./library')
-const { writeNotePng, readNoteMeta, extractInkGif } = require('./scrble-format')
+const { writeNotePng, readNoteMeta, extractInkGif, extractVecJson, pngIsBroken, repairPNG } = require('./scrble-format')
 const { GIFEncoder, quantize, applyPalette } = require('gifenc')
 
 let win = null
 let lib = null
+let allowClose = false
+let closePending = false
+let closeTimer = null
 const configPath = () => path.join(app.getPath('userData'), 'config.json')
 
 async function loadConfig() {
@@ -20,6 +23,8 @@ async function saveConfig(cfg) {
 }
 
 async function createWindow() {
+  allowClose = false
+  closePending = false
   // On Windows we host our own UWP-style caption row (titleBarStyle hidden);
   // other platforms keep the native frame.
   const useWCO = process.platform === 'win32'
@@ -42,6 +47,39 @@ async function createWindow() {
   })
   win.loadFile(path.join(__dirname, '..', 'src', 'index.html'))
   win.on('page-title-updated', e => e.preventDefault())
+  // Renderer-side beforeunload cannot await IPC. Intercept close, ask the
+  // renderer to flush every pending page write, then close on its handshake.
+  win.on('close', e => {
+    if (allowClose) return
+    if (!win || win.isDestroyed()) return
+    e.preventDefault()
+    closePending = true
+    if (win.webContents.isDestroyed()) { closePending = false; allowClose = true; win.close(); return }
+    win.webContents.send('cmd', 'flush-close')
+    clearTimeout(closeTimer)
+    closeTimer = setTimeout(async () => {
+      if (allowClose || !closePending || !win || win.isDestroyed()) return
+      const res = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: ['Keep open', 'Close anyway'],
+        defaultId: 0, cancelId: 0,
+        message: 'Saving is taking longer than expected',
+        detail: 'Unsaved strokes may be lost if you close now. Keep the window open and check the library folder if saves are failing.',
+      })
+      if (!closePending) return
+      if (res.response === 1 && win && !win.isDestroyed()) {
+        closePending = false; allowClose = true; win.close()
+      } else {
+        closePending = false
+      }
+    }, 20000)
+  })
+  win.on('closed', () => {
+    clearTimeout(closeTimer)
+    closeTimer = null
+    closePending = false
+    win = null
+  })
 }
 
 function pushLibrary() {
@@ -98,15 +136,32 @@ async function encodeGif(frames) {
 
 // ---------- IPC ----------
 function registerIpc() {
+  ipcMain.on('app:close-ready', () => {
+    // only honor the handshake from a close we actually initiated; a stray
+    // message must not disable the flush guard for the next real close
+    if (!closePending || allowClose) return
+    closePending = false
+    clearTimeout(closeTimer)
+    closeTimer = null
+    allowClose = true
+    if (win && !win.isDestroyed()) win.close()
+  })
+
   ipcMain.handle('lib:get', async () => {
     await lib.ensure()
-    return JSON.parse(JSON.stringify(lib.index))
+    // root is exposed so QA/probe scripts can resolve note files without
+    // hardcoding anyone's local directory layout
+    return { ...JSON.parse(JSON.stringify(lib.index)), root: lib.root }
   })
 
   ipcMain.handle('lib:pickRoot', async () => {
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Choose library folder' })
     if (res.canceled || !res.filePaths[0]) return null
-    await chooseRoot(res.filePaths[0])
+    try {
+      await chooseRoot(res.filePaths[0])
+    } catch (err) {
+      dialog.showErrorBox('WriteCanvas — cannot use that library folder', err.message)
+    }
     return null
   })
 
@@ -171,7 +226,7 @@ function registerIpc() {
   })
 
   ipcMain.handle('note:load', async (_e, { id }) => {
-    const item = lib.get(id)
+    const item = lib.get(Number(id))
     if (!item || item.type !== 'note') return null
     if (!item.note) item.note = { pages: [{}], currentPage: 0 }
     // first blank page has no file yet
@@ -180,11 +235,13 @@ function registerIpc() {
       if (!p.file) { pages.push({ file: null, exists: false }); continue }
       const full = lib.pagePath(p.file)
       try {
-        const buf = await fs.readFile(full)
+        let buf = await fs.readFile(full)
+        if (pngIsBroken(buf)) buf = repairPNG(buf) // heal the pre-fix bloated/interleaved layout in memory
         pages.push({
           file: p.file, exists: true, bytes: new Uint8Array(buf),
           paperMeta: readNoteMeta(buf),
           inkGif: extractInkGif(buf) || null, // replay GIF from sINK
+          vecJson: extractVecJson(buf), // vector strokes (sVec) when present
         })
       } catch {
         pages.push({ file: p.file, exists: false })
@@ -196,16 +253,32 @@ function registerIpc() {
   })
 
   ipcMain.handle('note:savePage', async (_e, payload) => {
-    const { noteId, pageIndex } = payload
+    const noteId = Number(payload && payload.noteId)
+    const pageIndex = Number(payload && payload.pageIndex)
+    if (!Number.isInteger(noteId) || !Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex > 9999) {
+      throw new Error('bad save target')
+    }
+    if (!payload || !payload.png || typeof payload.png.byteLength !== 'number' || payload.png.byteLength === 0) {
+      throw new Error('empty page')
+    }
+    if (payload.png.byteLength > 200 * 1024 * 1024) throw new Error('page too large')
     const item = lib.get(noteId)
-    if (!item) throw new Error('note not found')
+    if (!item || item.type !== 'note') throw new Error('note not found')
     const png = Buffer.from(payload.png)
-    const meta = payload.meta || {}
+    const meta = payload.meta && typeof payload.meta === 'object' ? { ...payload.meta } : {}
+    delete meta.inkGif
+    delete meta.vecJson
     // New frames → encode a fresh sINK replay GIF. No frames → leave the
     // original sINK untouched (upsertChunks only replaces provided types).
-    if (payload.frames && payload.frames.length) {
+    if (Array.isArray(payload.frames) && payload.frames.length) {
+      if (payload.frames.length > 5000) throw new Error('too many replay frames')
       const gif = await encodeGif(payload.frames)
       if (gif && gif.length) meta.inkGif = Buffer.from(gif)
+    }
+    if (payload.vec != null) {
+      const vec = String(payload.vec)
+      if (vec.length > 64 * 1024 * 1024) throw new Error('vector snapshot too large')
+      meta.vecJson = vec // vector strokes → sVec chunk
     }
     const out = writeNotePng(png, meta)
     const file = await lib.savePage(noteId, pageIndex, out)
@@ -287,11 +360,14 @@ function registerIpc() {
 }
 
 async function chooseRoot(dir) {
+  // validate the new root before replacing the working library: a bad folder
+  // must leave the current library usable
+  const next = new Library(dir)
+  await next.ensure()
   const cfg = await loadConfig()
   cfg.root = dir
   await saveConfig(cfg)
-  lib = new Library(dir)
-  await lib.ensure()
+  lib = next
   pushLibrary()
 }
 
@@ -299,11 +375,20 @@ app.whenReady().then(async () => {
   const cfg = await loadConfig()
   const root = cfg.root || path.join(app.getPath('documents'), 'WriteCanvas')
   lib = new Library(root)
-  await lib.ensure()
+  try {
+    await lib.ensure()
+  } catch (err) {
+    dialog.showErrorBox('WriteCanvas — library error', err.message)
+    app.quit()
+    return
+  }
   registerIpc()
   menu()
   await createWindow()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+}).catch(err => {
+  dialog.showErrorBox('WriteCanvas — startup error', err && err.stack ? err.stack : String(err))
+  app.quit()
 })
 
 app.on('window-all-closed', () => {

@@ -2,7 +2,7 @@
 
 import { bridge } from './bridge.js'
 import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
-import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, docEraseR, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
+import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
 import { Recorder, playReplay } from './replay.js'
 
 const $ = id => document.getElementById(id)
@@ -16,13 +16,17 @@ export const S = {
   // 10 factory pen slots (original app's pen stack); S.penIndex selects one
   penSlots: DEFAULT_PEN_SLOTS.map(s => ({ ...s })),
   penIndex: 0,
-  eraserMM: 3,
-  eraserMode: 'point',   // point eraser vs sheet (whole-page) eraser
+  eraserMM: 5,           // segment eraser factory sizes: S=2, M=5, L=10
+  eraserMode: 'stroke',  // stroke eraser vs segment vs sheet (whole-page)
+  rulerOn: false,
+  selection: null,
+  pullPx: 0,             // rubber-band offset (screen px) while pulling below the last page
   textBoxSize: 55,       // S/M/L = 38/55/86 doc px
   zoom: 1,
   spaceDown: false,
   flyoutOpenTool: null,   // id of the toolbar flyout currently open
   writingPane: true,
+  editSeq: 0,             // increments on every page mutation; guards dirty-flag clearing
 }
 
 // scratch canvas for the live-stroke alpha compositing
@@ -40,6 +44,24 @@ let el = {}
 function current() { return S.pages[S.currentPage] || null }
 function curPen() { return S.penSlots[S.penIndex] || S.penSlots[0] }
 function docSize(page) { return paperDocSize(page.paper.size, page.paper.orientation) }
+
+// sVec comes from a file on disk: accept only the shape we can render, so a
+// malformed/partial vector chunk falls back to the raster instead of throwing
+// inside the draw loop.
+const validStroke = s => s && Array.isArray(s.pts) && s.pts.length > 0 &&
+  s.pts.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+const validText = t => t && typeof t.txt === 'string' && t.txt.length > 0 &&
+  Number.isFinite(t.x) && Number.isFinite(t.y) && Number.isFinite(t.size)
+let openSeq = 0
+
+function disposePages() {
+  for (const p of S.pages) {
+    if (p.rasterBitmap && typeof p.rasterBitmap.close === 'function') {
+      try { p.rasterBitmap.close() } catch { /* already closed */ }
+    }
+    p.rasterBitmap = null
+  }
+}
 
 function drawStrokeItem(c, w, h, st) {
   if (st.type === 'shape') drawShapeItem(c, st)
@@ -118,10 +140,51 @@ function applyTransform() {
   const { w, h } = docSize(page)
   const inner = $('stackInner')
   inner.style.width = w + 'px'; inner.style.height = h + 'px'
-  inner.style.transform = `scale(${S.zoom})`
+  inner.style.transform = `translateY(${-(S.pullPx || 0)}px) scale(${S.zoom})`
   const stack = $('canvasStack')
   stack.style.width = (w * S.zoom) + 'px'
   stack.style.height = (h * S.zoom) + 'px'
+  // HUD layers redraw so their counter-scaled chrome tracks the zoom
+  if (S.rulerOn) drawRulerLayer(page)
+  updateSelectionChrome(page)
+}
+
+// ---------- pull-to-add-page (last page only, Samsung-Notes parity) ----------
+let bounceRAF = 0
+
+function pullCommitLimit() {
+  const host = $('canvasHost')
+  return Math.max(96, host.clientHeight * 0.12)
+}
+
+function updatePullHint(over) {
+  const bar = $('pullHint'); if (!bar) return
+  if (!over || over <= 24) { bar.classList.add('hidden'); return }
+  const commit = pullCommitLimit()
+  bar.classList.remove('hidden')
+  const armed = over >= commit
+  bar.classList.toggle('armed', armed)
+  const fill = bar.querySelector('.pullFill')
+  if (fill) fill.style.width = (Math.min(1, over / commit) * 100).toFixed(0) + '%'
+  const text = bar.querySelector('.pullText')
+  if (text) text.textContent = armed ? 'Thả ra để tạo trang mới' : 'Kéo lên để tạo trang mới'
+}
+
+function hidePullHint() {
+  const bar = $('pullHint'); if (bar) bar.classList.add('hidden')
+}
+
+function pullBounce(from) {
+  if (bounceRAF) cancelAnimationFrame(bounceRAF)
+  const t0 = performance.now()
+  const step = now => {
+    const k = Math.min(1, (now - t0) / 150)
+    S.pullPx = from * (1 - k) * (1 - k)
+    applyTransform()
+    if (k < 1) bounceRAF = requestAnimationFrame(step)
+    else { S.pullPx = 0; applyTransform(); bounceRAF = 0 }
+  }
+  bounceRAF = requestAnimationFrame(step)
 }
 
 function zoomAt(cx, cy, factor) {
@@ -168,7 +231,7 @@ function fitZoom() {
 // ---------- page lifecycle ----------
 function sizeLayers(page) {
   const { w, h } = docSize(page)
-  for (const id of ['paperC', 'rasterC', 'inkC', 'liveC']) {
+  for (const id of ['paperC', 'rasterC', 'inkC', 'liveC', 'laserC', 'rulerC']) {
     const c = $(id)
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h }
   }
@@ -181,14 +244,27 @@ function renderPage(page) {
   if (page.rasterBitmap) rc.drawImage(page.rasterBitmap, 0, 0)
   redrawInk(page)
   const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  ctxOf('laserC').clearRect(0, 0, docSize(page).w, docSize(page).h)
+  drawRulerLayer(page)
 }
 
 export async function openNote(id) {
+  // clicking the already-open note must not reload from disk and throw away
+  // the in-memory page that is still inside the autosave debounce window
+  if (S.noteId === id && S.note) return
+  const seq = ++openSeq
+  if (S.noteId && S.noteId !== id) {
+    const ok = await flushCurrentPage()
+    if (!ok) { setSaveState('err'); showHint('Save failed — note not switched'); return }
+    if (seq !== openSeq) return
+  }
   const res = await bridge.loadNote(id)
+  if (seq !== openSeq) return
   if (!res || !res.pages || !res.pages.length) return
+  disposePages()
   S.noteId = id
   S.note = { ...res.note }
-  S.pages = res.pages.map((p, idx) => {
+  S.pages = res.pages.map((p) => {
     const meta = p.paperMeta
     const paper = meta
       ? { size: meta.size, orientation: meta.orientation, template: meta.template, bg: meta.bgColor || '#FFFFFFFF', borderLines: meta.borderLines !== false }
@@ -196,6 +272,17 @@ export async function openNote(id) {
     const page = newPage(paper)
     page.file = p.file
     if (p.paperMeta) page.importedChunks = true
+    // vector restore: a page saved by us reopens fully editable (strokes +
+    // texts); only legacy/imported-only pages fall back to a raster bitmap
+    if (p.vecJson) {
+      try {
+        const v = JSON.parse(p.vecJson)
+        if (v && Array.isArray(v.strokes)) {
+          page.strokes = v.strokes.filter(validStroke)
+          page.texts = Array.isArray(v.texts) ? v.texts.filter(validText) : []
+        }
+      } catch { /* malformed chunk → raster fallback */ }
+    }
     return page
   })
   localStorage.setItem('wc:lastNote', String(id))
@@ -203,14 +290,20 @@ export async function openNote(id) {
   S.hadZoom = false
   S.zoom = 1
   setPage(0)
-  // decode rasters + capture replays (async, per page)
+  // decode rasters + capture replays (async, per page). Pages that restored
+  // their vectors don't need the raster (and would double-ink under strokes).
   for (let i = 0; i < res.pages.length; i++) {
+    // another note was opened while we were decoding: never write this note's
+    // bitmap into the new note's page array
+    if (seq !== openSeq || S.noteId !== id) return
     const p = res.pages[i]
     if (p.inkGif) S.pages[i].inkGif = p.inkGif
     if (!p.exists || !p.bytes) continue
+    if (S.pages[i].strokes.length || S.pages[i].texts.length) { p.bytes = null; continue }
     try {
       const blob = new Blob([p.bytes], { type: 'image/png' })
       const bmp = await createImageBitmap(blob)
+      if (seq !== openSeq || S.noteId !== id) { if (bmp.close) bmp.close(); return }
       S.pages[i].rasterBitmap = bmp
       p.bytes = null
       if (i === S.currentPage) renderPage(S.pages[i])
@@ -228,6 +321,7 @@ function sanitizePage() {
 function setPage(i) {
   if (i < 0 || i >= S.pages.length) return
   if (S.currentPage !== i) sanitizePage()
+  clearSelection()
   S.currentPage = i
   const page = current()
   renderPage(page)
@@ -235,6 +329,7 @@ function setPage(i) {
   applyTransform()
   refreshPages()
   updateTitle()
+  syncUndoRedo()
 }
 
 function addPage() {
@@ -282,8 +377,18 @@ function drawThumb(t, i) {
 }
 
 function refreshCurrentThumb() {
+  syncUndoRedo()
   const item = $('pagesBar').children[S.currentPage]
   if (item) drawThumb(item.querySelector('.pageThumb'), S.currentPage)
+}
+
+// toolbar Undo/Redo start disabled in markup; keep them in step with the
+// current page's history (otherwise the buttons stay dead forever)
+function syncUndoRedo() {
+  const page = current()
+  const u = $('btnUndo'), r = $('btnRedo')
+  if (u) u.disabled = !page || !page.undo || page.undo.length === 0
+  if (r) r.disabled = !page || !page.redo || page.redo.length === 0
 }
 
 // ---------- pointer drawing ----------
@@ -293,16 +398,23 @@ let erasePending = null
 
 function onPointerDown(e) {
   const page = current(); if (!page) return
+  // HUD chrome lives inside the canvas stack: clicking Duplicate/Delete/rotate
+  // or the ruler controls must never start an ink stroke underneath it
+  if (e.target.closest('button, input, textarea, select, a, [contenteditable="true"], #selBar, #rulerCtl, #textEditBar, #titleStrip')) return
   const stack = $('stackInner')
   try { stack.setPointerCapture(e.pointerId) } catch { /* synthetic/test pointers */ }
-  const isPan = S.tool === 'pan' || S.spaceDown || e.button === 1
+  if (bounceRAF) { cancelAnimationFrame(bounceRAF); bounceRAF = 0; S.pullPx = 0; applyTransform(); hidePullHint() }
+  const isPan = S.tool === 'pan' || S.tool === 'view' || S.spaceDown || e.button === 1
   if (isPan) {
     const host = $('canvasHost')
     pan = { x: e.clientX, y: e.clientY, sl: host.scrollLeft, st: host.scrollTop }
     return
   }
   if (e.button !== 0 && e.pointerType === 'mouse') return
-  const { x, y } = pageCoords(e)
+  let { x, y } = pageCoords(e)
+  // dragging the ruler grip moves the stencil; drawing near it still snaps
+  if (S.rulerOn && rulerHandleHit(page, x, y)) { rulerStartMove(x, y); return }
+  if (S.rulerOn && S.tool === 'pen') ({ x, y } = rulerSnapPoint(x, y))
   const lc = ctxOf('liveC'); const { w, h } = docSize(page)
   lc.clearRect(0, 0, w, h)
   if (S.tool === 'pen') {
@@ -312,8 +424,17 @@ function onPointerDown(e) {
     placeTextBox(page, x, y)
   } else if (S.tool === 'erase') {
     if (S.eraserMode === 'sheet') { eraseSheet(page); return }
-    erasePending = []
+    erasePending = { whole: [], pairs: [] }
     eraseAt(page, x, y)
+  } else if (S.tool === 'lasso') {
+    const sel = S.selection
+    if (sel && page === sel.page && x >= sel.bbox.x - 12 && x <= sel.bbox.x + sel.bbox.w + 12 && y >= sel.bbox.y - 12 && y <= sel.bbox.y + sel.bbox.h + 12) {
+      dragSel = { lx: x, ly: y, dx: 0, dy: 0 }
+      return
+    }
+    lassoBegin(page, x, y)
+  } else if (S.tool === 'laser') {
+    laserAddPoint(page, x, y, true)
   }
 }
 
@@ -334,42 +455,94 @@ function drawLiveSlice(page) {
   lc.globalAlpha = 1
 }
 
+// the factory eraser modes: 'stroke' removes touched strokes whole, 'segment'
+// cuts the stroke where the eraser circle crosses (S/M/L via S.eraserMM)
+function eraseCursorR() {
+  return docMM(S.eraserMode === 'stroke' ? 4 : S.eraserMM)
+}
+
+function splitStrokeAroundCircle(st, x, y, r) {
+  const pts = st.pts || []
+  const pieces = []
+  let run = null
+  for (const p of pts) {
+    const inside = (p.x - x) ** 2 + (p.y - y) ** 2 <= r * r
+    if (inside) {
+      if (run && run.length >= 2) pieces.push(run)
+      run = null
+    } else {
+      (run || (run = [])).push(p)
+    }
+  }
+  if (run && run.length >= 2) pieces.push(run)
+  if (!pieces.length) return null
+  // copy the points so later moves of a piece never corrupt the original on undo
+  return pieces.map(seg => ({ ...st, pts: seg.map(p => ({ x: p.x, y: p.y })) }))
+}
+
 function eraseAt(page, x, y) {
-  const r = docEraseR(S.eraserMM)
-  const kept = [], removed = []
-  for (const st of page.strokes) (strokeIntersectsCircle(st, x, y, r) ? removed : kept).push(st)
-  if (!removed.length) {
-    // paint the eraser cursor
-    const lc = ctxOf('liveC')
-    lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  const r = eraseCursorR()
+  const lc = ctxOf('liveC')
+  const paintCursor = () => {
     lc.strokeStyle = '#f669'; lc.fillStyle = '#4d4d4d33'
     lc.beginPath(); lc.arc(x, y, r, 0, Math.PI * 2); lc.fill(); lc.stroke()
-    return
   }
-  firstCommitPreCapture(page) // snapshot pre-edit state while it still exists
+  const kept = [], whole = [], pairs = []
+  for (const st of page.strokes) {
+    if (!strokeIntersectsCircle(st, x, y, r)) { kept.push(st); continue }
+    if (S.eraserMode === 'segment') {
+      const pieces = splitStrokeAroundCircle(st, x, y, r)
+      if (pieces) { pairs.push([st, pieces]); kept.push(...pieces); continue }
+    }
+    whole.push(st)
+  }
+  if (!whole.length && !pairs.length) { lc.clearRect(0, 0, docSize(page).w, docSize(page).h); paintCursor(); return }
+  firstCommitPreCapture(page)
   page.strokes = kept
-  erasePending.push(...removed)
+  if (!erasePending) erasePending = { whole: [], pairs: [] }
+  erasePending.whole.push(...whole)
+  erasePending.pairs.push(...pairs)
   redrawInk(page)
-  const lc = ctxOf('liveC')
   lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
-  lc.strokeStyle = '#f669'; lc.fillStyle = '#4d4d4d33'
-  lc.beginPath(); lc.arc(x, y, r, 0, Math.PI * 2); lc.fill(); lc.stroke()
+  paintCursor()
 }
 
 function onPointerMove(e) {
   const page = current(); if (!page) return
   if (pan) {
     const host = $('canvasHost')
-    host.scrollLeft = pan.sl - (e.clientX - pan.x)
-    host.scrollTop = pan.st - (e.clientY - pan.y)
+    host.scrollLeft = Math.max(0, Math.min(pan.sl - (e.clientX - pan.x), host.scrollWidth - host.clientWidth))
+    const maxTop = Math.max(0, host.scrollHeight - host.clientHeight)
+    const top = pan.st - (e.clientY - pan.y)
+    if (top > maxTop && S.pages.length && S.currentPage === S.pages.length - 1) {
+      // pull below the last page: rubber-band + hint "drop to add a page"
+      pan.over = top - maxTop
+      S.pullPx = Math.min(230, pan.over * 0.35)
+      applyTransform()
+      updatePullHint(pan.over)
+      return
+    }
+    host.scrollTop = Math.max(0, top)
+    pan.over = 0 // pulled past the bottom then back up: releasing must not add a page
+    if (S.pullPx) { S.pullPx = 0; applyTransform() }
+    updatePullHint(0)
     return
   }
-  const { x, y } = pageCoords(e)
+  let { x, y } = pageCoords(e)
+  if (rulerGrip) { rulerMoveUpdate(page, x, y); return }
+  if (S.rulerOn && live) { ({ x, y } = rulerSnapPoint(x, y)) }
   if (live) {
-    const last = live.stroke.pts[live.stroke.pts.length - 1]
     if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
   } else if (erasePending) {
     eraseAt(page, x, y)
+  } else if (lasso) {
+    lassoAddPoint(x, y)
+  } else if (dragSel) {
+    dragSel.dx += x - dragSel.lx; dragSel.dy += y - dragSel.ly
+    dragSel.lx = x; dragSel.ly = y
+    drawSelectionPreview(page)
+  } else if (laserLive) {
+    laserAddPoint(page, x, y, false)
   }
 }
 
@@ -381,6 +554,391 @@ function firstCommitPreCapture(page) {
     page.recorder.capture(flattenToCanvas(page))
   }
 }
+
+// ---------- laser pointer (temporary trail, never saved) (QA counters removed at ship) ----------
+let laserLive = null // {pts, w, color}
+let laserTrail = []  // {pts, w, color, born}
+let laserRAF = 0
+
+// one paint call per frame: live stroke paints fully, trails fade and drop out
+function laserAddPoint(page, x, y, first) {
+  if (first) laserLive = { pts: [{ x, y }], w: docMM(2.5), color: '#ff0000' }
+  else if (laserLive) {
+    const last = laserLive.pts[laserLive.pts.length - 1]
+    if ((last.x - x) ** 2 + (last.y - y) ** 2 < 9) return
+    laserLive.pts.push({ x, y })
+  } else return
+  laserTick()
+}
+
+function laserEnd() {
+  if (laserLive && laserLive.pts.length) laserTrail.push({ ...laserLive, born: performance.now() })
+  laserLive = null
+}
+
+function laserStop() {
+  if (laserRAF) { cancelAnimationFrame(laserRAF); laserRAF = 0 }
+  laserLive = null
+  laserTrail = []
+  const c = $('laserC'); if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height)
+}
+
+function laserTick() {
+  paintLaser()
+  if (!laserLive && !laserTrail.length) return
+  if (!laserRAF) laserRAF = requestAnimationFrame(() => { laserRAF = 0; laserTick() })
+}
+
+function paintLaser() {
+  const c = $('laserC'); if (!c) return
+  const ctx = c.getContext('2d')
+  ctx.clearRect(0, 0, c.width, c.height)
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+  const now = performance.now()
+  laserTrail = laserTrail.filter(t => now - t.born < 1300)
+  const paint = (pts, w, color, alpha) => {
+    if (!pts.length) return
+    if (pts.length === 1) {
+      ctx.globalAlpha = alpha; ctx.fillStyle = color
+      ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, w / 2, 0, Math.PI * 2); ctx.fill()
+      ctx.globalAlpha = 1
+      return
+    }
+    ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = w
+    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y)
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+    ctx.stroke(); ctx.globalAlpha = 1
+  }
+  // fresh trail portions glow, old ones fade like the laser dot light
+  for (const t of laserTrail) {
+    const age = now - t.born
+    paint(t.pts, t.w, t.color, age < 700 ? 1 : 1 - (age - 700) / 600)
+  }
+  if (laserLive) paint(laserLive.pts, laserLive.w, laserLive.color, 1)
+}
+
+// ---------- lasso selection (move / duplicate / delete) ----------
+let lasso = null        // {pts:[{x,y}]} while drawing the marching ants
+let dragSel = null      // {lx,ly,dx,dy} while moving the selection
+
+function setTool(t) {
+  if (S.tool === 'laser') laserStop()
+  if (S.tool === 'lasso') clearSelection()
+  S.tool = t
+  const page = current()
+  if (page) { ctxOf('liveC').clearRect(0, 0, docSize(page).w, docSize(page).h) }
+  syncToolButtons()
+  renderPenStack()
+  stackInnerClass()
+  if (t === 'laser') showHint('Laser pointer — trail fades, never saved')
+  else if (t === 'lasso') showHint('Circle strokes to select, drag inside to move')
+  else if (t === 'view') showHint('View mode — drag anywhere to pan')
+}
+
+function anyPtInPoly(pts, poly) {
+  // even-odd test on every 2nd point for speed
+  for (let i = 0; i < pts.length; i += 2) {
+    const { x, y } = pts[i]
+    let inside = false
+    for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+      const xi = poly[j].x, yi = poly[j].y, xk = poly[k].x, yk = poly[k].y
+      if (((yi > y) !== (yk > y)) && (x < (xk - xi) * (y - yi) / (yk - yi) + xi)) inside = !inside
+    }
+    if (inside) return true
+  }
+  return false
+}
+
+function strokeBBox(strokes) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const st of strokes) for (const p of st.pts) {
+    if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x
+    if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y
+  }
+  if (x0 === Infinity) return null
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
+function lassoBegin(page, x, y) {
+  if (S.selection && S.selection.page !== page) clearSelection()
+  lasso = { pts: [{ x, y }] }
+}
+
+function lassoAddPoint(x, y) {
+  if (!lasso) return
+  const last = lasso.pts[lasso.pts.length - 1]
+  if ((last.x - x) ** 2 + (last.y - y) ** 2 < 16) return
+  lasso.pts.push({ x, y })
+  const page = current(); if (!page) return
+  const lc = ctxOf('liveC')
+  lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  drawPolyPath(lc, lasso.pts, true)
+}
+
+function drawPolyPath(c, pts, dashed) {
+  if (pts.length < 2) return
+  c.save()
+  if (dashed) c.setLineDash([10, 7])
+  c.strokeStyle = 'rgba(11,99,197,.9)'
+  c.fillStyle = 'rgba(11,99,197,.08)'
+  c.lineWidth = 2.5
+  c.beginPath(); c.moveTo(pts[0].x, pts[0].y)
+  for (let i = 1; i < pts.length; i++) c.lineTo(pts[i].x, pts[i].y)
+  c.closePath()
+  c.fill(); c.stroke()
+  c.restore()
+}
+
+function lassoCommit(page) {
+  const pts = lasso ? lasso.pts : null
+  lasso = null
+  const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  if (!pts || pts.length < 3) { clearSelection(); return }
+  const hits = page.strokes.filter(st => anyPtInPoly(st.pts, pts))
+  if (!hits.length) { clearSelection(); return }
+  S.selection = { page, strokes: hits, bbox: strokeBBox(hits) }
+  drawSelectionBox(page)
+  showSelBar(page)
+}
+
+function drawSelectionBox(page) {
+  const sel = S.selection
+  if (!sel || sel.page !== page) return
+  const b = strokeBBox(sel.strokes)
+  sel.bbox = b
+  const lc = ctxOf('liveC')
+  lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  lc.save()
+  lc.setLineDash([12, 8])
+  lc.strokeStyle = 'rgba(11,99,197,.95)'
+  lc.lineWidth = 2.5 / 1
+  lc.strokeRect(b.x - 14, b.y - 14, b.w + 28, b.h + 28)
+  // corner handles
+  lc.setLineDash([])
+  lc.fillStyle = '#fff'
+  for (const [hx, hy] of [[b.x - 14, b.y - 14], [b.x + b.w + 14, b.y - 14], [b.x - 14, b.y + b.h + 14], [b.x + b.w + 14, b.y + b.h + 14]]) {
+    lc.beginPath(); lc.arc(hx, hy, 6, 0, Math.PI * 2); lc.fill(); lc.stroke()
+  }
+  lc.restore()
+}
+
+function drawSelectionPreview(page) {
+  const sel = S.selection; if (!sel) return
+  drawSelectionBox(page)
+  const lc = ctxOf('liveC')
+  lc.save()
+  lc.translate(dragSel.dx, dragSel.dy)
+  for (const st of sel.strokes) drawStrokeItem(lc, docSize(page).w, docSize(page).h, st)
+  lc.restore()
+}
+
+function selectionCommitMove(page) {
+  const sel = S.selection; if (!sel) return
+  const { dx, dy } = dragSel
+  dragSel = null
+  ctxOf('liveC').clearRect(0, 0, docSize(page).w, docSize(page).h)
+  if (!dx && !dy) { drawSelectionBox(page); refreshSelBar(); return }
+  firstCommitPreCapture(page)
+  for (const st of sel.strokes) for (const p of st.pts) { p.x += dx; p.y += dy }
+  page.undo.push({ t: 'move', strokes: sel.strokes, dx, dy })
+  page.redo = []
+  sel.bbox = strokeBBox(sel.strokes)
+  redrawInk(page)
+  drawSelectionBox(page)
+  refreshSelBar()
+  page.recorder.capture(flattenToCanvas(page))
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+}
+
+function showSelBar(page) {
+  let bar = $('selBar')
+  if (!bar) {
+    bar = document.createElement('div')
+    bar.id = 'selBar'
+    bar.setAttribute('role', 'toolbar')
+    bar.setAttribute('aria-label', 'Selection actions')
+    bar.innerHTML = `<button id="selDup" title="Duplicate" aria-label="Duplicate">&#9236;</button><button id="selDel" title="Delete" aria-label="Delete" class="danger">&#10005;</button><button id="selClear" title="Deselect" aria-label="Deselect">&#215;</button>`
+    bar.style.transformOrigin = '0 0'
+    $('stackInner').append(bar)
+    bar.querySelector('#selDup').onclick = () => selectionDuplicate()
+    bar.querySelector('#selDel').onclick = () => selectionDelete()
+    bar.querySelector('#selClear').onclick = () => { clearSelection(); redrawInk(current()) }
+  }
+  refreshSelBar()
+  positionSelBar()
+  bar.classList.remove('hidden')
+}
+
+function refreshSelBar() {
+  const bar = $('selBar'); if (!bar) return
+  bar.style.transform = `scale(${1 / S.zoom})`
+}
+
+function positionSelBar() {
+  const bar = $('selBar'); if (!bar || !S.selection) return
+  const b = S.selection.bbox
+  bar.style.left = Math.round(b.x + b.w / 2 - 120) + 'px'
+  bar.style.top = Math.max(2, Math.round(b.y - 90)) + 'px'
+}
+
+function selectionDelete() {
+  const sel = S.selection; if (!sel) return
+  const page = sel.page
+  firstCommitPreCapture(page)
+  page.strokes = page.strokes.filter(st => !sel.strokes.includes(st))
+  page.undo.push({ t: 'erase', strokes: [...sel.strokes] })
+  page.redo = []
+  clearSelection()
+  redrawInk(page)
+  page.recorder.capture(flattenToCanvas(page))
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+}
+
+function selectionDuplicate() {
+  const sel = S.selection; if (!sel) return
+  const page = sel.page
+  const copies = sel.strokes.map(st => ({ ...st, pts: st.pts.map(p => ({ x: p.x + 26, y: p.y + 26 })), shape: st.shape ? { ...st.shape } : undefined }))
+  firstCommitPreCapture(page)
+  page.strokes.push(...copies)
+  page.undo.push({ t: 'add', strokes: copies })
+  page.redo = []
+  sel.strokes = copies
+  sel.bbox = strokeBBox(copies)
+  redrawInk(page)
+  drawSelectionBox(page)
+  refreshSelBar()
+  page.recorder.capture(flattenToCanvas(page))
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+}
+
+function clearSelection() {
+  S.selection = null
+  dragSel = null
+  const bar = $('selBar'); if (bar) bar.remove()
+  const page = current()
+  if (page) ctxOf('liveC').clearRect(0, 0, docSize(page).w, docSize(page).h)
+}
+
+// position the selection bar after bbox recompute; DOM-less redraw otherwise
+function updateSelectionChrome(page) {
+  if (S.selection && S.selection.page === page) { drawSelectionBox(page); positionSelBar(); refreshSelBar() }
+}
+
+// ---------- ruler (stencil line: ink snaps along it; drag the grip to move) ----------
+const ruler = { angle: 0, fx: 0.5, fy: 0.55 } // fractions of the doc size
+let rulerGrip = null
+
+function toggleRuler() {
+  S.rulerOn = !S.rulerOn
+  const page = current(); if (!page) return
+  syncToolButtons()
+  if (S.rulerOn) drawRulerLayer(page)
+  else {
+    const c = $('rulerC'); c.getContext('2d').clearRect(0, 0, c.width, c.height)
+    const ctl = $('rulerCtl'); if (ctl) ctl.remove()
+  }
+}
+
+function rulerDir(page) {
+  const { w, h } = docSize(page)
+  const a = ruler.angle * Math.PI / 180
+  return { ux: Math.cos(a), uy: Math.sin(a), px: ruler.fx * w, py: ruler.fy * h, w, h }
+}
+
+function rulerSnapPoint(x, y) {
+  const page = current(); if (!page || !S.rulerOn) return { x, y }
+  const { ux, uy, px, py } = rulerDir(page)
+  const t = (x - px) * ux + (y - py) * uy
+  return { x: px + t * ux, y: py + t * uy }
+}
+
+function drawRulerLayer(page) {
+  const c = $('rulerC'); if (!c || c.width === 0) return
+  const ctx = c.getContext('2d')
+  ctx.clearRect(0, 0, c.width, c.height)
+  if (!S.rulerOn) return
+  const { ux, uy, px, py, w, h } = rulerDir(page)
+  const half = (w + h) * 0.52 // long enough to cross any page
+  const x0 = clamp(px - ux * half, 0, w), y0 = clamp(py - uy * half, 0, h)
+  const x1r = clamp(px + ux * half, 0, w), y1r = clamp(py + uy * half, 0, h)
+  ctx.save()
+  // body of the stencil: a thick translucent band under the line
+  ctx.strokeStyle = 'rgba(11,99,197,.16)'
+  ctx.lineWidth = 56
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1r, y1r); ctx.stroke()
+  ctx.strokeStyle = 'rgba(11,99,197,.85)'
+  ctx.lineWidth = 3
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1r, y1r); ctx.stroke()
+  // division ticks
+  ctx.lineWidth = 2
+  ctx.strokeStyle = 'rgba(11,99,197,.55)'
+  const tickStep = Math.max(1, Math.round(docMM(10)))
+  for (let t = 0; t <= half; t += tickStep) {
+    for (const s of [1, -1]) {
+      const bx = px + s * t * ux, by = py + s * t * uy
+      if (bx < -20 || bx > w + 20 || by < -20 || by > h + 20) continue
+      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx - uy * 14, by + ux * 14); ctx.stroke()
+    }
+  }
+  // grip handle at the pivot
+  ctx.setLineDash([])
+  ctx.fillStyle = '#fff'
+  ctx.strokeStyle = 'rgba(11,99,197,.9)'
+  ctx.lineWidth = 2.5
+  ctx.beginPath(); ctx.arc(px, py, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+  ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fillStyle = 'rgba(11,99,197,.9)'; ctx.fill()
+  ctx.restore()
+  drawRulerCtl(px, py)
+}
+
+function drawRulerCtl(px, py) {
+  let ctl = $('rulerCtl')
+  if (!ctl) {
+    ctl = document.createElement('div')
+    ctl.id = 'rulerCtl'
+    ctl.innerHTML = `<button id="rulCCW" title="Rotate left 10&#176;" aria-label="Rotate ruler left"><svg viewBox="0 0 24 24"><path d="M14.6 6.4 9 12l5.6 5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rulCW" title="Rotate right 10&#176;" aria-label="Rotate ruler right"><svg viewBox="0 0 24 24"><path d="M9.4 6.4 15 12l-5.6 5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
+    ctl.style.transformOrigin = '0 0'
+    ctl.querySelector('#rulCCW').onclick = ev => { ev.stopPropagation(); ruler.angle -= 10; redrawRuler() }
+    ctl.querySelector('#rulCW').onclick = ev => { ev.stopPropagation(); ruler.angle += 10; redrawRuler() }
+    $('stackInner').append(ctl)
+  }
+  ctl.style.left = (px + 26) + 'px'
+  ctl.style.top = (py + 26) + 'px'
+  ctl.style.transform = `scale(${1 / S.zoom})`
+}
+
+function redrawRuler() {
+  const page = current(); if (!page) return
+  drawRulerLayer(page)
+}
+
+// ruler grip dragging (a pointer down on the handle circle moves the line)
+function rulerHandleHit(page, x, y) {
+  if (!S.rulerOn) return false
+  const { px, py } = rulerDir(page)
+  return (x - px) ** 2 + (y - py) ** 2 <= 24 * 24
+}
+
+function rulerStartMove(x, y) {
+  rulerGrip = { lx: x, ly: y }
+}
+
+function rulerMoveUpdate(page, x, y) {
+  if (!rulerGrip) return
+  const fx = ruler.fx * docSize(page).w + (x - rulerGrip.lx)
+  const fy = ruler.fy * docSize(page).h + (y - rulerGrip.ly)
+  ruler.fx = clamp(fx / docSize(page).w, 0.02, 0.98)
+  ruler.fy = clamp(fy / docSize(page).h, 0.02, 0.98)
+  rulerGrip = { lx: x, ly: y }
+  drawRulerLayer(page)
+}
+
 
 // ---------- shapes gallery (TextAndShapeFlyout: icons mirror Assets/Images) ----------
 const SHAPE_GALLERY = [
@@ -515,10 +1073,13 @@ function insertShape(kind, fill) {
 // ---------- sheet eraser (whole-page one-tap erase) ----------
 function eraseSheet(page) {
   const removed = page.strokes
-  if (!removed.length && !(page.texts && page.texts.length)) return
+  const removedTexts = page.texts || []
+  if (!removed.length && !removedTexts.length) return
   firstCommitPreCapture(page)
   page.strokes = []
-  if (removed.length) page.undo.push({ t: 'erase', strokes: removed })
+  page.texts = []
+  // sheet erase clears text boxes too; keep them in the same undo entry
+  if (removed.length || removedTexts.length) page.undo.push({ t: 'erase', strokes: removed, texts: removedTexts })
   page.redo = []
   redrawInk(page)
   page.recorder.capture(flattenToCanvas(page))
@@ -557,9 +1118,7 @@ function showHint(msg) {
 }
 
 function startTextTool() {
-  S.tool = 'text'
-  syncToolButtons()
-  renderPenStack()
+  setTool('text')
   closeToolFlyout('shapeFlyout')
   showHint('Tap on the page to place a text box')
 }
@@ -658,26 +1217,34 @@ function finishText(discard) {
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
-  S.tool = 'pen'
-  syncToolButtons()
-  renderPenStack()
+  setTool('pen')
 }
 
 // ---------- eraser flyout modes ----------
-function setEraserMode(mode) {
-  S.eraserMode = mode
-  $('erPoint').classList.toggle('active', mode === 'point')
-  $('erPoint').setAttribute('aria-pressed', mode === 'point' ? 'true' : 'false')
-  $('erSheet').classList.toggle('active', mode === 'sheet')
-  $('erSheet').setAttribute('aria-pressed', mode === 'sheet' ? 'true' : 'false')
-  const sizeRow = $('erSizeRow')
-  if (sizeRow) sizeRow.classList.toggle('hidden', mode === 'sheet')
-  if (mode === 'point') drawEraserPreview()
-}
 
 function onPointerUp(e) {
   const page = current(); if (!page) return
-  if (pan) { pan = null; return }
+  if (pan) {
+    const over = pan.over || 0
+    const pull = S.pullPx || 0
+    const host = $('canvasHost')
+    const commit = Math.max(96, host.clientHeight * 0.12)
+    pan = null
+    S.pullPx = 0
+    hidePullHint()
+    if (over >= commit) {
+      // release past the threshold: page N+1 materialises where you pulled
+      applyTransform()
+      addPage()
+      host.scrollTop = 1e9
+    } else if (pull > 3) {
+      pullBounce(pull)
+    } else {
+      applyTransform()
+    }
+    return
+  }
+  if (rulerGrip) { rulerGrip = null; return }
   const { x, y } = pageCoords(e)
   const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
   if (live) {
@@ -694,16 +1261,23 @@ function onPointerUp(e) {
     scheduleAutosave()
     refreshCurrentThumb()
   } else if (erasePending) {
-    const removed = erasePending
+    const ep = erasePending
     erasePending = null
-    if (removed.length) {
-      page.undo.push({ t: 'erase', strokes: removed })
+    if (ep.whole.length) page.undo.push({ t: 'erase', strokes: ep.whole })
+    if (ep.pairs.length) page.undo.push({ t: 'erase-split', pairs: ep.pairs })
+    if (ep.whole.length || ep.pairs.length) {
       page.redo = []
       page.recorder.capture(flattenToCanvas(page))
       page.dirty = true
       scheduleAutosave()
       refreshCurrentThumb()
     }
+  } else if (dragSel) {
+    selectionCommitMove(page)
+  } else if (lasso) {
+    lassoCommit(page)
+  } else if (laserLive) {
+    laserEnd()
   }
 }
 
@@ -712,6 +1286,7 @@ function undo() {
   const page = current(); if (!page) return
   const a = page.undo.pop()
   if (!a) return
+  clearSelection() // the selected object may be the one this action removes
   if (a.t === 'add') {
     for (const st of (a.strokes || [a.stroke])) {
       const idx = page.strokes.lastIndexOf(st)
@@ -720,11 +1295,25 @@ function undo() {
     page.redo.push(a)
   } else if (a.t === 'erase') {
     page.strokes.push(...a.strokes)
+    if (a.texts) page.texts.push(...a.texts)
     page.redo.push(a)
   } else if (a.t === 'text') {
     const i = page.texts.indexOf(a.obj)
     if (i >= 0) page.texts.splice(i, 1)
     page.redo.push(a)
+  } else if (a.t === 'erase-split') {
+    for (const [orig, pieces] of a.pairs) {
+      for (const pc of pieces) {
+        const i = page.strokes.lastIndexOf(pc)
+        if (i >= 0) page.strokes.splice(i, 1)
+      }
+      page.strokes.push(orig)
+    }
+    page.redo.push(a)
+  } else if (a.t === 'move') {
+    for (const st of a.strokes) for (const p of st.pts) { p.x -= a.dx; p.y -= a.dy }
+    page.redo.push(a)
+    clearSelection()
   }
   redrawInk(page)
   page.recorder.capture(flattenToCanvas(page))
@@ -737,16 +1326,28 @@ function redo() {
   const page = current(); if (!page) return
   const a = page.redo.pop()
   if (!a) return
+  clearSelection()
   if (a.t === 'add') {
     if (a.strokes) page.strokes.push(...a.strokes)
     else page.strokes.push(a.stroke)
     page.undo.push(a)
   } else if (a.t === 'erase') {
     page.strokes = page.strokes.filter(st => !a.strokes.includes(st))
+    if (a.texts) page.texts = page.texts.filter(t => !a.texts.includes(t))
     page.undo.push(a)
   } else if (a.t === 'text') {
     page.texts.push(a.obj)
     page.undo.push(a)
+  } else if (a.t === 'erase-split') {
+    page.strokes = page.strokes.filter(st => !a.pairs.some(([o]) => st === o))
+    // redo must put the surviving fragments back, mirroring undo (which
+    // removes them and restores the original stroke)
+    for (const [, pieces] of a.pairs) page.strokes.push(...pieces)
+    page.undo.push(a)
+  } else if (a.t === 'move') {
+    for (const st of a.strokes) for (const p of st.pts) { p.x += a.dx; p.y += a.dy }
+    page.undo.push(a)
+    clearSelection()
   }
   redrawInk(page)
   page.recorder.capture(flattenToCanvas(page))
@@ -757,7 +1358,10 @@ function redo() {
 
 // ---------- save / autosave ----------
 let autosaveTimer = null
+let saveChain = Promise.resolve()
+const failedPages = new Set()
 function scheduleAutosave() {
+  S.editSeq++
   setSaveState('pending', true)
   clearTimeout(autosaveTimer)
   autosaveTimer = setTimeout(() => saveCurrentPage(), 1400)
@@ -771,46 +1375,91 @@ function setSaveState(kind, working) {
   else s.textContent = ''
 }
 
-export async function saveCurrentPage() {
-  clearTimeout(autosaveTimer)
+// Saves are serialized and captured against the note/page that was current at
+// call time. `noteId` and `idx` must never be read after an await: switching
+// notes mid-save used to write note A's bitmap into note B's page slot.
+export function saveCurrentPage() {
+  const noteId = S.noteId
   const idx = S.currentPage
-  const page = current(); if (!page || !S.noteId) return
+  const page = current()
+  if (!page || !noteId) return Promise.resolve(false)
+  clearTimeout(autosaveTimer)
   setSaveState('saving', true)
-  try {
-    const png = await flattenBytes(page, 'image/png')
-    const paper = page.paper
-    const rgb = hexToCss(paper.bg, '#FFFFFF').slice(1).toUpperCase()
-    const meta = {
-      sizeName: (SIZES[paper.size] || SIZES.letter).name,
-      orientation: paper.orientation,
-      template: paper.template,
-      templatePath: templatePathFor(paper.template, paper.orientation),
-      bgColor: '#FF' + rgb,
-      borderLines: paper.borderLines !== false,
-      tool: (() => { const p = curPen(); return { type: p.type, color: p.color, widthMM: p.widthMM, opacity: p.opacity } })(),
-      paper: { ...paper },
+  const run = async () => {
+    // snapshot the edit counter at the moment flattening starts; edits made
+    // during the async encode/save must keep the page dirty
+    const seq = S.editSeq
+    try {
+      const png = await flattenBytes(page, 'image/png')
+      const paper = page.paper
+      const rgb = hexToCss(paper.bg, '#FFFFFF').slice(1).toUpperCase()
+      const meta = {
+        sizeName: (SIZES[paper.size] || SIZES.letter).name,
+        orientation: paper.orientation,
+        template: paper.template,
+        templatePath: templatePathFor(paper.template, paper.orientation),
+        bgColor: '#FF' + rgb,
+        borderLines: paper.borderLines !== false,
+        tool: (() => { const p = curPen(); return { type: p.type, color: p.color, widthMM: p.widthMM, opacity: p.opacity } })(),
+        paper: { ...paper },
+      }
+      const frames = page.recorder.changed ? page.recorder.frames : []
+      // vector snapshot so the page reopens as editable ink (sVec chunk)
+      const vec = JSON.stringify({ v: 1, strokes: page.strokes, texts: page.texts || [] })
+      const res = await bridge.savePage({ noteId, pageIndex: idx, png, frames, vec, meta })
+      if (res && res.file) page.file = res.file
+      failedPages.delete(page)
+      if (S.editSeq === seq) {
+        page.dirty = false
+        page.recorder.changed = false
+      }
+      if (S.noteId === noteId && S.currentPage === idx) {
+        if (S.note) { S.note.paper = { ...paper }; S.note.tool = { ...meta.tool } }
+        refreshCurrentThumb()
+        setSaveState('ok')
+      }
+      return true
+    } catch (err) {
+      failedPages.add(page)
+      console.error(err)
+      if (S.noteId === noteId && S.currentPage === idx) setSaveState('err')
+      // transient OneDrive/AV lock: retry while the page is still dirty
+      clearTimeout(autosaveTimer)
+      autosaveTimer = setTimeout(() => { if (page.dirty) saveCurrentPage() }, 5000)
+      return false
     }
-    const frames = page.recorder.changed ? page.recorder.frames : []
-    const res = await bridge.savePage({ noteId: S.noteId, pageIndex: idx, png, frames, meta })
-    if (res && res.file) page.file = res.file
-    page.dirty = false
-    page.recorder.changed = false
-    if (S.note) { S.note.paper = { ...paper }; S.note.tool = { ...meta.tool } }
-    refreshCurrentThumb()
-    setSaveState('ok')
-  } catch (err) {
-    console.error(err)
-    setSaveState('err')
   }
+  const next = saveChain.then(run, run)
+  saveChain = next.then(() => { }, () => { })
+  return next
+}
+
+// Flush the current page and wait for every queued page write. Used before a
+// note switch and by the main-process close handshake.
+export async function flushCurrentPage() {
+  const page = current()
+  if (page && S.noteId && (page.dirty || page.recorder.changed)) {
+    const ok = await saveCurrentPage()
+    if (!ok) return false
+  }
+  await saveChain
+  // a page switched away from earlier may still have a failed queued write
+  for (const p of failedPages) if (p.dirty) return false
+  return true
 }
 
 // ---------- flyouts ----------
-function closeFlyoutCloser(getEl, onClosed) {
+// `ignoreEl` is the control that owns this surface: light-dismiss must skip it
+// so the control's own click can toggle the surface closed (otherwise the
+// pointerdown closer hides it first and the click handler re-opens it).
+function closeFlyoutCloser(getEl, onClosed, ignoreEl) {
   const onDown = e => {
     const f = getEl()
-    if (f && f.contains(e.target)) { setTimeout(() => document.addEventListener('pointerdown', onDown, { capture: true, once: true }), 0); return }
-    const cur = getEl()
-    if (cur) cur.classList.add('hidden')
+    if (f && (f.contains(e.target) || (ignoreEl && ignoreEl.contains(e.target)))) {
+      setTimeout(() => document.addEventListener('pointerdown', onDown, { capture: true, once: true }), 0)
+      return
+    }
+    if (f) f.classList.add('hidden')
     document.removeEventListener('pointerdown', onDown, true)
     onClosed && onClosed()
   }
@@ -846,7 +1495,7 @@ function closeToolFlyout(id) {
 // tool flyouts (opened from the toolbar) suppress the selected slot's filled
 // circle: the original drops the circle to a plain dot while a flyout is open
 // (02-pen-flyout, 06-save) but keeps it for the wide paper band (04-tune)
-function openToolFlyout(id, anchor, { centered = false } = {}) {
+function openToolFlyout(id, anchor, { centered = false, ignore = null } = {}) {
   if (S.flyoutOpenTool === id) { closeToolFlyout(id); return } // re-click toggles
   if (S.flyoutOpenTool) closeToolFlyout(S.flyoutOpenTool)
   S.flyoutOpenTool = id
@@ -857,6 +1506,7 @@ function openToolFlyout(id, anchor, { centered = false } = {}) {
     () => {
       if (S.flyoutOpenTool === id) { S.flyoutOpenTool = null; renderPenStack() }
     },
+    ignore || anchor,
   )
   renderPenStack()
 }
@@ -867,7 +1517,7 @@ function toggleLibraryFlyout() {
   if (!f.classList.contains('hidden')) { f.classList.add('hidden'); libCloser = null; return }
   f.classList.remove('hidden')
   libCloser = true
-  closeFlyoutCloser(() => (libCloser ? $('libraryFlyout') : null), () => { libCloser = null })
+  closeFlyoutCloser(() => (libCloser ? $('libraryFlyout') : null), () => { libCloser = null }, $('btnMenu'))
 }
 
 // ---------- paper panel (full-width band, mirrors 04-tune) ----------
@@ -890,7 +1540,7 @@ function togglePaperPanel() {
   p.classList.remove('hidden')
   // light-dismiss like every other surface; the selected pen slot keeps its
   // circle while the wide band is open (04-tune)
-  closeFlyoutCloser(() => $('paperPanel'), null)
+  closeFlyoutCloser(() => $('paperPanel'), null, $('btnPaper'))
 }
 
 function syncPaperPanel() {
@@ -1030,8 +1680,8 @@ async function saveFromFlyout() {
   const title = $('saveTitle').value.trim()
   const project = $('saveProject').value.trim()
   if (title && S.note && title !== S.note.name) {
-    await bridge.renameItem(S.noteId, title)
-    S.note.name = title
+    const updated = await bridge.renameItem(S.noteId, title)
+    S.note.name = updated && updated.name ? updated.name : title
     updateTitle()
   }
   const cur = await currentProjectName()
@@ -1047,8 +1697,10 @@ async function saveFromFlyout() {
       if (S.note) S.note.parent = folder.id
     }
   }
-  await saveCurrentPage()
+  // hide the dialog before the async save reports "saved": the status text and
+  // the flyout close otherwise race in UI tests and in real perceived latency
   closeToolFlyout('saveFlyout')
+  await saveCurrentPage()
 }
 
 // ---------- export ----------
@@ -1114,9 +1766,16 @@ async function renameOpenNote() {
   const { promptText } = await import('./ctx.js')
   const name = await promptText('Note title', S.note.name)
   if (!name || name === S.note.name) return
-  await bridge.renameItem(S.noteId, name)
-  S.note.name = name
-  updateTitle()
+  try {
+    const updated = await bridge.renameItem(S.noteId, name)
+    // library may append " 2" when the sanitized title is already in use
+    S.note.name = updated && updated.name ? updated.name : name
+    updateTitle()
+    if (S.note.name !== name) showHint(`Renamed to "${S.note.name}" — that title was already in use`)
+  } catch (err) {
+    console.error(err)
+    showHint('Rename failed — the note was not changed')
+  }
 }
 
 // ---------- init / events ----------
@@ -1125,7 +1784,6 @@ export function init(app) {
   el = {
     canvasHost: $('canvasHost'), stack: $('canvasStack'), inner: $('stackInner'),
   }
-  selectColor('#000000')
 
   // pen flyout: 5 pen-type buttons + the 6×5 factory palette + wave preview
   const typeRow = $('penTypeRow')
@@ -1162,6 +1820,10 @@ export function init(app) {
     drawWave()
   })
   loadPens()
+  // restore the saved active pen *after* loading slots; the old order called
+  // selectColor() first, whose savePens() overwrote the saved slots on every
+  // launch, resetting the user's pens to factory defaults
+  selectColor(curPen().color)
   syncToolButtons()
   renderPenStack()
   syncPenFlyout()
@@ -1202,16 +1864,34 @@ export function init(app) {
   }, { passive: false })
 
   window.addEventListener('keydown', e => {
-    if (e.code === 'Space' && !e.repeat && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
+    const typing = isTextEditing()
+    if (e.code === 'Space' && !e.repeat && !typing) {
       S.spaceDown = true
       stackInnerClass()
     }
     const c = e.ctrlKey || e.metaKey
-    if (c && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo() }
-    if (c && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo() }
+    // inside a text box, Ctrl+Z/Y must undo the text, not the canvas ink
+    if (c && !typing && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo() }
+    if (c && !typing && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo() }
     if (c && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrentPage() }
-    if (c && e.key.toLowerCase() === 'e') { e.preventDefault(); exportMenu() }
+    if (c && !typing && e.key.toLowerCase() === 'e') { e.preventDefault(); exportMenu() }
     if (c && e.key.toLowerCase() === 'n' && e.shiftKey) { /* menu: new folder */ }
+    // tool shortcuts (factory parity): V laser, E eraser, R ruler,
+    // G shapes&text flyout, T text box, Escape dismiss overlays
+    if (!c && !e.repeat && !typing) {
+      const k = e.key.toLowerCase()
+      if (k === 'v') { e.preventDefault(); setTool(S.tool === 'laser' ? 'pen' : 'laser') }
+      else if (k === 'e') { e.preventDefault(); setTool(S.tool === 'erase' ? 'pen' : 'erase') }
+      else if (k === 'r') { e.preventDefault(); toggleRuler() }
+      else if (k === 'g') { e.preventDefault(); setTool('pen'); openToolFlyout('shapeFlyout', $('tbObject')) }
+      else if (k === 't') { e.preventDefault(); startTextTool() }
+      else if (k === 'escape') {
+        for (const f of ['shapeFlyout', 'eraserFlyout', 'penFlyout', 'saveFlyout']) closeToolFlyout(f)
+        if (libCloser) toggleLibraryFlyout()
+        $('paperPanel').classList.add('hidden')
+        clearSelection()
+      }
+    }
   })
   window.addEventListener('keyup', e => {
     if (e.code === 'Space') { S.spaceDown = false; stackInnerClass() }
@@ -1220,14 +1900,18 @@ export function init(app) {
     const page = current()
     if (page && page.dirty) saveCurrentPage()
   })
-  window.addEventListener('beforeunload', () => {
-    const page = current()
-    if (page && (page.dirty || page.recorder.changed)) saveCurrentPage()
-  })
 
   // host menu commands
   bridge && bridge.on && bridge.on('cmd', (cmd, arg) => {
     switch (cmd) {
+      case 'flush-close':
+        // main intercepts window close and waits for this handshake; an async
+        // beforeunload save never finishes before the renderer is destroyed
+        flushCurrentPage().then(ok => {
+          if (ok) { if (bridge.closeReady) bridge.closeReady() }
+          else showHint('Save failed — close cancelled. Check the library folder.')
+        })
+        break
       case 'save': saveCurrentPage(); break
       case 'export': exportMenu(); break
       case 'new-note': app.cmdNewNote(); break
@@ -1244,7 +1928,13 @@ export function init(app) {
 }
 
 function stackInnerClass() {
-  $('stackInner').classList.toggle('panning', S.spaceDown)
+  $('stackInner').classList.toggle('panning', S.spaceDown || S.tool === 'view')
+}
+
+function isTextEditing() {
+  const a = document.activeElement
+  if (!a) return false
+  return a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable
 }
 
 export function selectColor(c) {
@@ -1304,73 +1994,75 @@ function onSelectPenSlot(i) {
     return
   }
   S.penIndex = i
-  S.tool = 'pen'
-  syncToolButtons()
-  renderPenStack()
+  setTool('pen')
   syncPenFlyout()
   openToolFlyout('penFlyout', $('tbPens').children[i], { centered: true })
   savePens()
 }
 
 function syncToolButtons() {
-  const eraser = $('tbEraser')
-  if (eraser) {
-    const on = S.tool === 'erase'
-    eraser.classList.toggle('active', on)
-    eraser.setAttribute('aria-pressed', on ? 'true' : 'false')
+  const map = { erase: 'tbEraser', laser: 'tbLaser', lasso: 'tbLasso', view: 'tbEye' }
+  for (const [tool, id] of Object.entries(map)) {
+    const b = $(id)
+    if (!b) continue
+    const on = S.tool === tool
+    b.classList.toggle('active', on)
+    b.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
+  const rulerBtn = $('tbRuler')
+  if (rulerBtn) {
+    const on = !!S.rulerOn
+    rulerBtn.classList.toggle('active', on)
+    rulerBtn.setAttribute('aria-pressed', on ? 'true' : 'false')
   }
 }
 
-// toggles: laser/ruler/lasso/eye land in later phases (pressed visual only);
-// object opens the shapes&text flyout; eraser toggles the eraser tool
+// toggles: laser/laso/eye switch the active tool, ruler toggles the ruler
+// overlay, object opens the shapes&text flyout; eraser toggles the eraser tool
 function wireToolbarToggles() {
   const eraserBtn = $('tbEraser')
-  if (eraserBtn) eraserBtn.onclick = () => {
-    S.tool = S.tool === 'erase' ? 'pen' : 'erase'
-    renderPenStack()
-    syncToolButtons()
-  }
+  if (eraserBtn) eraserBtn.onclick = () => setTool(S.tool === 'erase' ? 'pen' : 'erase')
   const objBtn = $('tbObject')
   if (objBtn) objBtn.onclick = () => openToolFlyout('shapeFlyout', objBtn)
-  for (const id of ['tbLaser', 'tbRuler', 'tbLasso', 'tbEye']) {
-    const b = document.getElementById(id)
-    if (b) b.onclick = () => {
-      const on = b.getAttribute('aria-pressed') !== 'true'
-      b.setAttribute('aria-pressed', on ? 'true' : 'false')
-      b.classList.toggle('active', on)
-    }
-  }
-  // caret hot-zones under the toggles open the tool flyouts (MoreArrow parity)
+  $('tbLaser').onclick = () => setTool(S.tool === 'laser' ? 'pen' : 'laser')
+  $('tbRuler').onclick = () => toggleRuler()
+  $('tbLasso').onclick = () => setTool(S.tool === 'lasso' ? 'pen' : 'lasso')
+  $('tbEye').onclick = () => setTool(S.tool === 'view' ? 'pen' : 'view')
+  // caret hot-zones under the toggles open the tool flyouts (MoreArrow parity) —
+  // only stop the event for zones whose flyout exists, so bare toggles keep
+  // receiving their own click: laser/ruler flyouts are not built yet
   document.querySelectorAll('.caret-zone').forEach(z => {
     z.addEventListener('click', ev => {
-      ev.stopPropagation()
       const b = z.closest('button')
       const fly = z.dataset.fly
-      if (!fly || !$(fly) || !b) return // laser/ruler flyouts come later
+      if (!fly || !$(fly) || !b) return
+      ev.stopPropagation()
       if (fly === 'eraserFlyout') syncEraserFlyout()
-      openToolFlyout(fly, b)
+      openToolFlyout(fly, b, { ignore: z })
     })
   })
-  const ep = $('erPoint'), esh = $('erSheet')
-  if (ep) ep.onclick = () => { setEraserMode('point'); syncEraserFlyout() }
-  if (esh) esh.onclick = () => { setEraserMode('sheet'); syncEraserFlyout() }
-  const ew = $('erWidth')
-  if (ew) ew.addEventListener('input', () => {
-    S.eraserMM = clamp(parseFloat(ew.value) || 3, 1, 30)
-    updateRangeFill(ew, 1, 30)
-    drawEraserPreview()
+  const est = $('erStroke'), esg = $('erSegment'), esh = $('erSheet')
+  if (est) est.onclick = () => { S.eraserMode = 'stroke'; syncEraserFlyout() }
+  if (esg) esg.onclick = () => { S.eraserMode = 'segment'; syncEraserFlyout() }
+  if (esh) esh.onclick = () => { S.eraserMode = 'sheet'; syncEraserFlyout() }
+  document.querySelectorAll('#erSizes .er-chip').forEach(ch => {
+    ch.onclick = () => { S.eraserMM = parseFloat(ch.dataset.mm) || 5; syncEraserFlyout() }
   })
+  syncEraserFlyout()
 }
 
+// the factory eraser modes (SetupFlyout copy: Stroke Eraser / Segment
+// Eraser - Small/Medium/Large) — sheet eraser stands in for erase-all
 function syncEraserFlyout() {
-  $('erPoint').classList.toggle('active', S.eraserMode === 'point')
-  $('erPoint').setAttribute('aria-pressed', S.eraserMode === 'point' ? 'true' : 'false')
-  $('erSheet').classList.toggle('active', S.eraserMode === 'sheet')
-  $('erSheet').setAttribute('aria-pressed', S.eraserMode === 'sheet' ? 'true' : 'false')
-  $('erSizeRow').classList.toggle('hidden', S.eraserMode !== 'point')
-  const ew = $('erWidth')
-  if (Math.abs(parseFloat(ew.value) - S.eraserMM) > 0.01) ew.value = S.eraserMM
-  updateRangeFill(ew, 1, 30)
+  const modes = { stroke: $('erStroke'), segment: $('erSegment'), sheet: $('erSheet') }
+  for (const [k, b] of Object.entries(modes)) {
+    b.classList.toggle('active', S.eraserMode === k)
+    b.setAttribute('aria-pressed', S.eraserMode === k ? 'true' : 'false')
+  }
+  $('erSizeRow').classList.toggle('hidden', S.eraserMode !== 'segment')
+  document.querySelectorAll('#erSizes .er-chip').forEach(ch => {
+    ch.classList.toggle('active', Math.abs(parseFloat(ch.dataset.mm) - S.eraserMM) < 0.01)
+  })
   drawEraserPreview()
 }
 

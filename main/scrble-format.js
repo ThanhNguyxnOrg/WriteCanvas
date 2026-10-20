@@ -13,9 +13,9 @@
 //   sBKC  : length-prefixed string, background color "#AARRGGBB" (ARGB hex)
 //   sBRL  : 1 byte flag (mirrored as-is)
 
-const { upsertChunks, parseChunks, lengthPrefixedString, readLengthPrefixedString } = require('./png-chunks')
+const { upsertChunks, parseChunks, buildPNG, lengthPrefixedString, readLengthPrefixedString } = require('./png-chunks')
 
-const CHUNK_TYPES = ['sVER', 'sINK', 'sLYT', 'sBKG', 'sCRP', 'sSTD', 'sPNA', 'sBKC', 'sBRL']
+const CHUNK_TYPES = ['sVER', 'sINK', 'sLYT', 'sBKG', 'sCRP', 'sSTD', 'sPNA', 'sBKC', 'sBRL', 'sVec']
 
 // Map template ids to original asset paths so notes round-trip into Scrble
 // Ink with the correct paper. Pattern papers live under Square/ regardless of
@@ -75,6 +75,10 @@ function buildMetaChunks(meta) {
   entries.push({ type: 'sPNA', data: lengthPrefixedString(meta.templatePath || TEMPLATE_PATH(meta.template, meta.orientation)) })
   entries.push({ type: 'sBKC', data: lengthPrefixedString(meta.bgColor || '#FFFFFFFF') })
   entries.push({ type: 'sBRL', data: brl })
+  // WriteCanvas extension (ignored by Scrble Ink and other readers — the
+  // lowercase second letter marks it private): vector strokes + text objects
+  // so a saved page reopens as editable ink, not just a flattened raster.
+  if (meta.vecJson && meta.vecJson.length) entries.push({ type: 'sVec', data: Buffer.from(meta.vecJson, 'utf8') })
   return entries
 }
 
@@ -111,4 +115,59 @@ function extractInkGif(png) {
   return c ? Buffer.from(c.data) : null
 }
 
-module.exports = { writeNotePng, readNoteMeta, extractInkGif, TEMPLATE_PATH, sizeFromName, CHUNK_TYPES }
+// Vector extension chunk ({v:1, strokes:[…], texts:[…]}), or null.
+function extractVecJson(png) {
+  const c = parseChunks(png).find(x => x.type === 'sVec')
+  return c ? c.data.toString('utf8') : null
+}
+
+// Older (buggy) builds inserted meta chunks between Chromium's hundreds of
+// 4KB IDAT chunks, breaking the required IDAT run and bloating the file with
+// hundreds of sINK copies. Two signatures: a non-IDAT chunk sitting between
+// two IDAT chunks, or the same ancillary chunk type appearing more than once.
+function pngIsBroken(png) {
+  const seenCustom = new Set()
+  let prevWasIdat = false, sawAnyIdat = false
+  for (const c of parseChunks(png)) {
+    if (c.type === 'IDAT') {
+      if (sawAnyIdat && !prevWasIdat) return true // IDAT run interrupted
+      sawAnyIdat = true; prevWasIdat = true
+      continue
+    }
+    prevWasIdat = false
+    // only our own chunk types indicate the old duplication bug; standard
+    // chunks such as tEXt may legitimately appear more than once
+    if (CHUNK_TYPES.includes(c.type)) {
+      if (seenCustom.has(c.type)) return true
+      seenCustom.add(c.type)
+    }
+  }
+  return false
+}
+
+function repairPNG(png) {
+  const chunks = parseChunks(png)
+  if (!pngIsBroken(png)) return png
+  // IDAT: keep EVERY chunk in order (multi-IDAT chunks concatenate into one
+  // zlib stream — collapsing them by type would destroy the image data).
+  // Preserve every standard chunk byte-for-byte; drop only duplicated copies
+  // of our own ancillary chunks. PLTE/tRNS must sit before IDAT.
+  const idat = [], pre = [], post = []
+  const seenCustom = new Set()
+  let sawIdat = false
+  for (const c of chunks) {
+    if (c.type === 'IHDR' || c.type === 'IEND') continue
+    if (c.type === 'IDAT') { idat.push(c); sawIdat = true; continue }
+    if (CHUNK_TYPES.includes(c.type)) {
+      if (seenCustom.has(c.type)) continue
+      seenCustom.add(c.type)
+    }
+    if (!sawIdat || c.type === 'PLTE' || c.type === 'tRNS') pre.push(c)
+    else post.push(c)
+  }
+  const ihdr = chunks.find(c => c.type === 'IHDR')
+  const iend = chunks.find(c => c.type === 'IEND')
+  return buildPNG([ihdr, ...pre, ...idat, ...post, iend].filter(Boolean))
+}
+
+module.exports = { writeNotePng, readNoteMeta, extractInkGif, extractVecJson, repairPNG, pngIsBroken, TEMPLATE_PATH, sizeFromName, CHUNK_TYPES }

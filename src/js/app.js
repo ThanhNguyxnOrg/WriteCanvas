@@ -71,6 +71,6 @@ async function main() {
 }
 
 // deterministic test hooks for the Playwright/CDP flows
-window.__wc = { App, S, saveCurrentPage }
+window.__wc = { App, S, saveCurrentPage, openNote }
 
 main()

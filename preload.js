@@ -23,5 +23,7 @@ contextBridge.exposeInMainWorld('WriteCanvasHost', {
   // QA helper: UI test scripts grab the window surface through the main
   // process (CDP captureScreenshot stalls on the GPU-less compositor here)
   async captureWindow() { return ipcRenderer.invoke('debug:captureWindow') },
+  // close handshake: renderer flushes pending page writes first
+  closeReady() { ipcRenderer.send('app:close-ready') },
   on(cmd, cb) { ipcRenderer.on('cmd', (_e, c, arg) => cb(c, arg)) },
 })

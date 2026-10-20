@@ -356,29 +356,24 @@ body.native-frame #capRow { display: none; }
 .sh-textbtn svg { width: 16px; height: 16px; }
 .sh-textbtn:hover { background: #dcdcdc; }
 
-/* eraser flyout (EraserFlyout: point / sheet modes + size) */
-#eraserFlyout { width: 300px; }
+/* eraser flyout (EraserFlyout: stroke / segment eraser + sheet action) */
+#eraserFlyout { width: 340px; }
 #erModes { display: flex; gap: 4px; }
 .er-opt {
   flex: 1; height: 32px; border: 1px solid rgba(0,0,0,.10); background: #fff; color: var(--ink);
   font-size: 13px; cursor: pointer; border-radius: 2px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
 }
-.er-opt svg { width: 15px; height: 15px; }
+.er-opt svg { width: 15px; height: 15px; flex: none; }
 .er-opt.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .er-opt:not(.active):hover { background: #ececec; }
-#waveEraser, #erWave { display: block; width: 280px; height: 44px; margin: 2px auto 4px; }
-#eraserFlyout input[type="range"] {
-  -webkit-appearance: none; appearance: none; display: block; width: 280px; margin: 10px auto 2px;
-  height: 4px; border-radius: 2px; cursor: pointer; outline: none;
-  background: linear-gradient(to right, var(--accent) var(--fill, 13%), #b9b9b9 var(--fill, 13%));
+#erSizes { display: flex; gap: 14px; justify-content: center; margin-top: 6px; }
+.er-chip {
+  min-width: 52px; height: 32px; border: 1px solid rgba(0,0,0,.14); background: #fff; color: var(--ink);
+  font-size: 13px; cursor: pointer; border-radius: 2px; font-weight: 500;
 }
-#eraserFlyout input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; width: 10px; height: 21px; border-radius: 3px;
-  background: var(--accent); border: none; box-shadow: 0 1px 2px rgba(0,0,0,.25);
-}
-#eraserFlyout input[type="range"]::-moz-range-thumb {
-  width: 10px; height: 21px; border-radius: 3px; background: var(--accent); border: none;
-}
+.er-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.er-chip:not(.active):hover { background: #ececec; }
+#erWave { display: block; width: 280px; height: 44px; margin: 6px auto 2px; }
 
 /* text-box inplace editor */
 #textEdit {
@@ -433,3 +428,60 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
 #stackInner.panning:active { cursor: grabbing; }
 
 #saveState { font-size: 12px; color: var(--dim); padding-right: 6px; }
+
+/* ruler stencil floating rotate controls (counter-scaled) */
+#rulerCtl {
+  position: absolute; display: flex; gap: 5px; z-index: 26;
+}
+#rulerCtl button {
+  width: 30px; height: 30px; border-radius: 50%; background: #fff;
+  border: 1px solid rgba(0,0,0,.16); color: #0b63c5; cursor: pointer;
+  box-shadow: 0 1.5px 5px rgba(0,0,0,.22); display: flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+#rulerCtl button:hover { background: #eef4fd; }
+#rulerCtl svg { width: 15px; height: 15px; display: block; }
+
+/* lasso selection floating action bar (counter-scaled) */
+#selBar {
+  position: absolute; display: flex; gap: 5px; padding: 5px; z-index: 28;
+  background: #fff; border: 1px solid rgba(0,0,0,.12); border-radius: 4px;
+  box-shadow: 0 3px 12px rgba(0,0,0,.20);
+}
+#selBar button {
+  min-width: 34px; height: 32px; border: 1px solid rgba(0,0,0,.12);
+  background: #fff; color: #333; border-radius: 3px; cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 0 8px;
+}
+#selBar button:hover { background: #f2f2f2; }
+#selBar button.danger { color: #c62828; }
+
+/* pull-to-add-page pill (last page only) */
+#pullHint {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  z-index: 64; display: flex; align-items: center; overflow: hidden;
+  background: #fff; color: var(--navy); border: 1px solid rgba(11,99,197,.4);
+  border-radius: 16px; padding: 7px 14px; font-size: 13px;
+  pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,.18);
+}
+#pullHint .pullFill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 0%;
+  background: var(--navy); opacity: .14; transition: width .08s linear;
+}
+#pullHint.armed { background: var(--navy); color: #fff; border-color: var(--navy); }
+#pullHint.armed .pullFill { display: none; }
+#pullHint .pullText { position: relative; }
+
+/* toolbar polish: soft hover, entry animation for all flyouts */
+#topbar button, .tb-penslot { transition: background-color .12s ease; }
+@keyframes flyIn {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+#penFlyout, #shapeFlyout, #eraserFlyout, #paperColorFlyout { animation: flyIn .14s cubic-bezier(.16,.84,.3,1); }
+#topbar, .tb-penslot { user-select: none; -webkit-user-select: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  #penFlyout, #shapeFlyout, #eraserFlyout, #paperColorFlyout { animation: none; }
+  #topbar button, .tb-penslot { transition: none; }
+}
