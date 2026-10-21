@@ -62,59 +62,97 @@ export function pressureFactor(p) {
   return 0.35 + 1.3 * v
 }
 
-function stampDisc(mctx, x, y, r) {
-  if (r <= 0) return
-  mctx.beginPath()
-  mctx.arc(x, y, r, 0, Math.PI * 2)
-  mctx.fill()
-}
-
-function stampRect(mctx, x, y, len, wid, angle) {
-  mctx.save()
-  mctx.translate(x, y)
-  mctx.rotate(angle)
-  mctx.fillRect(-len / 2, -wid / 2, len, wid)
-  mctx.restore()
+// Raw pointer samples are 60–120 Hz chords; stamping those chords directly
+// makes a calligraphy nib's corners look like saw teeth and leaves visible
+// polygons on fast marker strokes. Smooth with midpoint quadratics (the same
+// idea as UWP FitToCurve) before building stamps; pressure is interpolated too.
+function smoothPoints(pts) {
+  if (!pts || pts.length < 3) return pts || []
+  const out = [{ ...pts[0] }]
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1]
+    const m1 = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2, p: (p0.p + p1.p) / 2 }
+    const m2 = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, p: (p1.p + p2.p) / 2 }
+    const d = Math.hypot(m2.x - m1.x, m2.y - m1.y) + Math.hypot(p1.x - m1.x, p1.y - m1.y) + Math.hypot(m2.x - p1.x, m2.y - p1.y)
+    const n = Math.max(1, Math.min(12, Math.ceil(d / 8)))
+    for (let k = 1; k <= n; k++) {
+      const t = k / n, u = 1 - t
+      out.push({
+        x: u * u * m1.x + 2 * u * t * p1.x + t * t * m2.x,
+        y: u * u * m1.y + 2 * u * t * p1.y + t * t * m2.y,
+        p: u * u * m1.p + 2 * u * t * p1.p + t * t * m2.p,
+      })
+    }
+  }
+  out.push({ ...pts[pts.length - 1] })
+  return out
 }
 
 // Generate the stamp list for one stroke; stamps are in doc coordinates.
 // Returns {stamps, x0, y0, w, h} — the mask bounds to paint into.
-function buildStamps(stroke, type, stepMin) {
-  const pts = stroke.pts
+function buildStamps(stroke, type) {
+  const raw = stroke.pts
+  if (!raw || !raw.length) return { stamps: [], x0: 0, y0: 0, w: 0, h: 0 }
+  const pts = smoothPoints(raw)
   const base = stroke.width * type.wScale
   const stamps = []
   let pad = 0
-  const NIB = 2.8 // calligraphy blade length as a multiple of width
+  // ISF samples of the original calligraphy nib are 3×6 (a 1:2 rectangle),
+  // not the exaggerated 1:2.8 wedge used before.
+  const NIB = 2.0
 
   if (type.tip === 'nib45') {
     pad = (base * NIB) / 2 + 2
-    for (const p of pts) {
-      stamps.push({ kind: 'rect', x: p.x, y: p.y, len: base, wid: base * NIB, angle: -Math.PI / 4 })
-    }
-  } else if (type.tip === 'flat') {
-    // chisel stamps aligned to the local stroke direction
-    pad = base + 2
-    let prev = pts[0]
+    // A calligraphy nib must be swept along the path. Stamping only at raw
+    // pointer samples left gaps/teeth whenever the pointer moved fast.
+    const step = Math.max(0.75, base / 20)
+    const at = q => stamps.push({ kind: 'rect', x: q.x, y: q.y, len: base, wid: base * NIB, angle: -Math.PI / 4 })
+    at(pts[0])
     for (let i = 1; i < pts.length; i++) {
-      const cur = pts[i]
+      const prev = pts[i - 1], cur = pts[i]
       const dx = cur.x - prev.x, dy = cur.y - prev.y
       const d = Math.hypot(dx, dy)
-      if (d < 0.5) continue
-      const angle = Math.atan2(dy, dx)
-      const len = d + base * 1.2
-      stamps.push({ kind: 'rect', x: (prev.x + cur.x) / 2, y: (prev.y + cur.y) / 2, len, wid: base, angle })
-      prev = cur
+      if (d < 0.01) continue
+      const n = Math.max(1, Math.ceil(d / step))
+      for (let k = 1; k <= n; k++) {
+        const t = k / n
+        at({ x: prev.x + dx * t, y: prev.y + dy * t })
+      }
     }
-    if (pts.length === 1) prev = pts[0]
+  } else if (type.tip === 'flat') {
+    // chisel/highlighter stamps aligned to the local stroke direction, swept
+    // at a fixed step so corners don't leave protruding single rectangles
+    pad = base + 2
+    const step = Math.max(1.5, base / 5)
     const p0 = pts[0], p1 = pts[pts.length - 1]
-    const a0 = pts.length > 1 ? Math.atan2(pts[1].y - p0.y, pts[1].x - p0.x) : 0
-    const a1 = pts.length > 1 ? a0 : 0
-    stamps.push({ kind: 'rect', x: p0.x, y: p0.y, len: base * 1.2, wid: base, angle: a0 })
-    stamps.push({ kind: 'rect', x: p1.x, y: p1.y, len: base * 1.2, wid: base, angle: a1 })
+    let firstAngle = 0, lastAngle = 0
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1], cur = pts[i]
+      const dx = cur.x - prev.x, dy = cur.y - prev.y
+      const d = Math.hypot(dx, dy)
+      if (d < 0.01) continue
+      const angle = Math.atan2(dy, dx)
+      if (i === 1) firstAngle = angle
+      lastAngle = angle
+      const n = Math.max(1, Math.ceil(d / step))
+      const len = d / n + base * 0.6
+      for (let k = 1; k <= n; k++) {
+        const t = k / n
+        stamps.push({ kind: 'rect', x: prev.x + dx * t, y: prev.y + dy * t, len, wid: base, angle })
+      }
+    }
+    if (pts.length === 1) {
+      stamps.push({ kind: 'rect', x: p0.x, y: p0.y, len: base * 1.2, wid: base, angle: 0 })
+    } else {
+      stamps.push({ kind: 'rect', x: p0.x, y: p0.y, len: base * 1.2, wid: base, angle: firstAngle })
+      stamps.push({ kind: 'rect', x: p1.x, y: p1.y, len: base * 1.2, wid: base, angle: lastAngle })
+    }
   } else {
-    // disc stamps along the path (marker / pencil), radius from pressure
+    // disc stamps along the smoothed path (marker / pencil), radius from pressure.
+    // base/12 keeps the scallop between neighbouring discs below a tenth of a
+    // pixel at normal zoom; it also removes the dotted top edge on wide pens.
     pad = (base * 1.65) / 2 + 2
-    const step = Math.max(stepMin, base / 3)
+    const step = Math.max(1.2, base / 12)
     const stampAt = q => {
       const r = (base * (type.pressure ? pressureFactor(q.p) : 1)) / 2
       stamps.push({ kind: 'disc', x: q.x, y: q.y, r })
@@ -151,12 +189,30 @@ function buildStamps(stroke, type, stepMin) {
 // Stamp the (opaque) stroke coverage into `mctx`. Stamps are in doc
 // coordinates — the caller sets up the frame (translation) first.
 function fillMask(mctx, stamps, color) {
+  // Add every stamp to ONE path and fill once. Filling stamp-by-stamp lets the
+  // translucent antialiased edge of each rectangle overlap the next stamp,
+  // producing a fine comb along the nib edge; a single nonzero fill rasterises
+  // only the union boundary.
+  const path = new Path2D()
+  for (const s of stamps) {
+    if (s.kind === 'disc') {
+      if (s.r <= 0) continue
+      path.moveTo(s.x + s.r, s.y)
+      path.arc(s.x, s.y, s.r, 0, Math.PI * 2)
+      continue
+    }
+    const c = Math.cos(s.angle), n = Math.sin(s.angle)
+    const hx = c * s.len / 2, hy = n * s.len / 2   // along the nib
+    const wx = -n * s.wid / 2, wy = c * s.wid / 2  // across the nib
+    path.moveTo(s.x - hx - wx, s.y - hy - wy)
+    path.lineTo(s.x + hx - wx, s.y + hy - wy)
+    path.lineTo(s.x + hx + wx, s.y + hy + wy)
+    path.lineTo(s.x - hx + wx, s.y - hy + wy)
+    path.closePath()
+  }
   mctx.save()
   mctx.fillStyle = color || '#000000'
-  for (const s of stamps) {
-    if (s.kind === 'disc') stampDisc(mctx, s.x, s.y, s.r)
-    else stampRect(mctx, s.x, s.y, s.len, s.wid, s.angle)
-  }
+  mctx.fill(path)
   mctx.restore()
 }
 
@@ -166,7 +222,7 @@ function fillMask(mctx, stamps, color) {
 export function drawStrokeMask(fullCtx, wDoc, hDoc, stroke) {
   if (!stroke || !stroke.pts || !stroke.pts.length || !(stroke.width > 0)) return
   const type = PEN_TYPES[stroke.type] || PEN_TYPES.marker
-  const spec = buildStamps(stroke, type, stroke.type === 'marker' ? 2 : 3)
+  const spec = buildStamps(stroke, type)
   if (!spec.stamps.length) return
   // clear exactly the painted region (stamps may fall outside the page)
   const cx0 = Math.max(0, spec.x0), cy0 = Math.max(0, spec.y0)
@@ -181,7 +237,7 @@ export function drawStrokeMask(fullCtx, wDoc, hDoc, stroke) {
 export function drawStrokeAlpha(ctx, wDoc, hDoc, stroke) {
   if (!stroke || !stroke.pts || !stroke.pts.length || !(stroke.width > 0)) return
   const type = PEN_TYPES[stroke.type] || PEN_TYPES.marker
-  const spec = buildStamps(stroke, type, stroke.type === 'marker' ? 2 : 3)
+  const spec = buildStamps(stroke, type)
   if (!spec.stamps.length) return
   // clamp to the page rect; the canvas clips stamp overflow at its edges
   const x0 = Math.max(spec.x0, 0), y0 = Math.max(spec.y0, 0)

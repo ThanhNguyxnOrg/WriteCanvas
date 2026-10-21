@@ -418,6 +418,12 @@ function onPointerDown(e) {
   const lc = ctxOf('liveC'); const { w, h } = docSize(page)
   lc.clearRect(0, 0, w, h)
   if (S.tool === 'pen') {
+    // drawStrokeMask clears only the current stroke's bounds; without a full
+    // clear here the previous stroke would remain on the scratch mask and show
+    // through translucent highlights (a grey ghost under every new stroke).
+    if (scratch.width !== w) scratch.width = w
+    if (scratch.height !== h) scratch.height = h
+    scratchCtx.clearRect(0, 0, w, h)
     live = { stroke: makeStroke(curPen(), docMM(curPen().widthMM)), drawnIdx: -1 }
     if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
   } else if (S.tool === 'text') {
