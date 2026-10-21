@@ -90,11 +90,15 @@ function rowEl(item, depth) {
   row.dataset.id = item.id
   const icon = document.createElement('span')
   icon.className = 'icon'
-  icon.textContent = item.type === 'folder' ? (collapsed.has(item.id) ? '▸' : '▾') : '📄'
+  const glyph = item.type === 'folder'
+    ? (collapsed.has(item.id) ? 'ic-folder' : 'ic-folder-open')
+    : 'ic-note'
+  icon.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><use href="#${glyph}"/></svg>`
   if (depth > 0) row.style.paddingLeft = `${8 + depth * 12}px`
   const name = document.createElement('span')
   name.textContent = item.name
   name.className = 'name'
+  row.title = item.name
   row.append(icon, name)
   row.onclick = () => {
     selected = item.id

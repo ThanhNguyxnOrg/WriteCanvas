@@ -63,6 +63,14 @@ async function click(ws, sel) {
   await sleep(60)
 }
 
+// Activate the pen without leaving its settings flyout over the drawing area.
+async function selectPen(ws) {
+  await click(ws, `document.getElementById('tbPenCurrent')`)
+  if (!(await evalJs(ws, `document.getElementById('penFlyout').classList.contains('hidden')`))) {
+    await click(ws, `document.getElementById('penDone')`)
+  }
+}
+
 // pixel-sample a canvas: share of sampled pixels with alpha > 10
 const inkShare = (sel) => `(() => {
   const c = ${sel}; if (!c || !c.width) return 0
@@ -123,7 +131,7 @@ async function main() {
   await sleep(1800)
   const paint2 = await evalJs(ws, inkShare(`document.getElementById('laserC')`))
   ok('laser: trail faded after 1.8s', paint2 === 0, 'share=' + paint2)
-  await click(ws, `document.getElementById('tbPens').firstElementChild`)
+  await selectPen(ws)
 
   // ---------- 3. ruler: snap, rotate, grip drag ----------
   await click(ws, `document.getElementById('tbRuler')`)
@@ -145,7 +153,13 @@ async function main() {
     const r = inner.getBoundingClientRect()
     return { left: r.left, top: r.top, zoom: r.width / inner.offsetWidth, w: inner.offsetWidth, h: inner.offsetHeight }
   })()`)
-  const PY = geo.h * 0.55 // module rule default fy = 0.55
+  // Read the actual stencil position instead of assuming the factory 0.55:
+  // ruler position/angle persist across runs, just like a real stencil.
+  const rulerInfo = await evalJs(ws, `(() => {
+    const c = document.getElementById('rulerCtl')
+    return { px: parseFloat(c.style.left) - 26, py: parseFloat(c.style.top) - 26, angle: parseFloat(c.dataset.angle) || 0 }
+  })()`)
+  const PY = rulerInfo.py
   ok('ruler: axle on screen', geo.top + PY * geo.zoom > 240 && geo.top + PY * geo.zoom < 980, 'screenY=' + (geo.top + PY * geo.zoom))
   await sweep(ws, [
     [500, PY - 60], [700, PY + 55], [900, PY - 50], [1100, PY + 60],
@@ -168,9 +182,9 @@ async function main() {
     const dev = Math.max(...s.pts.map(p => Math.abs((p.y - p0.y) - slope * (p.x - p0.x))))
     return { slope, dev, n: s.pts.length }
   })()`)
-  ok('ruler: +20 deg rotation slopes ink', near(stats.slope, Math.tan(20 * Math.PI / 180), 0.03) && stats.dev < 4 && stats.n >= 3, JSON.stringify(stats))
-  // grip drag: pointer down exactly on the grip circle (~(0.5w, 0.55h) doc), drag down 120 screen px
-  const grip = { x: geo.left + 0.5 * geo.w * geo.zoom, y: geo.top + 0.55 * geo.h * geo.zoom }
+  ok('ruler: +20 deg rotation slopes ink', near(stats.slope, Math.tan((rulerInfo.angle + 20) * Math.PI / 180), 0.03) && stats.dev < 4 && stats.n >= 3, JSON.stringify(stats))
+  // grip drag: pointer down exactly on the current grip circle, drag down 120 screen px
+  const grip = { x: geo.left + rulerInfo.px * geo.zoom, y: geo.top + rulerInfo.py * geo.zoom }
   const ctlBefore = await evalJs(ws, `parseFloat(document.getElementById('rulerCtl').style.top)`)
   await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: grip.x, y: grip.y, button: 'none' })
   await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: grip.x, y: grip.y, button: 'left', buttons: 1, clickCount: 1 })
@@ -195,7 +209,7 @@ async function main() {
   ok('ruler: off clears layer', await evalJs(ws, inkShare(`document.getElementById('rulerC')`)) === 0)
 
   // ---------- 4. eraser modes ----------
-  await click(ws, `document.getElementById('tbPens').firstElementChild`)
+  await selectPen(ws)
   // one clean horizontal line through (800..1800, 1100)
   await sweep(ws, [[800, 1100], [1000, 1100], [1300, 1100], [1600, 1100], [1800, 1100]], geo)
   const strokesNow = await strokesOf() // expected 5 (4 ruler strokes + 1 line)
@@ -203,7 +217,7 @@ async function main() {
   ok('eraser: tool active', await evalJs(ws, `__wc.S.tool`) === 'erase')
   ok('eraser: stroke mode default', await evalJs(ws, `__wc.S.eraserMode`) === 'stroke')
   // open the flyout through the caret hot-zone
-  await evalJs(ws, `document.querySelector('.caret-zone[data-fly="eraserFlyout"]').click()`)
+  await evalJs(ws, `document.querySelector('#topbar .tb-caret[data-fly="eraserFlyout"]').click()`)
   await sleep(80)
   ok('eraser: flyout opens', await evalJs(ws, `!document.getElementById('eraserFlyout').classList.contains('hidden')`))
   ok('eraser: size row hidden for stroke', await evalJs(ws, `document.getElementById('erSizeRow').classList.contains('hidden')`))
@@ -261,7 +275,7 @@ async function main() {
   // ---------- 5. lasso selection ----------
   // reset page state directly so lasso starts deterministic (eraser block covered wipe already)
   await evalJs(ws, `(() => { const p = __wc.S.pages[0]; p.strokes.length = 0; p.undo.length = 0; p.redo.length = 0; return true })()`)
-  await click(ws, `document.getElementById('tbPens').firstElementChild`)
+  await selectPen(ws)
   await evalJs(ws, `document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 99, clientX: 5, clientY: 5, pointerType: 'mouse', button: 0 }))`)
   await sweep(ws, [[600, 700], [900, 740], [1200, 700], [1450, 760]], geo)
   await sweep(ws, [[600, 1300], [900, 1330], [1300, 1310], [1500, 1340]], geo)
@@ -307,7 +321,7 @@ async function main() {
   ok('lasso: selection cleared after delete', await evalJs(ws, `!__wc.S.selection && !document.getElementById('selBar')`))
 
   // ---------- 6. view mode pans ----------
-  await click(ws, `document.getElementById('tbPens').firstElementChild`)
+  await selectPen(ws)
   await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
   await click(ws, `document.getElementById('tbEye')`)
   ok('view: tool active', await evalJs(ws, `__wc.S.tool`) === 'view')
@@ -358,7 +372,7 @@ async function main() {
   ok('pull: pullPx reset after commit', await evalJs(ws, `__wc.S.pullPx`) === 0)
   await evalJs(ws, `(() => { const host = document.getElementById('canvasHost'); host.scrollTop = 0; return true })()`)
   await sleep(80)
-  await click(ws, `document.getElementById('tbPens').firstElementChild`)
+  await selectPen(ws)
 
   // ---------- 7. tool shortcuts ----------
   await key(ws, 'v')
@@ -401,29 +415,18 @@ async function main() {
   ok('persist: strokes editable after reopen', afterN === beforeN, `before=${beforeN} after=${afterN}`)
   ok('persist: vector restore used (no raster needed)', await evalJs(ws, `!__wc.S.pages[0].rasterBitmap`))
 
-  // ---------- cleanup: destroy smoke/QA notes, reopen what was open ----------
-  const lib = await evalJs(ws, `WriteCanvasHost.library()`)
-  const smokeIds = []
-  const walk = items => (items || []).forEach(it => {
-    if (it.id === openId) return // never touch the note the user had open
-    if (/^Smoke|^QA5b/.test(it.name || '')) smokeIds.push(it.id)
-    walk(it.children || [])
-  })
-  walk(Array.isArray(lib) ? lib : (lib && lib.items) || [])
-  for (const id of smokeIds) {
-    await evalJs(ws, `WriteCanvasHost.destroyItem('${id}')`, { awaitPromise: true })
-    await sleep(120)
+  // ---------- cleanup: remove only the scratch note created by this run ----------
+  // Never sweep by name: the user's own notes may share these prefixes.
+  if (openId) {
+    await evalJs(ws, `__wc.App.openNote(${openId})`, { awaitPromise: true })
+    await sleep(300)
   }
-  console.log('cleanup: destroyed', smokeIds.length, 'test note(s)')
-  // reopen the note that was open before QA (or a fresh note when gone)
-  const back = await evalJs(ws, `(async () => {
-    try { await __wc.App.openNote(${openId || 0}); return openId } catch (e) {
-      const n = await WriteCanvasHost.createNote('Untitled', 1)
-      await __wc.App.openNote(n.id)
-      return n.id
-    }
-  })()`, { awaitPromise: true })
-  console.log('reopened note:', back)
+  if (note?.id) {
+    await evalJs(ws, `WriteCanvasHost.destroyItem(${note.id})`, { awaitPromise: true })
+    await evalJs(ws, `__wc.App.reloadLibrary()`)
+    await sleep(150)
+  }
+  console.log('cleanup: destroyed scratch note', note?.id ?? '(none)', '; reopened note', openId)
 
   ok('no uncaught JS exceptions during QA', jsErrors.length === 0, jsErrors.slice(0, 4).join(' | '))
   if (jsErrors.length) console.log('JS ERRORS:', jsErrors.join('\n'))

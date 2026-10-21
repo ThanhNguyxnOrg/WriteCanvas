@@ -27,11 +27,11 @@ export const PEN_PALETTE = [
 // _HighlighterSquaredButton). Width multipliers follow the tip shapes:
 // chisel tips paint far wider than their applied width value.
 export const PEN_TYPES = {
-  marker: { id: 'marker', label: 'Pen', glyph: 'marker', tip: 'disc', alpha: 1, wScale: 1, fitToCurve: true, pressure: true },
-  pencil: { id: 'pencil', label: 'Pencil', glyph: 'pencil', tip: 'disc', alpha: 0.85, wScale: 0.9, fitToCurve: true, pressure: true },
-  calligraphy: { id: 'calligraphy', label: 'Calligraphy', glyph: 'calligraphy', tip: 'nib45', alpha: 1, wScale: 1, fitToCurve: true, pressure: false },
-  highlighter: { id: 'highlighter', label: 'Highlighter', glyph: 'highlighter', tip: 'flat', alpha: 0.3, wScale: 3.5, fitToCurve: false, pressure: false },
-  highlighterSquared: { id: 'highlighterSquared', label: 'Highlighter squared', glyph: 'highlighterSquared', tip: 'flat', alpha: 1, wScale: 2.2, fitToCurve: false, pressure: false },
+  marker: { id: 'marker', label: 'Pen', desc: 'Smooth', glyph: 'marker', tip: 'disc', alpha: 1, wScale: 1, fitToCurve: true, pressure: true },
+  pencil: { id: 'pencil', label: 'Pencil', desc: 'Grain', glyph: 'pencil', tip: 'disc', alpha: 0.55, wScale: 0.72, fitToCurve: true, pressure: true, grain: true },
+  calligraphy: { id: 'calligraphy', label: 'Calligraphy', desc: 'Chisel 45°', glyph: 'calligraphy', tip: 'nib45', alpha: 1, wScale: 1.35, fitToCurve: true, pressure: false },
+  highlighter: { id: 'highlighter', label: 'Highlighter', desc: 'Translucent', glyph: 'highlighter', tip: 'flat', alpha: 0.24, wScale: 4.0, fitToCurve: false, pressure: false },
+  highlighterSquared: { id: 'highlighterSquared', label: 'Highlighter squared', desc: 'Solid block', glyph: 'highlighterSquared', tip: 'square', alpha: 1, wScale: 2.5, fitToCurve: false, pressure: false },
 }
 
 export const PEN_TYPE_ORDER = ['marker', 'pencil', 'calligraphy', 'highlighter', 'highlighterSquared']
@@ -119,6 +119,24 @@ function buildStamps(stroke, type) {
         at({ x: prev.x + dx * t, y: prev.y + dy * t })
       }
     }
+  } else if (type.tip === 'square') {
+    // solid square tip: axis-aligned blocks, deliberately blockier than the
+    // direction-following highlighter chisel
+    pad = base * 1.3 + 2
+    const step = Math.max(1.2, base / 5)
+    const at = q => stamps.push({ kind: 'rect', x: q.x, y: q.y, len: base, wid: base, angle: 0 })
+    at(pts[0])
+    for (let i = 1; i < pts.length; i++) {
+      const prev = pts[i - 1], cur = pts[i]
+      const dx = cur.x - prev.x, dy = cur.y - prev.y
+      const d = Math.hypot(dx, dy)
+      if (d < 0.01) continue
+      const n = Math.max(1, Math.ceil(d / step))
+      for (let k = 1; k <= n; k++) {
+        const t = k / n
+        at({ x: prev.x + dx * t, y: prev.y + dy * t })
+      }
+    }
   } else if (type.tip === 'flat') {
     // chisel/highlighter stamps aligned to the local stroke direction, swept
     // at a fixed step so corners don't leave protruding single rectangles
@@ -168,6 +186,29 @@ function buildStamps(stroke, type) {
       for (let k = 1; k <= n; k++) {
         const t = k / n
         stampAt({ x: prev.x + dx * t, y: prev.y + dy * t, p: prev.p + (p.p - prev.p) * t })
+      }
+    }
+  }
+
+  // A pencil is not just a lighter marker: sprinkle deterministic graphite
+  // specks just outside the spine so the edge looks dry and grainy.
+  if (type.grain) {
+    const main = stamps.length
+    let seed = Math.floor(raw[0].x * 31 + raw[0].y * 17 + base * 13) || 9187
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296 }
+    pad = Math.max(pad, base * 0.72 + 2)
+    for (let i = 0; i < main; i += 4) {
+      const s = stamps[i]
+      if (!s || s.kind !== 'disc') continue
+      for (let k = 0; k < 2; k++) {
+        const a = rnd() * Math.PI * 2
+        const d = base * (0.3 + rnd() * 0.28)
+        stamps.push({
+          kind: 'disc',
+          x: s.x + Math.cos(a) * d,
+          y: s.y + Math.sin(a) * d,
+          r: Math.max(0.5, base * (0.035 + rnd() * 0.045)),
+        })
       }
     }
   }

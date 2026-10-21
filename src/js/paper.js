@@ -85,10 +85,22 @@ const BORDER_C = [196, 114, 141]
 
 const css = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`
 
+// True when a paper ARGB/RGB colour is dark enough that the ink-side pattern
+// should flip from graphite/blue to a faint light mesh (pad.ws dark board).
+export function isDarkPaperColor(argb) {
+  const hex = hexToCss(argb, '#FFFFFF').replace('#', '')
+  if (hex.length !== 6) return false
+  const r = parseInt(hex.slice(0, 2), 16) || 0
+  const g = parseInt(hex.slice(2, 4), 16) || 0
+  const b = parseInt(hex.slice(4, 6), 16) || 0
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.42
+}
+
 // Paint the paper background + template pattern at document resolution.
 // `transparent` skips the background fill (save-without-background export).
 export function renderPaper(ctx, paper, { transparent = false } = {}) {
   const { w, h } = paperDocSize(paper.size, paper.orientation)
+  const dark = isDarkPaperColor(paper.bg)
   ctx.save()
   if (transparent) ctx.clearRect(0, 0, w, h)
   else {
@@ -102,40 +114,43 @@ export function renderPaper(ctx, paper, { transparent = false } = {}) {
     const s = Math.max(w / iw, h / ih)
     ctx.drawImage(paper.customImage, (w - iw * s) / 2, (h - ih * s) / 2, iw * s, ih * s)
   } else if (t && t.kind) {
-    drawTemplate(ctx, t, w, h)
+    drawTemplate(ctx, t, w, h, dark)
   }
 
-  // Border lines (sBRL): two full-height verticals, opaque #C4728D. The real
-  // note spans x [119,120] and [w−121,w−120] — 2 px, mirrored insets.
+  // Border lines (sBRL): two full-height verticals. On a dark board they read
+  // as a soft rose guide instead of disappearing into the navy-black paper.
   if (paper.borderLines !== false) {
-    ctx.fillStyle = css(BORDER_C, 1)
+    ctx.fillStyle = dark ? 'rgba(255, 178, 201, 0.58)' : css(BORDER_C, 1)
     ctx.fillRect(BORDER_X, 0, 2, h)
     ctx.fillRect(w - BORDER_X - 2, 0, 2, h)
   }
   ctx.restore()
 }
 
-function drawTemplate(ctx, t, w, h) {
+function drawTemplate(ctx, t, w, h, dark = false) {
   // Asset truth: pattern lines are 2 px tall, centered on the pitch multiple
   // (ruled.png rows [54,55] for pitch 55 → fillRect at k·pitch − 1).
+  const light = 'rgba(232,238,248,0.16)'
+  const lightSoft = 'rgba(232,238,248,0.10)'
+  const lightStrong = 'rgba(232,238,248,0.28)'
   if (t.kind === 'h') {
-    ctx.fillStyle = css(t.c, t.a)
+    ctx.fillStyle = dark ? light : css(t.c, t.a)
     for (let y = t.step; y < h; y += t.step) ctx.fillRect(0, y - 1, w, 2)
   } else if (t.kind === 'grid') {
     const from = t.edgeC ? t.step : (t.from || t.step)
     if (t.edgeC) {
       // graph.png: opaque-ish 1px edge lines at x/y 0 + faint 2px interior mesh
-      ctx.fillStyle = css(t.edgeC, t.edgeA)
+      ctx.fillStyle = dark ? lightStrong : css(t.edgeC, t.edgeA)
       ctx.fillRect(0, 0, w, 1)
       ctx.fillRect(0, 0, 1, h)
-      ctx.fillStyle = css(t.c, t.a)
-    } else ctx.fillStyle = css(t.c, t.a)
+      ctx.fillStyle = dark ? lightSoft : css(t.c, t.a)
+    } else ctx.fillStyle = dark ? light : css(t.c, t.a)
     for (let y = from; y < h; y += t.step) ctx.fillRect(0, y - 1, w, 2)
     for (let x = from; x < w; x += t.step) ctx.fillRect(x - 1, 0, 2, h)
   } else if (t.kind === 'dots') {
     // asset dots are 4px (dots10) / 8px (dots20) antialiased discs with core
     // alpha ~0.3; arc from the dot's top-left lattice position
-    ctx.fillStyle = css(t.c, t.a)
+    ctx.fillStyle = dark ? 'rgba(232,238,248,0.30)' : css(t.c, t.a)
     for (let y = t.step - 2; y < h; y += t.step)
       for (let x = t.step - 2; x < w; x += t.step) {
         ctx.beginPath(); ctx.arc(x + t.off, y + t.off, t.r, 0, Math.PI * 2); ctx.fill()
@@ -146,32 +161,32 @@ function drawTemplate(ctx, t, w, h) {
     // sparser stronger blue family (2 px) every 188 px offset 189
     const s = Math.tan(Math.PI / 6), p = 38, limit = h / s
     ctx.lineWidth = 2
-    ctx.strokeStyle = 'rgba(114,124,132,0.106)'
+    ctx.strokeStyle = dark ? 'rgba(225,233,245,0.11)' : 'rgba(114,124,132,0.106)'
     ctx.beginPath()
     for (let k = -Math.ceil(limit / p); k <= Math.ceil(w / p); k++) {
       ctx.moveTo(k * p, 0); ctx.lineTo(k * p + limit, h)
       ctx.moveTo(k * p, 0); ctx.lineTo(k * p - limit, h)
     }
     ctx.stroke()
-    ctx.fillStyle = 'rgba(59,167,255,0.058)'
+    ctx.fillStyle = dark ? 'rgba(122,180,255,0.10)' : 'rgba(59,167,255,0.058)'
     for (let x = 19; x < w; x += 37.6) ctx.fillRect(Math.round(x), 0, 1, h)
-    ctx.fillStyle = 'rgba(59,167,255,0.21)'
+    ctx.fillStyle = dark ? 'rgba(122,180,255,0.28)' : 'rgba(59,167,255,0.21)'
     for (let x = 189; x < w; x += 188) ctx.fillRect(Math.round(x), 0, 2, h)
   } else if (t.kind === 'music') {
-    ctx.fillStyle = css(t.c, t.a)
+    ctx.fillStyle = dark ? 'rgba(232,238,248,0.50)' : css(t.c, t.a)
     for (let top = t.top; top < h; top += t.pitch)
       for (let i = 0; i < t.lines; i++) ctx.fillRect(0, top + i * t.lineStep - 1, w, 2)
   } else if (t.kind === 'todo') {
-    ctx.fillStyle = css(t.c, t.a)
+    ctx.fillStyle = dark ? light : css(t.c, t.a)
     for (let y = t.top; y < h; y += t.step) {
       ctx.fillRect(0, y - 1, w, 2)
       // checkbox outline in the left column, hanging below the row line
-      ctx.fillStyle = css(t.boxC, t.boxA)
+      ctx.fillStyle = dark ? 'rgba(232,238,248,0.34)' : css(t.boxC, t.boxA)
       ctx.fillRect(t.boxX, y + t.boxDy, t.boxW, 2)
       ctx.fillRect(t.boxX, y + t.boxDy + t.boxH - 2, t.boxW, 2)
       ctx.fillRect(t.boxX, y + t.boxDy, 2, t.boxH)
       ctx.fillRect(t.boxX + t.boxW - 2, y + t.boxDy, 2, t.boxH)
-      ctx.fillStyle = css(t.c, t.a)
+      ctx.fillStyle = dark ? light : css(t.c, t.a)
     }
   }
 }

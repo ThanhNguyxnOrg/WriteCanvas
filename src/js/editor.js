@@ -2,7 +2,7 @@
 
 import { bridge } from './bridge.js'
 import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
-import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
+import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
 import { Recorder, playReplay } from './replay.js'
 
 const $ = id => document.getElementById(id)
@@ -18,6 +18,8 @@ export const S = {
   penIndex: 0,
   eraserMM: 5,           // segment eraser factory sizes: S=2, M=5, L=10
   eraserMode: 'stroke',  // stroke eraser vs segment vs sheet (whole-page)
+  shapeKind: null,       // selected gallery shape; next drag on the page creates it
+  shapeFill: false,
   rulerOn: false,
   selection: null,
   pullPx: 0,             // rubber-band offset (screen px) while pulling below the last page
@@ -33,6 +35,22 @@ export const S = {
 const scratch = document.createElement('canvas')
 const scratchCtx = scratch.getContext('2d')
 const DEFAULT_PAPER = () => ({ size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF', borderLines: true })
+const DARK_BOARD = '#15181D'
+const LIGHT_BOARD = '#FFFFFF'
+// Muted board colours: paper-like lights and pad.ws/Excalidraw-like darks.
+const BOARD_PALETTE = [
+  '#FFFFFF', '#FBF8F1', '#F3F6FA', '#E8F0F8', '#F7E9E7', '#EAF4EA',
+  '#FFF5D6', '#15181D', '#1C2128', '#232833', '#2B303A', '#101820',
+  '#1A2430', '#22201C', '#3A3F4A', '#5A6270', '#8A94A6', '#C9D1DB',
+]
+const COLOR_NAMES = {
+  '#000000': 'Black', '#FFFFFF': 'White', '#FF0000': 'Red', '#004DE6': 'Blue',
+  '#26E600': 'Green', '#FFFB0A': 'Yellow', '#2EF0FF': 'Cyan', '#FFE600': 'Gold',
+  '#FF5500': 'Orange', '#B31564': 'Magenta', '#3D00B8': 'Violet', '#6600CC': 'Purple',
+  '#008055': 'Emerald', '#A2E61B': 'Lime', '#F7D7C4': 'Blush', '#BB9167': 'Tan',
+  '#8E562E': 'Brown', '#613D30': 'Cocoa', '#15181D': 'Midnight', '#1C2128': 'Graphite',
+  '#232833': 'Slate', '#2B303A': 'Charcoal', '#101820': 'Ink', '#1A2430': 'Navy board',
+}
 const newPage = paper => ({ paper: { ...paper }, strokes: [], texts: [], rasterBitmap: null, undo: [], redo: [], dirty: false, recorder: new Recorder(), inkGif: null })
 let host = null // App context, set by init()
 
@@ -151,13 +169,15 @@ function applyTransform() {
 
 // ---------- pull-to-add-page (last page only, Samsung-Notes parity) ----------
 let bounceRAF = 0
+let wheelOverscroll = 0
+let wheelAddLock = 0
 
 function pullCommitLimit() {
   const host = $('canvasHost')
   return Math.max(96, host.clientHeight * 0.12)
 }
 
-function updatePullHint(over) {
+function updatePullHint(over, mode = 'pull') {
   const bar = $('pullHint'); if (!bar) return
   if (!over || over <= 24) { bar.classList.add('hidden'); return }
   const commit = pullCommitLimit()
@@ -167,7 +187,11 @@ function updatePullHint(over) {
   const fill = bar.querySelector('.pullFill')
   if (fill) fill.style.width = (Math.min(1, over / commit) * 100).toFixed(0) + '%'
   const text = bar.querySelector('.pullText')
-  if (text) text.textContent = armed ? 'Thả ra để tạo trang mới' : 'Kéo lên để tạo trang mới'
+  if (text) {
+    text.textContent = armed
+      ? 'Release to add a page'
+      : (mode === 'wheel' ? 'Keep scrolling to add a page' : 'Pull down to add a page')
+  }
 }
 
 function hidePullHint() {
@@ -327,6 +351,11 @@ function setPage(i) {
   renderPage(page)
   if (!S.hadZoom) fitZoom()
   applyTransform()
+  // A page switch/opening a note starts at the top of the sheet. Without this
+  // the next note inherited the previous scroll offset and could open with its
+  // title above the viewport (or blank space below it).
+  const host = $('canvasHost')
+  if (host) { host.scrollTop = 0; host.scrollLeft = 0 }
   refreshPages()
   updateTitle()
   syncUndoRedo()
@@ -396,6 +425,8 @@ let live = null // {stroke, drawnIdx}
 let pan = null
 let erasePending = null
 
+let shapeDraft = null // {kind, fill, page, ax, ay, bx, by} while dragging a shape
+
 function onPointerDown(e) {
   const page = current(); if (!page) return
   // HUD chrome lives inside the canvas stack: clicking Duplicate/Delete/rotate
@@ -417,6 +448,12 @@ function onPointerDown(e) {
   if (S.rulerOn && S.tool === 'pen') ({ x, y } = rulerSnapPoint(x, y))
   const lc = ctxOf('liveC'); const { w, h } = docSize(page)
   lc.clearRect(0, 0, w, h)
+  if (S.tool === 'shape') {
+    if (!S.shapeKind) { showHint('Pick a shape first, then drag on the page'); return }
+    shapeDraft = { kind: S.shapeKind, fill: !!S.shapeFill, page, ax: x, ay: y, bx: x, by: y }
+    drawShapePreview()
+    return
+  }
   if (S.tool === 'pen') {
     // drawStrokeMask clears only the current stroke's bounds; without a full
     // clear here the previous stroke would remain on the scratch mask and show
@@ -536,6 +573,12 @@ function onPointerMove(e) {
   }
   let { x, y } = pageCoords(e)
   if (rulerGrip) { rulerMoveUpdate(page, x, y); return }
+  if (shapeDraft) {
+    shapeDraft.bx = x
+    shapeDraft.by = y
+    drawShapePreview()
+    return
+  }
   if (S.rulerOn && live) { ({ x, y } = rulerSnapPoint(x, y)) }
   if (live) {
     if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
@@ -568,7 +611,7 @@ let laserRAF = 0
 
 // one paint call per frame: live stroke paints fully, trails fade and drop out
 function laserAddPoint(page, x, y, first) {
-  if (first) laserLive = { pts: [{ x, y }], w: docMM(2.5), color: '#ff0000' }
+  if (first) laserLive = { pts: [{ x, y }], w: docMM(1.2), color: '#ff2b2b' }
   else if (laserLive) {
     const last = laserLive.pts[laserLive.pts.length - 1]
     if ((last.x - x) ** 2 + (last.y - y) ** 2 < 9) return
@@ -620,7 +663,19 @@ function paintLaser() {
     const age = now - t.born
     paint(t.pts, t.w, t.color, age < 700 ? 1 : 1 - (age - 700) / 600)
   }
-  if (laserLive) paint(laserLive.pts, laserLive.w, laserLive.color, 1)
+  if (laserLive && laserLive.pts.length) {
+    paint(laserLive.pts, laserLive.w, laserLive.color, 1)
+    // A glowing pointer dot at the tip distinguishes the laser from a red pen.
+    const p = laserLive.pts[laserLive.pts.length - 1]
+    const r = docMM(3.2)
+    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r)
+    glow.addColorStop(0, 'rgba(255,70,70,.95)')
+    glow.addColorStop(0.35, 'rgba(255,30,30,.55)')
+    glow.addColorStop(1, 'rgba(255,0,0,0)')
+    ctx.globalAlpha = 1
+    ctx.fillStyle = glow
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill()
+  }
 }
 
 // ---------- lasso selection (move / duplicate / delete) ----------
@@ -631,6 +686,7 @@ function setTool(t) {
   if (S.tool === 'laser') laserStop()
   if (S.tool === 'lasso') clearSelection()
   S.tool = t
+  if (t !== 'pen' && S.flyoutOpenTool === 'penFlyout') closeToolFlyout('penFlyout')
   const page = current()
   if (page) { ctxOf('liveC').clearRect(0, 0, docSize(page).w, docSize(page).h) }
   syncToolButtons()
@@ -639,6 +695,7 @@ function setTool(t) {
   if (t === 'laser') showHint('Laser pointer — trail fades, never saved')
   else if (t === 'lasso') showHint('Circle strokes to select, drag inside to move')
   else if (t === 'view') showHint('View mode — drag anywhere to pan')
+  else if (t === 'shape') showHint('Drag on the page to size the shape')
 }
 
 function anyPtInPoly(pts, poly) {
@@ -917,6 +974,7 @@ function drawRulerCtl(px, py) {
   ctl.style.left = (px + 26) + 'px'
   ctl.style.top = (py + 26) + 'px'
   ctl.style.transform = `scale(${1 / S.zoom})`
+  ctl.dataset.angle = String(ruler.angle)
 }
 
 function redrawRuler() {
@@ -1026,54 +1084,109 @@ function drawShapeIcon(cv, kind, fill) {
   }
 }
 
-function buildShapeGrid() {  const g = $('shapeGrid')
+// Build a gallery shape inside the rectangle the user dragged. Lines and
+// arrows use the actual start/end points; everything else fits the box.
+function buildShapePtsInRect(kind, ax, ay, bx, by) {
+  const P = (x, y) => ({ x, y })
+  const x0 = Math.min(ax, bx), x1 = Math.max(ax, bx)
+  const y0 = Math.min(ay, by), y1 = Math.max(ay, by)
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2
+  const rx = (x1 - x0) / 2, ry = (y1 - y0) / 2
+  if (kind === 'line' || kind === 'arrow') {
+    const A = P(ax, ay), T = P(bx, by)
+    const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy)
+    if (len < 1) return { lines: [] }
+    if (kind === 'line') return { lines: [[A, T]] }
+    const ux = dx / len, uy = dy / len
+    const head = Math.min(140, Math.max(18, len * 0.24))
+    const baseX = T.x - ux * head, baseY = T.y - uy * head
+    const side = head * 0.52
+    const B1 = P(baseX - uy * side, baseY + ux * side)
+    const B2 = P(baseX + uy * side, baseY - ux * side)
+    return { lines: [[A, T], [B1, T], [B2, T]] }
+  }
+  if (kind === 'rectangle') {
+    return { lines: [[P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1), P(x0, y0)]] }
+  }
+  if (kind === 'circle') {
+    const r = Math.min(rx, ry)
+    const pts = []
+    for (let i = 0; i <= 64; i++) {
+      const a = i / 64 * Math.PI * 2
+      pts.push(P(cx + r * Math.cos(a), cy + r * Math.sin(a)))
+    }
+    return { lines: [pts] }
+  }
+  if (kind === 'ellipse') {
+    const pts = []
+    for (let i = 0; i <= 64; i++) {
+      const a = i / 64 * Math.PI * 2
+      pts.push(P(cx + rx * Math.cos(a), cy + ry * Math.sin(a)))
+    }
+    return { lines: [pts] }
+  }
+  const base = buildShapePts(kind, 0, 0, 1)
+  return { lines: base.lines.map(line => line.map(p => P(cx + p.x * rx, cy + p.y * ry))) }
+}
+
+function makeShapeStrokes(kind, fill, ax, ay, bx, by) {
+  const { lines } = buildShapePtsInRect(kind, ax, ay, bx, by)
+  const width = docMM(clamp(curPen().widthMM, 1.2, 6))
+  return lines.map(pts => ({
+    type: 'shape',
+    color: curPen().color,
+    opacity: 1,
+    width,
+    pts,
+    shape: { kind, fill: !!fill },
+  }))
+}
+
+function drawShapePreview() {
+  if (!shapeDraft || !shapeDraft.page) return
+  const lc = ctxOf('liveC')
+  const { w, h } = docSize(shapeDraft.page)
+  lc.clearRect(0, 0, w, h)
+  const strokes = makeShapeStrokes(shapeDraft.kind, shapeDraft.fill, shapeDraft.ax, shapeDraft.ay, shapeDraft.bx, shapeDraft.by)
+  for (const st of strokes) drawShapeItem(lc, st)
+}
+
+function syncShapeGrid() {
+  document.querySelectorAll('#shapeGrid .sh-card').forEach(b => {
+    const on = b.dataset.kind === S.shapeKind && (b.dataset.fill === '1') === !!S.shapeFill
+    b.classList.toggle('active', on)
+    b.setAttribute('aria-pressed', on ? 'true' : 'false')
+  })
+}
+
+function buildShapeGrid() {
+  const g = $('shapeGrid')
   if (!g) return
   SHAPE_GALLERY.forEach(([kind, fill]) => {
     const b = document.createElement('button')
     b.className = 'sh-card'
+    b.dataset.kind = kind
+    b.dataset.fill = fill ? '1' : '0'
+    b.setAttribute('aria-pressed', 'false')
     const name = kind.startsWith('polygon') ? `${kind.slice(7)}-sided` : kind
-    b.title = fill ? `${name} (filled)` : name
+    b.title = fill ? `${name} (filled) — drag on the page` : `${name} — drag on the page`
     const cv = document.createElement('canvas')
     cv.width = 36; cv.height = 36
     drawShapeIcon(cv, kind, !!fill)
     b.append(cv)
-    b.onclick = () => insertShape(kind, fill)
+    b.onclick = () => startShapeTool(kind, fill)
     g.append(b)
   })
+  syncShapeGrid()
 }
 
-function insertShape(kind, fill) {
-  const page = current(); if (!page) return
-  page.texts = page.texts || []
-  // drop at the viewport center (doc coords)
-  const host = $('canvasHost').getBoundingClientRect()
-  const inner = $('stackInner')
-  const rect = inner.getBoundingClientRect()
-  const scale = rect.width / inner.offsetWidth
-  const { w, h } = docSize(page)
-  const cx = clamp((host.left + host.width / 2 - rect.left) / scale, 700, w - 700)
-  const cy = clamp((host.top + host.height / 2 - rect.top) / scale, 700, h - 700)
-  const R = 620
-  const widthMM = clamp(curPen().widthMM, 1.2, 6)
-  const { lines } = buildShapePts(kind, cx, cy, R)
-  const strokes = lines.map(pts => ({
-    type: 'shape',
-    color: curPen().color,
-    opacity: 1,
-    width: docMM(widthMM),
-    pts,
-    shape: { kind, fill: !!fill },
-  }))
-  firstCommitPreCapture(page)
-  page.strokes.push(...strokes)
-  page.undo.push({ t: 'add', strokes })
-  page.redo = []
-  redrawInk(page)
-  page.recorder.capture(flattenToCanvas(page))
-  page.dirty = true
-  scheduleAutosave()
-  refreshCurrentThumb()
+function startShapeTool(kind, fill) {
+  S.shapeKind = kind
+  S.shapeFill = !!fill
+  setTool('shape')
   closeToolFlyout('shapeFlyout')
+  syncShapeGrid()
+  showHint('Drag on the page to size the shape — Esc when done')
 }
 
 // ---------- sheet eraser (whole-page one-tap erase) ----------
@@ -1239,10 +1352,10 @@ function onPointerUp(e) {
     S.pullPx = 0
     hidePullHint()
     if (over >= commit) {
-      // release past the threshold: page N+1 materialises where you pulled
+      // release past the threshold: start at the top of the new page
       applyTransform()
       addPage()
-      host.scrollTop = 1e9
+      host.scrollTop = 0
     } else if (pull > 3) {
       pullBounce(pull)
     } else {
@@ -1253,6 +1366,27 @@ function onPointerUp(e) {
   if (rulerGrip) { rulerGrip = null; return }
   const { x, y } = pageCoords(e)
   const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  if (shapeDraft) {
+    const d = shapeDraft
+    shapeDraft = null
+    if (Math.hypot(d.bx - d.ax, d.by - d.ay) < 12) {
+      showHint('Drag to give the shape a size')
+      return
+    }
+    const strokes = makeShapeStrokes(d.kind, d.fill, d.ax, d.ay, d.bx, d.by)
+    if (!strokes.length) return
+    firstCommitPreCapture(page)
+    page.strokes.push(...strokes)
+    page.undo.push({ t: 'add', strokes })
+    page.redo = []
+    redrawInk(page)
+    page.recorder.capture(flattenToCanvas(page))
+    page.dirty = true
+    scheduleAutosave()
+    refreshCurrentThumb()
+    showHint('Shape added — drag again, or press Esc')
+    return
+  }
   if (live) {
     const stroke = live.stroke
     live = null
@@ -1459,9 +1593,10 @@ export async function flushCurrentPage() {
 // so the control's own click can toggle the surface closed (otherwise the
 // pointerdown closer hides it first and the click handler re-opens it).
 function closeFlyoutCloser(getEl, onClosed, ignoreEl) {
+  const ignores = ignoreEl == null ? [] : (Array.isArray(ignoreEl) ? ignoreEl : [ignoreEl])
   const onDown = e => {
     const f = getEl()
-    if (f && (f.contains(e.target) || (ignoreEl && ignoreEl.contains(e.target)))) {
+    if (f && (f.contains(e.target) || ignores.some(n => n && n.contains(e.target)))) {
       setTimeout(() => document.addEventListener('pointerdown', onDown, { capture: true, once: true }), 0)
       return
     }
@@ -1472,13 +1607,293 @@ function closeFlyoutCloser(getEl, onClosed, ignoreEl) {
   setTimeout(() => document.addEventListener('pointerdown', onDown, { capture: true, once: true }), 0)
 }
 
+function placeFlyout(f, anchor, { centered = true } = {}) {
+  const btn = anchor.getBoundingClientRect()
+  const w = f.offsetWidth || 300
+  const h = f.offsetHeight || 0
+  const margin = 8
+  const wantedLeft = centered ? btn.left + btn.width / 2 - w / 2 : btn.left
+  const left = Math.max(margin, Math.min(wantedLeft, window.innerWidth - w - margin))
+  let top = btn.bottom + 6
+  if (h && top + h > window.innerHeight - margin) top = Math.max(margin, btn.top - h - 6)
+  f.style.left = Math.round(left) + 'px'
+  f.style.top = Math.round(top) + 'px'
+}
+
+// ---------- custom color popover (HSV + hex) ----------
+// Chromium's platform colour dialog ignores the input's position in Electron
+// and opens at the window's top-left. This small picker is anchored to the
+// rainbow swatch instead, so the colour stays next to the control the user
+// pressed.
+const CP = { open: false, target: null, anchor: null, h: 0, s: 0, v: 0, raf: 0 }
+
+function rgbFromHex(hex) {
+  const n = normalizeHexColor(hex)
+  if (!n) return null
+  return {
+    r: parseInt(n.slice(1, 3), 16),
+    g: parseInt(n.slice(3, 5), 16),
+    b: parseInt(n.slice(5, 7), 16),
+  }
+}
+
+function rgbToHsv(r, g, b) {
+  r /= 255; g /= 255; b /= 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min
+  let h = 0
+  if (d) {
+    if (max === r) h = ((g - b) / d) % 6
+    else if (max === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h *= 60
+    if (h < 0) h += 360
+  }
+  return { h, s: max ? d / max : 0, v: max }
+}
+
+function hsvToRgb(h, s, v) {
+  h = ((h % 360) + 360) % 360
+  const c = v * s
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1))
+  const m = v - c
+  let r = 0, g = 0, b = 0
+  if (h < 60) [r, g, b] = [c, x, 0]
+  else if (h < 120) [r, g, b] = [x, c, 0]
+  else if (h < 180) [r, g, b] = [0, c, x]
+  else if (h < 240) [r, g, b] = [0, x, c]
+  else if (h < 300) [r, g, b] = [x, 0, c]
+  else [r, g, b] = [c, 0, x]
+  return {
+    r: Math.round((r + m) * 255),
+    g: Math.round((g + m) * 255),
+    b: Math.round((b + m) * 255),
+  }
+}
+
+function colorPopoverHex() {
+  const { r, g, b } = hsvToRgb(CP.h, CP.s, CP.v)
+  return '#' + [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('').toUpperCase()
+}
+
+function setColorPopoverFromHex(hex) {
+  const rgb = rgbFromHex(hex)
+  if (!rgb) return false
+  const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b)
+  CP.h = hsv.h; CP.s = hsv.s; CP.v = hsv.v
+  return true
+}
+
+function drawColorPopoverSV() {
+  const cv = $('cpSV')
+  if (!cv) return
+  const ctx = cv.getContext('2d')
+  const w = cv.width, h = cv.height
+  ctx.fillStyle = `hsl(${CP.h}, 100%, 50%)`
+  ctx.fillRect(0, 0, w, h)
+  let g = ctx.createLinearGradient(0, 0, w, 0)
+  g.addColorStop(0, '#fff'); g.addColorStop(1, 'rgba(255,255,255,0)')
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h)
+  g = ctx.createLinearGradient(0, 0, 0, h)
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, '#000')
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h)
+  const x = clamp(CP.s, 0, 1) * w
+  const y = (1 - clamp(CP.v, 0, 1)) * h
+  ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2)
+  ctx.strokeStyle = 'rgba(0,0,0,.5)'; ctx.lineWidth = 3; ctx.stroke()
+  ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2)
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke()
+}
+
+function drawColorPopoverHue() {
+  const cv = $('cpHue')
+  if (!cv) return
+  const ctx = cv.getContext('2d')
+  const w = cv.width, h = cv.height
+  const g = ctx.createLinearGradient(0, 0, w, 0)
+  for (let i = 0; i <= 6; i++) g.addColorStop(i / 6, `hsl(${i * 60}, 100%, 50%)`)
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h)
+  const x = (CP.h / 360) * w
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(x - 2, 0, 4, h)
+  ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h)
+}
+
+function renderColorPopover() {
+  const hex = colorPopoverHex()
+  const preview = $('cpPreview')
+  if (preview) preview.style.background = hex
+  const input = $('cpHex')
+  if (input && document.activeElement !== input) {
+    input.value = hex
+    input.setAttribute('aria-invalid', 'false')
+  }
+  const err = $('cpError')
+  if (err && document.activeElement !== input) err.textContent = ''
+  drawColorPopoverSV()
+  drawColorPopoverHue()
+}
+
+function applyColorPopover() {
+  if (!CP.open) return
+  const hex = colorPopoverHex()
+  if (CP.target === 'pen') selectColor(hex)
+  else if (CP.target === 'paper') applyPaperBg(hex)
+}
+
+function queueColorPopoverApply() {
+  if (!CP.open || CP.raf) return
+  CP.raf = requestAnimationFrame(() => {
+    CP.raf = 0
+    applyColorPopover()
+  })
+}
+
+function flushColorPopoverApply() {
+  if (CP.raf) { cancelAnimationFrame(CP.raf); CP.raf = 0 }
+  applyColorPopover()
+}
+
+function placeColorPopover() {
+  const f = $('colorPopover')
+  const a = CP.anchor
+  if (!f || !a || !CP.open) return
+  const r = a.getBoundingClientRect()
+  const fly = a.closest('.flyout')
+  const fr = fly ? fly.getBoundingClientRect() : null
+  const w = f.offsetWidth || 264
+  const h = f.offsetHeight || 0
+  const margin = 10
+  // Sit immediately beside the flyout, level with the rainbow swatch, so the
+  // picker is next to the control without covering the pen settings.
+  let left = fr ? fr.left - w - 10 : r.left - w - 10
+  let top = r.top
+  if (left < margin && fr) left = fr.right + 10
+  if (left < margin || left + w > window.innerWidth - margin) {
+    // No horizontal room beside the flyout: tuck it above/below the swatch.
+    left = clamp(r.left, margin, window.innerWidth - w - margin)
+    top = r.top - h - 8
+    if (top < margin) top = r.bottom + 8
+  }
+  if (h && top + h > window.innerHeight - margin) top = Math.max(margin, window.innerHeight - h - margin)
+  f.style.left = Math.round(left) + 'px'
+  f.style.top = Math.round(top) + 'px'
+}
+
+function onColorPopoverOutside(e) {
+  if (!CP.open) return
+  const pop = $('colorPopover')
+  if (pop && pop.contains(e.target)) return
+  if (CP.anchor && CP.anchor.contains(e.target)) return
+  closeColorPopover()
+}
+
+function openColorPopover(target, anchor) {
+  if (!anchor || (target !== 'pen' && target !== 'paper')) return
+  if (CP.open && CP.target === target && CP.anchor === anchor) { closeColorPopover(); return }
+  closeColorPopover()
+  CP.open = true
+  CP.target = target
+  CP.anchor = anchor
+  const page = current()
+  const source = target === 'pen' ? curPen().color : (page && page.paper && page.paper.bg)
+  if (!setColorPopoverFromHex(source)) setColorPopoverFromHex('#000000')
+  const pop = $('colorPopover')
+  if (!pop) { CP.open = false; return }
+  pop.classList.remove('hidden')
+  anchor.setAttribute('aria-expanded', 'true')
+  renderColorPopover()
+  placeColorPopover()
+  setTimeout(() => {
+    if (CP.open) document.addEventListener('pointerdown', onColorPopoverOutside, true)
+  }, 0)
+}
+
+function closeColorPopover() {
+  if (!CP.open) return
+  if (CP.raf) {
+    cancelAnimationFrame(CP.raf)
+    CP.raf = 0
+    applyColorPopover()
+  }
+  document.removeEventListener('pointerdown', onColorPopoverOutside, true)
+  const pop = $('colorPopover')
+  if (pop) pop.classList.add('hidden')
+  if (CP.anchor) CP.anchor.setAttribute('aria-expanded', 'false')
+  CP.open = false
+  CP.target = null
+  CP.anchor = null
+}
+
+function pickColorPopoverSV(e) {
+  const cv = $('cpSV')
+  if (!cv) return
+  const r = cv.getBoundingClientRect()
+  CP.s = clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1)
+  CP.v = clamp(1 - (e.clientY - r.top) / Math.max(1, r.height), 0, 1)
+  renderColorPopover()
+  queueColorPopoverApply()
+}
+
+function pickColorPopoverHue(e) {
+  const cv = $('cpHue')
+  if (!cv) return
+  const r = cv.getBoundingClientRect()
+  CP.h = clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1) * 360
+  renderColorPopover()
+  queueColorPopoverApply()
+}
+
+function applyColorPopoverHex() {
+  const input = $('cpHex')
+  if (!input) return
+  const hex = normalizeHexColor(input.value)
+  if (!hex) {
+    input.setAttribute('aria-invalid', 'true')
+    const err = $('cpError')
+    if (err) err.textContent = 'Enter 3 or 6 hex digits, for example #0B63C5.'
+    return
+  }
+  input.value = hex
+  input.setAttribute('aria-invalid', 'false')
+  const err = $('cpError')
+  if (err) err.textContent = ''
+  setColorPopoverFromHex(hex)
+  renderColorPopover()
+  flushColorPopoverApply()
+}
+
+function bindColorPopoverCanvas(cv, pick) {
+  if (!cv) return
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault()
+    try { cv.setPointerCapture(e.pointerId) } catch { /* synthetic pointer */ }
+    pick(e)
+  })
+  cv.addEventListener('pointermove', e => { if (e.buttons) pick(e) })
+  cv.addEventListener('pointerup', () => flushColorPopoverApply())
+  cv.addEventListener('pointercancel', () => flushColorPopoverApply())
+}
+
+let flyoutAnchorEl = null
+
+function syncFlyoutAria() {
+  const pairs = [
+    ['penFlyout', $('tbPenCurrent')],
+    ['shapeFlyout', $('tbObject')],
+    ['eraserFlyout', $('tbEraser')],
+    ['saveFlyout', $('btnSave')],
+    ['paperColorFlyout', $('ppBgColor')],
+  ]
+  for (const [id, btn] of pairs) {
+    if (!btn) continue
+    btn.setAttribute('aria-expanded', S.flyoutOpenTool === id ? 'true' : 'false')
+  }
+}
+
+// All toolbar flyouts are anchored to their control, never to a magic offset.
 function showFlyoutNear(id, anchor) {
   const f = $(id)
   f.classList.remove('hidden') // visible before measuring (display:none → 0)
-  const btn = anchor.getBoundingClientRect()
-  const w = f.offsetWidth || 300
-  f.style.left = Math.max(4, Math.min(btn.left - 66, window.innerWidth - w - 4)) + 'px'
-  f.style.top = (btn.bottom + 4) + 'px'
+  placeFlyout(f, anchor)
 }
 
 // pen flyout centers itself under the slot it belongs to (02-pen-flyout)
@@ -1486,15 +1901,16 @@ function showFlyoutCentered(id, anchor) {
   const f = $(id)
   f.classList.remove('hidden')
   const btn = anchor.getBoundingClientRect()
-  const w = f.offsetWidth || 300
-  f.style.left = Math.max(4, Math.min(Math.round(btn.left + btn.width / 2 - w / 2), window.innerWidth - w - 4)) + 'px'
-  f.style.top = (btn.bottom + 4) + 'px'
+  placeFlyout(f, anchor)
 }
 
 function closeToolFlyout(id) {
   const f = $(id)
   if (f) f.classList.add('hidden')
+  if (id === 'penFlyout' || id === 'paperColorFlyout') closeColorPopover()
   if (S.flyoutOpenTool === id) S.flyoutOpenTool = null
+  if (S.flyoutOpenTool === null) flyoutAnchorEl = null
+  syncFlyoutAria()
   renderPenStack()
 }
 
@@ -1505,14 +1921,22 @@ function openToolFlyout(id, anchor, { centered = false, ignore = null } = {}) {
   if (S.flyoutOpenTool === id) { closeToolFlyout(id); return } // re-click toggles
   if (S.flyoutOpenTool) closeToolFlyout(S.flyoutOpenTool)
   S.flyoutOpenTool = id
+  flyoutAnchorEl = anchor
   if (centered) showFlyoutCentered(id, anchor)
   else showFlyoutNear(id, anchor)
+  syncFlyoutAria()
   closeFlyoutCloser(
     () => (S.flyoutOpenTool === id ? $(id) : null),
     () => {
-      if (S.flyoutOpenTool === id) { S.flyoutOpenTool = null; renderPenStack() }
+      if (id === 'penFlyout' || id === 'paperColorFlyout') closeColorPopover()
+      if (S.flyoutOpenTool === id) {
+        S.flyoutOpenTool = null
+        flyoutAnchorEl = null
+        syncFlyoutAria()
+        renderPenStack()
+      }
     },
-    ignore || anchor,
+    [ignore || anchor, $('colorPopover')],
   )
   renderPenStack()
 }
@@ -1561,7 +1985,15 @@ function syncPaperPanel() {
   $('ppLandscape').classList.toggle('accent', orient !== 'portrait')
   $('ppLandscape').setAttribute('aria-pressed', orient === 'portrait' ? 'false' : 'true')
   $('paperBrl').checked = page.paper.borderLines !== false
+  const dark = colorLuma(page.paper.bg) < .42
+  const darkBtn = $('ppBoardDark')
+  if (darkBtn) {
+    darkBtn.classList.toggle('accent', dark)
+    darkBtn.setAttribute('aria-pressed', dark ? 'true' : 'false')
+    darkBtn.title = dark ? 'Dark board is on — click for a light board' : 'Use a dark drawing board'
+  }
   syncWritingPaneButtons()
+  syncPaperColorFlyout()
 }
 
 function syncWritingPaneButtons() {
@@ -1637,30 +2069,108 @@ function drawTplPreview(cv, id) {
 
 function buildPaperPalette() {
   const g = $('paperPalette')
+  if (!g) return
   g.innerHTML = ''
-  PEN_PALETTE.filter(c => c !== '#RAINBOW').forEach(c => {
+  BOARD_PALETTE.forEach(c => {
     const b = document.createElement('button')
     b.className = 'ps'
     b.style.background = c
     b.dataset.color = c
-    b.title = c
+    b.title = COLOR_NAMES[c] || c
+    b.setAttribute('aria-label', `Board color ${COLOR_NAMES[c] || c}`)
     b.onclick = () => applyPaperBg(c)
     g.append(b)
   })
-  const rb = document.createElement('button')
-  rb.className = 'ps rainbow'
-  rb.title = 'Custom color'
-  rb.onclick = () => $('paperBgPicker').click()
-  g.append(rb)
-  $('paperBgPicker').addEventListener('input', e => applyPaperBg(e.target.value))
+  document.querySelectorAll('#paperColorFlyout .board-preset').forEach(b => {
+    b.onclick = () => applyPaperBg(b.dataset.board)
+  })
 }
 
 function applyPaperBg(hex) {
   const page = current(); if (!page) return
-  const h = String(hex).replace('#', '')
-  page.paper.bg = '#FF' + h.slice(-6).toUpperCase()
+  const rgb = normalizeHexColor(hex)
+  if (!rgb) return
+  page.paper.bg = '#FF' + rgb.slice(1)
+  const dark = colorLuma(rgb) < .42
+  // New ink must be legible on a midnight board. Existing dark strokes stay
+  // untouched; the user can switch back to a light board at any time.
+  if (dark && colorLuma(curPen().color) < .30) {
+    curPen().color = '#FFFFFF'
+    savePens()
+    showHint('Dark board on — pen switched to white for contrast')
+  }
   markPaperChanged(page)
-  closeToolFlyout('paperColorFlyout')
+  syncPaperPanel()
+  syncPaperColorFlyout()
+  syncPenFlyout()
+}
+
+function applyPaperHex({ quiet = false } = {}) {
+  const input = $('paperHex')
+  if (!input) return
+  const hex = normalizeHexColor(input.value)
+  if (!hex) {
+    setHexError('paper', 'Enter 3 or 6 hex digits, for example #15181D.')
+    if (!quiet) input.focus()
+    return
+  }
+  clearHexError('paper')
+  input.value = hex
+  applyPaperBg(hex)
+}
+
+function syncPaperColorFlyout() {
+  const page = current()
+  const input = $('paperHex')
+  if (!page || !input) return
+  const rgb = '#' + String(page.paper.bg || '#FFFFFFFF').slice(-6).toUpperCase()
+  if (document.activeElement !== input) input.value = rgb
+  input.setAttribute('aria-invalid', 'false')
+  const err = $('paperHexError')
+  if (err) err.textContent = ''
+  document.querySelectorAll('#paperPalette .ps').forEach(s => {
+    s.classList.toggle('sel', s.dataset.color.toUpperCase() === rgb)
+  })
+  document.querySelectorAll('#paperColorFlyout .board-preset').forEach(b => {
+    b.setAttribute('aria-pressed', b.dataset.board.toUpperCase() === rgb ? 'true' : 'false')
+  })
+  const custom = $('paperCustomBtn')
+  if (custom) {
+    const sw = custom.querySelector('span')
+    if (sw) sw.style.background = rgb
+    custom.title = `Current board color ${rgb}`
+  }
+}
+
+function toggleDarkBoard() {
+  const page = current(); if (!page) return
+  const isDark = colorLuma(page.paper.bg) < .42
+  applyPaperBg(isDark ? LIGHT_BOARD : DARK_BOARD)
+  // the board and the surrounding chrome should change together when the user
+  // asks for the pad.ws-style dark workspace; the moon button still toggles
+  // just the interface for people who prefer light paper.
+  setTheme(!isDark)
+}
+
+// ---------- interface theme (chrome only; the board has its own colour) ----------
+function initTheme() {
+  let saved = null
+  try { saved = localStorage.getItem('wc:theme') } catch { /* ignore */ }
+  setTheme(saved === 'dark', { persist: false })
+}
+
+function setTheme(dark, { persist = true } = {}) {
+  document.body.classList.toggle('dark', !!dark)
+  const b = $('btnTheme')
+  if (b) {
+    b.setAttribute('aria-pressed', dark ? 'true' : 'false')
+    b.title = dark ? 'Switch to light interface' : 'Switch to dark interface'
+    const use = b.querySelector('use')
+    if (use) use.setAttribute('href', dark ? '#ic-sun' : '#ic-moon')
+  }
+  if (persist) {
+    try { localStorage.setItem('wc:theme', dark ? 'dark' : 'light') } catch { /* ignore */ }
+  }
 }
 
 // ---------- save flyout (Title / Project / Options / Save, mirrors 06-save) ----------
@@ -1758,11 +2268,11 @@ function toggleReplay() {
 // ---------- title / rename ----------
 function updateTitle() {
   const name = S.note ? S.note.name : 'No note'
-  const pages = ` (${S.currentPage + 1}/${S.pages.length})`
+  const pages = `(${S.currentPage + 1}/${S.pages.length})`
   $('btnTitle').textContent = name
   const pagesEl = document.getElementById('tbPages')
   if (pagesEl) pagesEl.textContent = pages
-  document.title = `${name}${pages} ‎- WriteCanvas`
+  document.title = `${name} ${pages} ‎- WriteCanvas`
   const cap = document.getElementById('capTitle')
   if (cap) cap.textContent = document.title
 }
@@ -1791,44 +2301,75 @@ export function init(app) {
     canvasHost: $('canvasHost'), stack: $('canvasStack'), inner: $('stackInner'),
   }
 
-  // pen flyout: 5 pen-type buttons + the 6×5 factory palette + wave preview
+  // pen flyout: labelled type cards, large palette, hex input, saved pens, size
   const typeRow = $('penTypeRow')
   PEN_TYPE_ORDER.forEach(t => {
     const b = document.createElement('button')
     b.className = 'penType'
     b.dataset.type = t
-    b.title = PEN_TYPES[t].label
-    b.innerHTML = `<svg><use href="#pt-${t}"/></svg>`
-    b.onclick = () => { curPen().type = t; syncPenFlyout(); closeToolFlyout('penFlyout') }
+    const meta = PEN_TYPES[t]
+    b.title = `${meta.label} — ${meta.desc}`
+    b.setAttribute('aria-pressed', 'false')
+    b.setAttribute('aria-label', `${meta.label}: ${meta.desc}`)
+    b.innerHTML = `<svg aria-hidden="true"><use href="#pt-${t}"/></svg><canvas class="pt-sample" width="128" height="44" aria-hidden="true"></canvas><span class="pt-label">${meta.label.replace('Highlighter squared', 'Hi-Square')}</span><span class="pt-desc">${meta.desc}</span>`
+    b.onclick = () => {
+      curPen().type = t
+      savePens()
+      syncPenFlyout()
+      drawWave()
+    }
     typeRow.append(b)
   })
+  drawPenTypeSamples()
   const pgrid = $('penPalette')
-  PEN_PALETTE.forEach(c => {
+  PEN_PALETTE.filter(c => c !== '#RAINBOW').forEach(c => {
     const b = document.createElement('button')
-    if (c === '#RAINBOW') {
-      b.className = 'ps rainbow'
-      b.title = 'Custom color'
-      // custom: keep the flyout open so the user can iterate
-      b.onclick = () => $('colorPicker').click()
-    } else {
-      b.className = 'ps'
-      b.style.background = c
-      b.dataset.color = c
-      b.title = c
-      b.onclick = () => { selectColor(c); closeToolFlyout('penFlyout') }
-    }
+    b.className = 'ps'
+    b.style.background = c
+    b.dataset.color = c
+    b.title = COLOR_NAMES[c] || c
+    b.setAttribute('aria-label', `Color ${COLOR_NAMES[c] || c}`)
+    b.onclick = () => selectColor(c)
     pgrid.append(b)
   })
-  $('colorPicker').addEventListener('input', e => selectColor(e.target.value))
+  $('customColorBtn').onclick = () => openColorPopover('pen', $('customColorBtn'))
+  $('customColorBtn').setAttribute('aria-haspopup', 'dialog')
+  $('customColorBtn').setAttribute('aria-expanded', 'false')
+  $('cpClose').onclick = closeColorPopover
+  $('cpApply').onclick = applyColorPopoverHex
+  $('cpHex').addEventListener('input', () => {
+    $('cpHex').setAttribute('aria-invalid', 'false')
+    const err = $('cpError')
+    if (err) err.textContent = ''
+  })
+  $('cpHex').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); applyColorPopoverHex() }
+    else if (e.key === 'Escape') { e.preventDefault(); closeColorPopover() }
+  })
+  bindColorPopoverCanvas($('cpSV'), pickColorPopoverSV)
+  bindColorPopoverCanvas($('cpHue'), pickColorPopoverHue)
+  $('penFlyout').addEventListener('scroll', () => { if (CP.open) placeColorPopover() })
+  $('paperColorFlyout').addEventListener('scroll', () => { if (CP.open) placeColorPopover() })
+  $('penHexApply').onclick = applyPenHex
+  $('penHex').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); applyPenHex() }
+    else if (e.key === 'Escape') { e.preventDefault(); syncPenFlyout(); e.target.blur() }
+  })
+  $('penHex').addEventListener('input', e => clearHexError('pen'))
+  $('penHex').addEventListener('blur', () => { if ($('penHex').value.trim()) applyPenHex({ quiet: true }) })
+  $('penClose').onclick = () => closeToolFlyout('penFlyout')
+  $('penDone').onclick = () => closeToolFlyout('penFlyout')
   $('width').addEventListener('input', e => {
     curPen().widthMM = parseFloat(e.target.value)
     updateWidthFill()
+    $('widthReadout').textContent = `${curPen().widthMM.toFixed(1)} mm`
     drawWave()
+    savePens()
   })
   loadPens()
-  // restore the saved active pen *after* loading slots; the old order called
-  // selectColor() first, whose savePens() overwrote the saved slots on every
-  // launch, resetting the user's pens to factory defaults
+  buildQuickPalette()
+  // restore the saved active pen *after* loading slots; selectColor() saves the
+  // slots and must never run before loadPens() or it would overwrite them
   selectColor(curPen().color)
   syncToolButtons()
   renderPenStack()
@@ -1838,6 +2379,9 @@ export function init(app) {
   syncPaperPanel()
   buildShapeGrid()
   wireTextTool()
+  $('shapeClose').onclick = () => closeToolFlyout('shapeFlyout')
+  $('eraserClose').onclick = () => closeToolFlyout('eraserFlyout')
+  initTheme()
 
   $('btnMenu').onclick = () => toggleLibraryFlyout()
   $('btnSave').onclick = () => { fillSaveFlyout(); openToolFlyout('saveFlyout', $('btnSave')) }
@@ -1852,7 +2396,23 @@ export function init(app) {
   $('paperBrl').addEventListener('change', applyBorderLines)
   $('ppPortrait').onclick = () => applyOrientation('portrait')
   $('ppLandscape').onclick = () => applyOrientation('landscape')
-  $('ppBgColor').onclick = () => openToolFlyout('paperColorFlyout', $('ppBgColor'))
+  $('ppBgColor').onclick = () => {
+    syncPaperColorFlyout()
+    openToolFlyout('paperColorFlyout', $('ppBgColor'))
+  }
+  $('ppBoardDark').onclick = toggleDarkBoard
+  $('paperColorClose').onclick = () => closeToolFlyout('paperColorFlyout')
+  $('paperCustomBtn').onclick = () => openColorPopover('paper', $('paperCustomBtn'))
+  $('paperCustomBtn').setAttribute('aria-haspopup', 'dialog')
+  $('paperCustomBtn').setAttribute('aria-expanded', 'false')
+  $('paperHexApply').onclick = applyPaperHex
+  $('paperHex').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); applyPaperHex() }
+    else if (e.key === 'Escape') { e.preventDefault(); syncPaperColorFlyout(); e.target.blur() }
+  })
+  $('paperHex').addEventListener('input', () => clearHexError('paper'))
+  $('paperHex').addEventListener('blur', () => { if ($('paperHex').value.trim()) applyPaperHex({ quiet: true }) })
+  $('btnTheme').onclick = () => setTheme(!document.body.classList.contains('dark'))
   $('ppPaneOn').onclick = () => setWritingPane(true)
   $('ppPaneOff').onclick = () => setWritingPane(false)
   $('btnAddPage').onclick = addPage
@@ -1866,7 +2426,47 @@ export function init(app) {
   inner.addEventListener('pointercancel', onPointerUp)
   inner.addEventListener('contextmenu', e => e.preventDefault())
   $('canvasHost').addEventListener('wheel', e => {
-    if (e.ctrlKey || e.metaKey) { e.preventDefault(); zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15) }
+    if (e.ctrlKey || e.metaKey) {
+      wheelOverscroll = 0
+      e.preventDefault()
+      zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15)
+      return
+    }
+    const host = $('canvasHost')
+    const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? host.clientHeight : 1)
+    // Normal wheel/trackpad scrolling is left untouched. Once the last page
+    // is already at the bottom, continued downward scrolling becomes a clear,
+    // deliberate gesture that appends the next page.
+    if (dy <= 0) {
+      wheelOverscroll = 0
+      hidePullHint()
+      return
+    }
+    if (!S.pages.length || S.currentPage !== S.pages.length - 1) {
+      wheelOverscroll = 0
+      return
+    }
+    const atBottom = host.scrollHeight - host.clientHeight - host.scrollTop <= 2
+    if (!atBottom) {
+      wheelOverscroll = 0
+      return
+    }
+    if (performance.now() < wheelAddLock) return
+    wheelOverscroll += dy
+    const commit = Math.max(250, host.clientHeight * 0.28)
+    if (wheelOverscroll < commit) {
+      const display = wheelOverscroll * (pullCommitLimit() / commit)
+      updatePullHint(display, 'wheel')
+      return
+    }
+    wheelOverscroll = 0
+    wheelAddLock = performance.now() + 900
+    hidePullHint()
+    addPage()
+    // addPage() re-renders the stack; wait for layout before showing page top.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (S.currentPage === S.pages.length - 1) host.scrollTop = 0
+    }))
   }, { passive: false })
 
   window.addEventListener('keydown', e => {
@@ -1892,13 +2492,22 @@ export function init(app) {
       else if (k === 'g') { e.preventDefault(); setTool('pen'); openToolFlyout('shapeFlyout', $('tbObject')) }
       else if (k === 't') { e.preventDefault(); startTextTool() }
       else if (k === 'escape') {
-        for (const f of ['shapeFlyout', 'eraserFlyout', 'penFlyout', 'saveFlyout']) closeToolFlyout(f)
+        closeColorPopover()
+        for (const f of ['shapeFlyout', 'eraserFlyout', 'penFlyout', 'saveFlyout', 'paperColorFlyout']) closeToolFlyout(f)
         if (libCloser) toggleLibraryFlyout()
         $('paperPanel').classList.add('hidden')
+        if (S.tool === 'shape') setTool('pen')
         clearSelection()
       }
     }
   })
+  window.addEventListener('resize', () => {
+    if (CP.open) placeColorPopover()
+    if (!S.flyoutOpenTool || !flyoutAnchorEl) return
+    const f = $(S.flyoutOpenTool)
+    if (f && !f.classList.contains('hidden')) placeFlyout(f, flyoutAnchorEl)
+  })
+
   window.addEventListener('keyup', e => {
     if (e.code === 'Space') { S.spaceDown = false; stackInnerClass() }
   })
@@ -1935,6 +2544,7 @@ export function init(app) {
 
 function stackInnerClass() {
   $('stackInner').classList.toggle('panning', S.spaceDown || S.tool === 'view')
+  $('stackInner').classList.toggle('shape-tool', S.tool === 'shape')
 }
 
 function isTextEditing() {
@@ -1944,43 +2554,114 @@ function isTextEditing() {
 }
 
 export function selectColor(c) {
-  curPen().color = c
-  document.querySelectorAll('.ps').forEach(s => s.classList.toggle('sel', s.dataset.color === c))
-  $('colorPicker').value = hexToCss(c, '#000000')
-  const circ = document.getElementById('curColorCircle')
-  const dot = document.getElementById('curDot')
-  if (circ) circ.style.background = c
-  if (dot) dot.style.background = c
-  drawWave()
+  const hex = normalizeHexColor(c)
+  if (!hex) return
+  curPen().color = hex
   savePens()
+  syncPenFlyout()
 }
 
-// ---------- toolbar pen stack — 10 factory slots as in the original app ----------
+// Accept #RGB, RRGGBB and ARGB/HTML #AARRGGBB input. Returns #RRGGBB or null.
+function normalizeHexColor(raw) {
+  let s = String(raw || '').trim().replace(/^#/, '')
+  if (s.length === 8) s = s.slice(2)
+  if (s.length === 3) s = s.split('').map(ch => ch + ch).join('')
+  if (!/^[0-9a-fA-F]{6}$/.test(s)) return null
+  return '#' + s.toUpperCase()
+}
+
+function setHexField(which, color) {
+  const input = $(which + 'Hex')
+  if (!input) return
+  const hex = normalizeHexColor(color)
+  if (!hex) return
+  // never clobber a value the user is actively editing
+  if (document.activeElement !== input) input.value = hex
+  input.setAttribute('aria-invalid', 'false')
+  clearHexError(which)
+}
+
+function setHexError(which, message) {
+  const input = $(which + 'Hex')
+  const err = $(which + 'HexError')
+  if (input) input.setAttribute('aria-invalid', 'true')
+  if (err) err.textContent = message
+}
+
+function clearHexError(which) {
+  const input = $(which + 'Hex')
+  const err = $(which + 'HexError')
+  if (input) input.setAttribute('aria-invalid', 'false')
+  if (err) err.textContent = ''
+}
+
+function applyPenHex({ quiet = false } = {}) {
+  const input = $('penHex')
+  if (!input) return
+  const hex = normalizeHexColor(input.value)
+  if (!hex) {
+    setHexError('pen', 'Enter 3 or 6 hex digits, for example #0B63C5.')
+    if (!quiet) input.focus()
+    return
+  }
+  clearHexError('pen')
+  input.value = hex
+  selectColor(hex)
+}
+
+// ---------- toolbar pen control: one readable card, not ten coloured dots ----------
 function renderPenStack() {
   const stack = $('tbPens')
   if (!stack) return
-  stack.innerHTML = ''
-  S.penSlots.forEach((pen, i) => {
+  const pen = curPen()
+  const t = PEN_TYPES[pen.type] || PEN_TYPES.marker
+  const b = document.createElement('button')
+  b.id = 'tbPenCurrent'
+  b.className = 'tb-pen-current' + (S.tool === 'pen' ? ' is-pen' : '')
+  b.setAttribute('aria-haspopup', 'dialog')
+  b.setAttribute('aria-expanded', S.flyoutOpenTool === 'penFlyout' ? 'true' : 'false')
+  const title = `${t.label} · ${pen.widthMM.toFixed(1)} mm · ${COLOR_NAMES[pen.color] || pen.color}`
+  b.title = title
+  b.setAttribute('aria-label', `Current pen: ${title}. Open pen settings`)
+  b.innerHTML = `<span class="tp-dot" style="background:${pen.color};color:${colorLuma(pen.color) > .58 ? '#15181d' : '#fff'}"><svg aria-hidden="true"><use href="#pt-${pen.type || 'marker'}"/></svg></span><span class="tp-copy"><span class="tp-name">${t.label.replace('Highlighter squared', 'Hi-Square')}</span><span class="tp-meta">${pen.widthMM.toFixed(1)} mm</span></span><span class="tp-chevron" aria-hidden="true"></span>`
+  b.onclick = () => {
+    const wasOpen = S.flyoutOpenTool === 'penFlyout'
+    if (S.tool !== 'pen') setTool('pen')
+    syncPenFlyout()
+    const anchor = $('tbPenCurrent') || b
+    if (wasOpen) closeToolFlyout('penFlyout')
+    else openToolFlyout('penFlyout', anchor, { centered: true })
+  }
+  stack.replaceChildren(b)
+  if (S.flyoutOpenTool === 'penFlyout') flyoutAnchorEl = b
+  syncFlyoutAria()
+}
+
+function buildQuickPalette() {
+  const wrap = $('tbQuick')
+  if (!wrap) return
+  wrap.innerHTML = ''
+  QUICK_PALETTE.forEach(c => {
     const b = document.createElement('button')
-    const t = PEN_TYPES[pen.type] || PEN_TYPES.marker
-    const sel = i === S.penIndex && S.tool === 'pen' && !S.flyoutOpenTool
-    b.className = 'tb-penslot' + (sel ? ' sel' : '')
-    b.setAttribute('role', 'option')
-    b.title = `${t.label} — ${pen.widthMM.toFixed(1)}mm`
-    b.setAttribute('aria-label', `Pen ${i + 1}: ${t.label} ${pen.widthMM.toFixed(1)}mm`)
-    if (sel) {
-      // original: the selected slot is a filled circle in the pen's own color
-      // (12-s.png: marker-black slot = black circle, white glyph); light pens
-      // flip the glyph dark for contrast
-      b.style.background = pen.color
-      b.style.color = colorLuma(pen.color) > 0.55 ? '#1a1a1a' : '#fff'
-      b.innerHTML = `<svg><use href="#pt-${pen.type || 'marker'}"/></svg>`
-    } else {
-      const d = Math.round(Math.max(8, Math.min(37, pen.widthMM * 10.1)))
-      b.innerHTML = `<span class="dot" style="width:${d}px;height:${d}px;background:${pen.color}"></span>`
+    b.className = 'tb-swatch'
+    b.dataset.color = c
+    b.style.setProperty('--sw', c)
+    b.title = COLOR_NAMES[c] || c
+    b.setAttribute('aria-label', `Quick color ${COLOR_NAMES[c] || c}`)
+    b.onclick = () => {
+      if (S.tool !== 'pen') setTool('pen')
+      selectColor(c)
     }
-    b.onclick = () => onSelectPenSlot(i)
-    stack.appendChild(b)
+    wrap.append(b)
+  })
+}
+
+function syncQuickPalette() {
+  const c = curPen().color
+  document.querySelectorAll('#tbQuick .tb-swatch').forEach(s => {
+    const on = s.dataset.color === c
+    s.classList.toggle('sel', on)
+    s.setAttribute('aria-pressed', on ? 'true' : 'false')
   })
 }
 
@@ -1993,21 +2674,8 @@ function colorLuma(hex) {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
 }
 
-function onSelectPenSlot(i) {
-  if (S.penIndex === i && S.tool === 'pen') {
-    // re-click the selected slot: toggle its config flyout (UWP behavior)
-    openToolFlyout('penFlyout', $('tbPens').children[i], { centered: true })
-    return
-  }
-  S.penIndex = i
-  setTool('pen')
-  syncPenFlyout()
-  openToolFlyout('penFlyout', $('tbPens').children[i], { centered: true })
-  savePens()
-}
-
 function syncToolButtons() {
-  const map = { erase: 'tbEraser', laser: 'tbLaser', lasso: 'tbLasso', view: 'tbEye' }
+  const map = { erase: 'tbEraser', laser: 'tbLaser', lasso: 'tbLasso', view: 'tbEye', shape: 'tbObject' }
   for (const [tool, id] of Object.entries(map)) {
     const b = $(id)
     if (!b) continue
@@ -2037,7 +2705,7 @@ function wireToolbarToggles() {
   // caret hot-zones under the toggles open the tool flyouts (MoreArrow parity) —
   // only stop the event for zones whose flyout exists, so bare toggles keep
   // receiving their own click: laser/ruler flyouts are not built yet
-  document.querySelectorAll('.caret-zone').forEach(z => {
+  document.querySelectorAll('#topbar .tb-caret[data-fly]').forEach(z => {
     z.addEventListener('click', ev => {
       const b = z.closest('button')
       const fly = z.dataset.fly
@@ -2080,14 +2748,19 @@ function syncPenFlyout() {
     b.classList.toggle('active', on)
     b.setAttribute('aria-pressed', on ? 'true' : 'false')
   })
-  document.querySelectorAll('#penPalette .ps').forEach(s => s.classList.toggle('sel', s.dataset.color === pen.color))
-  $('colorPicker').value = hexToCss(pen.color, '#000000')
-  if (Math.abs(parseFloat($('width').value) - pen.widthMM) > 0.01) $('width').value = pen.widthMM
+  document.querySelectorAll('#penPalette .ps').forEach(s => {
+    const on = s.dataset.color === pen.color
+    s.classList.toggle('sel', on)
+    s.setAttribute('aria-pressed', on ? 'true' : 'false')
+  })
+  setHexField('pen', pen.color)
+  const width = $('width')
+  if (width && Math.abs(parseFloat(width.value) - pen.widthMM) > 0.01) width.value = pen.widthMM
   updateWidthFill()
-  const circ = document.getElementById('curColorCircle')
-  const dot = document.getElementById('curDot')
-  if (circ) circ.style.background = pen.color
-  if (dot) dot.style.background = pen.color
+  const readout = $('widthReadout')
+  if (readout) readout.textContent = `${pen.widthMM.toFixed(1)} mm`
+  renderPenStack()
+  syncQuickPalette()
   drawWave()
 }
 
@@ -2114,14 +2787,42 @@ function drawWave() {
     const y = cv.height * 0.55 + Math.sin(t * Math.PI * 2 - 0.7) * cv.height * 0.22 - t * 5
     pts.push({ x: px, y, p: 0.72 + 0.28 * Math.sin(t * Math.PI) })
   }
-  const mid = PEN_TYPES[cur.type] ? PEN_TYPES[cur.type].alpha : 1
   drawStrokeAlpha(ctx, cv.width, cv.height, {
-    type: cur.type === 'pencil' ? 'pencil' : 'marker',
+    // Use the real pen type: this preview is how users tell calligraphy,
+    // highlighter and hi-square apart before drawing on the page.
+    type: cur.type || 'marker',
     color: cur.color,
-    opacity: cur.opacity !== undefined ? cur.opacity : mid,
-    // the original previews a thin hairline wave scaled by the pen's width
-    width: clamp(cur.widthMM * 3.2, 2.6, 46),
+    opacity: cur.opacity,
+    width: clamp(cur.widthMM * 5, 5, 12),
     pts,
+  })
+}
+
+// Small real-engine samples in the pen picker. Icons for the five pens were
+// nearly indistinguishable; the rendered stroke is the honest control.
+function drawPenTypeSamples() {
+  document.querySelectorAll('#penTypeRow .penType').forEach(b => {
+    const cv = b.querySelector('.pt-sample')
+    if (!cv) return
+    const ctx = cv.getContext('2d')
+    ctx.clearRect(0, 0, cv.width, cv.height)
+    const type = b.dataset.type
+    const pts = []
+    for (let x = 8; x <= cv.width - 8; x += 3) {
+      const t = (x - 8) / (cv.width - 16)
+      pts.push({
+        x,
+        y: cv.height * 0.55 + Math.sin(t * Math.PI * 1.7 - 0.6) * cv.height * 0.19 - t * 2,
+        p: 0.62 + 0.3 * Math.sin(t * Math.PI),
+      })
+    }
+    const sampleWidth = type === 'highlighter' ? 5 : type === 'highlighterSquared' ? 6 : type === 'calligraphy' ? 8 : type === 'pencil' ? 6 : 7
+    drawStrokeAlpha(ctx, cv.width, cv.height, {
+      type,
+      color: '#15181D',
+      width: sampleWidth,
+      pts,
+    })
   })
 }
 

@@ -54,6 +54,7 @@ async function waitFor(expr, ms = 2600) {
 }
 
 const openId = await state(`__wc.S.noteId`)
+const penBefore = await state(`JSON.stringify({ slots: __wc.S.penSlots, index: __wc.S.penIndex })`)
 // clear leftovers from earlier crashed runs (same scratch name)
 await evalJs(ws, `(async () => { const lib = await WriteCanvasHost.library(); const ids = (lib.items || []).filter(i => i.name === 'ZZAudit').map(i => i.id); for (const id of ids) await WriteCanvasHost.destroyItem(id); return ids })()`, { awaitPromise: true })
 const note = await evalJs(ws, `WriteCanvasHost.createNote('ZZAudit', 1)`, { awaitPromise: true })
@@ -63,6 +64,18 @@ await sleep(400)
 await evalJs(ws, `(() => { const h = document.getElementById('canvasHost'); h.scrollTop = 0; h.scrollLeft = 0; return true })()`)
 const geo = await evalJs(ws, `(() => { const i = document.getElementById('stackInner'); const r = i.getBoundingClientRect(); return { left: r.left, top: r.top, zoom: r.width / i.offsetWidth } })()`)
 const strokesOf = () => state(`__wc.S.pages[__wc.S.currentPage].strokes.length`) || 0
+const dragDoc = async (x1, y1, x2, y2) => {
+  const sx = Math.round(geo.left + x1 * geo.zoom), sy = Math.round(geo.top + y1 * geo.zoom)
+  const ex = Math.round(geo.left + x2 * geo.zoom), ey = Math.round(geo.top + y2 * geo.zoom)
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: sx, y: sy, button: 'none' })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: sx, y: sy, button: 'left', buttons: 1, clickCount: 1 })
+  for (let i = 1; i <= 6; i++) {
+    await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(sx + (ex - sx) * i / 6), y: Math.round(sy + (ey - sy) * i / 6), buttons: 1 })
+    await sleep(16)
+  }
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: ex, y: ey, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(160)
+}
 
 // ---------- 0. toolbar markup hygiene ----------
 const hygiene = await evalJs(ws, `(() => {
@@ -116,16 +129,18 @@ ok('tbEraser aria-pressed=true', await state(`document.getElementById('tbEraser'
 await realClick(`document.getElementById('tbEraser')`)
 ok('click tbEraser again -> pen', await state(`__wc.S.tool`) === 'pen')
 
-// ---------- 2. flyouts via caret zones ----------
-await realClick(`document.querySelector('.caret-zone[data-fly="eraserFlyout"]')`)
+// ---------- 2. flyouts via their real controls ----------
+const eraserCaret = `document.querySelector('#topbar .tb-caret[data-fly="eraserFlyout"]')`
+const shapeButton = `document.getElementById('tbObject')`
+await realClick(eraserCaret)
 ok('eraser caret -> flyout opens', await state(`!document.getElementById('eraserFlyout').classList.contains('hidden')`))
-await realClick(`document.querySelector('.caret-zone[data-fly="eraserFlyout"]')`)
+await realClick(eraserCaret)
 ok('eraser caret again -> flyout closes', await state(`document.getElementById('eraserFlyout').classList.contains('hidden')`))
 
-await realClick(`document.querySelector('.caret-zone[data-fly="shapeFlyout"]')`)
-ok('shape caret -> flyout opens', await state(`!document.getElementById('shapeFlyout').classList.contains('hidden')`))
-await realClick(`document.querySelector('.caret-zone[data-fly="shapeFlyout"]')`)
-ok('shape caret again -> flyout closes', await state(`document.getElementById('shapeFlyout').classList.contains('hidden')`))
+await realClick(shapeButton)
+ok('shape control -> flyout opens', await state(`!document.getElementById('shapeFlyout').classList.contains('hidden')`))
+await realClick(shapeButton)
+ok('shape control again -> flyout closes', await state(`document.getElementById('shapeFlyout').classList.contains('hidden')`))
 
 await realClick(`document.getElementById('btnMenu')`)
 ok('btnMenu -> library flyout opens', await state(`!document.getElementById('libraryFlyout').classList.contains('hidden')`))
@@ -143,15 +158,15 @@ ok('paper: portrait applies', await state(`__wc.S.pages[__wc.S.currentPage].pape
 await realClick(`document.getElementById('btnPaper')`)
 ok('btnPaper again -> panel closes', await state(`document.getElementById('paperPanel').classList.contains('hidden')`))
 
-// pen slot selects + opens its flyout, re-click closes
-await realClick(`document.getElementById('tbPens').children[1]`)
-ok('pen slot 2 click -> penIndex 1', await state(`__wc.S.penIndex`) === 1, JSON.stringify(await state(`({ i: __wc.S.penIndex, tool: __wc.S.tool })`)))
-ok('pen slot click -> pen flyout opens', await state(`!document.getElementById('penFlyout').classList.contains('hidden')`))
-await realClick(`document.getElementById('tbPens').children[1]`)
-ok('pen slot re-click -> flyout closes', await state(`document.getElementById('penFlyout').classList.contains('hidden')`))
+// the single current-pen control opens its settings flyout, re-click closes
+await realClick(`document.getElementById('tbPenCurrent')`)
+ok('current pen click -> pen flyout opens', await state(`!document.getElementById('penFlyout').classList.contains('hidden')`))
+ok('current pen click keeps pen tool active', await state(`__wc.S.tool`) === 'pen', 'tool=' + await state(`__wc.S.tool`))
+await realClick(`document.getElementById('tbPenCurrent')`)
+ok('current pen re-click -> flyout closes', await state(`document.getElementById('penFlyout').classList.contains('hidden')`))
 
 // ---------- 3. flyout options ----------
-await realClick(`document.querySelector('.caret-zone[data-fly="eraserFlyout"]')`)
+await realClick(eraserCaret)
 await realClick(`document.getElementById('erSegment')`)
 ok('eraser option: segment applies', await state(`__wc.S.eraserMode`) === 'segment')
 await realClick(`document.getElementById('erSizes').children[2]`)
@@ -165,34 +180,40 @@ ok('eraser option: stroke applies', await state(`__wc.S.eraserMode`) === 'stroke
 await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 await sleep(80)
 
-await realClick(`document.querySelector('.caret-zone[data-fly="shapeFlyout"]')`)
+await realClick(shapeButton)
 const nBeforeShape = await strokesOf()
 await realClick(`document.getElementById('shapeGrid').children[0]`)
-ok('shape card inserts a shape', await strokesOf() === nBeforeShape + 1, `before=${nBeforeShape} after=${await strokesOf()}`)
+ok('shape card activates shape tool', await state(`__wc.S.tool`) === 'shape', 'tool=' + await state(`__wc.S.tool`))
+await dragDoc(700, 850, 1150, 980)
+ok('shape drag creates one vector shape', await strokesOf() === nBeforeShape + 1, `before=${nBeforeShape} after=${await strokesOf()}`)
+ok('created stroke is the selected shape kind', await state(`__wc.S.pages[__wc.S.currentPage].strokes.at(-1)?.shape?.kind`) === 'line', 'kind=' + await state(`__wc.S.pages[__wc.S.currentPage].strokes.at(-1)?.shape?.kind`))
 await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 await sleep(80)
-const toolAfterShape = await state(`__wc.S.tool`)
+ok('Escape returns to the pen after shape drag', await state(`__wc.S.tool`) === 'pen', 'tool=' + await state(`__wc.S.tool`))
 
 // text tool button inside the shapes flyout
-await realClick(`document.querySelector('.caret-zone[data-fly="shapeFlyout"]')`)
+await realClick(shapeButton)
 await realClick(`document.getElementById('btnTextTool')`)
 ok('text tool button -> tool=text', await state(`__wc.S.tool`) === 'text', 'tool=' + await state(`__wc.S.tool`))
-await realClick(`document.getElementById('tbPens').children[0]`)
-ok('pen slot returns to pen tool', await state(`__wc.S.tool`) === 'pen')
+await realClick(`document.getElementById('tbPenCurrent')`)
+ok('current pen returns to pen tool', await state(`__wc.S.tool`) === 'pen')
 
-// color swatch in topbar
-const swatch = await evalJs(ws, `(() => { const s = document.querySelector('#topbar .ps[data-color]'); return s ? { color: s.dataset.color, i: [...s.parentElement.children].indexOf(s) } : null })()`)
+// quick colour swatches in the topbar (hidden below 1360px)
+const swatch = await evalJs(ws, `(() => { const s = document.querySelector('#tbQuick .tb-swatch[data-color]'); if (!s || !s.getBoundingClientRect().width) return null; return { color: s.dataset.color, i: [...s.parentElement.children].indexOf(s) } })()`)
 if (swatch) {
-  await realClick(`document.querySelectorAll('#topbar .ps')[${swatch.i}]`)
+  await realClick(`document.querySelectorAll('#tbQuick .tb-swatch')[${swatch.i}]`)
   const cur = await state(`(() => { const p = __wc.S.penSlots[__wc.S.penIndex]; return p.color })()`)
-  ok('color swatch applies to pen', String(cur).toLowerCase() === String(swatch.color).toLowerCase(), `want=${swatch.color} got=${cur}`)
-  await realClick(`document.querySelectorAll('#topbar .ps')[0]`)
+  ok('quick colour swatch applies to pen', String(cur).toLowerCase() === String(swatch.color).toLowerCase(), `want=${swatch.color} got=${cur}`)
+  await realClick(`document.querySelectorAll('#tbQuick .tb-swatch')[0]`)
 } else {
-  console.log('SKIP color swatch (no #topbar .ps row)')
+  console.log('SKIP quick colour swatch (row hidden / narrow window)')
 }
 
 // ---------- 4. draw + undo/redo via toolbar ----------
-await realClick(`document.getElementById('tbPens').children[0]`)
+// A toolbar flyout overlapping the canvas would swallow the pointer stream.
+if (!(await state(`document.getElementById('penFlyout').classList.contains('hidden')`))) {
+  await realClick(`document.getElementById('penDone')`)
+}
 const px = v => Math.round(geo.left + v * geo.zoom)
 const py = v => Math.round(geo.top + v * geo.zoom)
 const n0 = await strokesOf()
@@ -237,7 +258,7 @@ await sleep(80)
 
 // ---------- 7. pen flyout: types / palette / width ----------
 const penInfo = () => state(`(() => { const p = __wc.S.penSlots[__wc.S.penIndex]; return { type: p.type, color: p.color, width: p.widthMM } })()`)
-const slotSel = `document.getElementById('tbPens').children[0]`
+const slotSel = `document.getElementById('tbPenCurrent')`
 const penFlyoutOpen = () => state(`!document.getElementById('penFlyout').classList.contains('hidden')`)
 if (!(await penFlyoutOpen())) await realClick(slotSel)
 ok('pen flyout opens for the selected slot', await penFlyoutOpen())
@@ -267,6 +288,16 @@ const wHi = (await penInfo()).width
 await clickSlider(0.15)
 const wLo = (await penInfo()).width
 ok('width slider changes pen width', wHi > wLo && wHi > 6 && wLo < 6, `80%->${wHi} 15%->${wLo}`)
+
+// custom colour picker must open beside the rainbow swatch, not at the window corner
+if (!(await penFlyoutOpen())) await realClick(slotSel)
+const swatchRect = await evalJs(ws, `(() => { const r = document.getElementById('customColorBtn').getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right } })()`)
+await realClick(`document.getElementById('customColorBtn')`)
+const popRect = await evalJs(ws, `(() => { const p = document.getElementById('colorPopover'); const r = p.getBoundingClientRect(); return { hidden: p.classList.contains('hidden'), l: r.left, t: r.top, r: r.right, b: r.bottom } })()`)
+ok('custom colour picker opens in-page', !popRect.hidden && popRect.l > 100, JSON.stringify(popRect))
+ok('custom colour picker sits beside the rainbow swatch', popRect.r <= swatchRect.l + 2 && Math.abs(popRect.t - swatchRect.t) < 80, JSON.stringify({ pop: popRect, swatch: swatchRect }))
+await realClick(`document.getElementById('cpClose')`)
+ok('closing custom colour keeps pen flyout open', await penFlyoutOpen() && await state(`document.getElementById('colorPopover').classList.contains('hidden')`))
 await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 await sleep(80)
 
@@ -322,6 +353,17 @@ if (openId) { try { await evalJs(ws, `__wc.App.openNote(${openId})`, { awaitProm
 for (const id of [createdId, note.id]) {
   if (!id || id === openId) continue
   try { await evalJs(ws, `WriteCanvasHost.destroyItem(${Number(id)})`, { awaitPromise: true }) } catch { }
+}
+// the audit exercises the real pen controls; put the user's pen back exactly
+if (penBefore) {
+  await evalJs(ws, `(() => {
+    const d = JSON.parse(${JSON.stringify(penBefore)})
+    __wc.S.penSlots = d.slots
+    __wc.S.penIndex = d.index
+    localStorage.setItem('wc:pens', JSON.stringify({ slots: d.slots, index: d.index }))
+    return true
+  })()`)
+  try { await realClick(`document.getElementById('tbPenCurrent')`); await realClick(`document.getElementById('tbPenCurrent')`) } catch { }
 }
 console.log(failures.length ? `\nAUDIT FAILED (${failures.length})` : '\nAUDIT ALL PASS')
 try { ws.close() } catch { }
