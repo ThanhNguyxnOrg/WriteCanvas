@@ -138,26 +138,17 @@ async function main() {
   ok('ruler: on', await evalJs(ws, `__wc.S.rulerOn`) === true)
   ok('ruler: layer painted', await evalJs(ws, inkShare(`document.getElementById('rulerC')`)) > 0.0005)
   ok('ruler: rotate ctl exists', await evalJs(ws, `!!document.getElementById('rulerCtl')`))
-  // scroll so the ruler axle (0.55 * doc height) is centered on screen
-  await evalJs(ws, `(() => {
-    const host = document.getElementById('canvasHost')
-    const inner = document.getElementById('stackInner')
-    const zoom = inner.getBoundingClientRect().width / inner.offsetWidth
-    host.scrollTop = 0.55 * inner.offsetHeight * zoom - host.clientHeight / 2
-    host.scrollLeft = 0.5 * inner.offsetWidth * zoom - host.clientWidth / 2
-    return true
-  })()`)
-  await sleep(120)
+  // The app now brings the stencil into the viewport when it is toggled on,
+  // so the default 0.55 position is no longer necessarily where the grip is.
   geo = await evalJs(ws, `(() => {
     const inner = document.getElementById('stackInner')
     const r = inner.getBoundingClientRect()
     return { left: r.left, top: r.top, zoom: r.width / inner.offsetWidth, w: inner.offsetWidth, h: inner.offsetHeight }
   })()`)
-  // Read the actual stencil position instead of assuming the factory 0.55:
-  // ruler position/angle persist across runs, just like a real stencil.
+  // Read the actual stencil position instead of assuming the factory 0.55.
   const rulerInfo = await evalJs(ws, `(() => {
     const c = document.getElementById('rulerCtl')
-    return { px: parseFloat(c.style.left) - 26, py: parseFloat(c.style.top) - 26, angle: parseFloat(c.dataset.angle) || 0 }
+    return { px: parseFloat(c.dataset.px), py: parseFloat(c.dataset.py), angle: parseFloat(c.dataset.angle) || 0 }
   })()`)
   const PY = rulerInfo.py
   ok('ruler: axle on screen', geo.top + PY * geo.zoom > 240 && geo.top + PY * geo.zoom < 980, 'screenY=' + (geo.top + PY * geo.zoom))

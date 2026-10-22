@@ -226,6 +226,7 @@ function zoomAt(cx, cy, factor) {
   requestAnimationFrame(() => {
     host.scrollLeft = px * z2 - (cx - hRect.left)
     host.scrollTop = py * z2 - (cy - hRect.top)
+    if (S.rulerOn) { ensureRulerVisible(); drawRulerLayer(current()) }
   })
 }
 
@@ -309,11 +310,26 @@ export async function openNote(id) {
     }
     return page
   })
+  // Dark mode owns the default sheet colour. Custom board colours are left
+  // alone; only the factory white sheet follows the interface theme.
+  const darkTheme = document.body.classList.contains('dark')
+  if (darkTheme) {
+    for (const page of S.pages) {
+      if (boardHex(page) === LIGHT_BOARD) {
+        page.paper.bg = '#FF' + DARK_BOARD.slice(1)
+        page.dirty = true
+      }
+    }
+  }
   localStorage.setItem('wc:lastNote', String(id))
   if (host && host.selectNote) host.selectNote(id)
   S.hadZoom = false
   S.zoom = 1
   setPage(0)
+  if (darkTheme) {
+    ensureThemePenContrast()
+    scheduleAutosave()
+  }
   // decode rasters + capture replays (async, per page). Pages that restored
   // their vectors don't need the raster (and would double-ink under strokes).
   for (let i = 0; i < res.pages.length; i++) {
@@ -356,6 +372,7 @@ function setPage(i) {
   // title above the viewport (or blank space below it).
   const host = $('canvasHost')
   if (host) { host.scrollTop = 0; host.scrollLeft = 0 }
+  if (S.rulerOn) { ensureRulerVisible(); drawRulerLayer(current()) }
   refreshPages()
   updateTitle()
   syncUndoRedo()
@@ -897,12 +914,38 @@ function updateSelectionChrome(page) {
 const ruler = { angle: 0, fx: 0.5, fy: 0.55 } // fractions of the doc size
 let rulerGrip = null
 
+// Keep the stencil reachable. The default position is 55% down a Letter page,
+// which is below the fold on a fitted page; turning Ruler on used to look like
+// nothing happened. If the grip is outside the visible canvas, put it in the
+// middle of the current viewport before drawing it.
+function ensureRulerVisible() {
+  if (!S.rulerOn) return false
+  const page = current(); if (!page) return false
+  const host = $('canvasHost'); const inner = $('stackInner')
+  if (!host || !inner || !inner.offsetWidth) return false
+  const hr = host.getBoundingClientRect(); const ir = inner.getBoundingClientRect()
+  const scale = ir.width / inner.offsetWidth || S.zoom || 1
+  const { w, h } = docSize(page)
+  const sx = ir.left + ruler.fx * w * scale
+  const sy = ir.top + ruler.fy * h * scale
+  const padX = 160, padY = 64
+  const visible = sx >= hr.left + padX && sx <= hr.right - padX && sy >= hr.top + padY && sy <= hr.bottom - padY
+  if (visible) return false
+  const cx = hr.left + hr.width / 2
+  const cy = hr.top + hr.height / 2
+  ruler.fx = clamp((cx - ir.left) / scale / w, 0.06, 0.94)
+  ruler.fy = clamp((cy - ir.top) / scale / h, 0.06, 0.94)
+  return true
+}
+
 function toggleRuler() {
   S.rulerOn = !S.rulerOn
   const page = current(); if (!page) return
   syncToolButtons()
-  if (S.rulerOn) drawRulerLayer(page)
-  else {
+  if (S.rulerOn) {
+    ensureRulerVisible()
+    drawRulerLayer(page)
+  } else {
     const c = $('rulerC'); c.getContext('2d').clearRect(0, 0, c.width, c.height)
     const ctl = $('rulerCtl'); if (ctl) ctl.remove()
   }
@@ -927,6 +970,7 @@ function drawRulerLayer(page) {
   ctx.clearRect(0, 0, c.width, c.height)
   if (!S.rulerOn) return
   const { ux, uy, px, py, w, h } = rulerDir(page)
+  const scale = Math.max(0.08, S.zoom || 1)
   const half = (w + h) * 0.52 // long enough to cross any page
   const x0 = clamp(px - ux * half, 0, w), y0 = clamp(py - uy * half, 0, h)
   const x1r = clamp(px + ux * half, 0, w), y1r = clamp(py + uy * half, 0, h)
@@ -938,24 +982,27 @@ function drawRulerLayer(page) {
   ctx.strokeStyle = 'rgba(11,99,197,.85)'
   ctx.lineWidth = 3
   ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1r, y1r); ctx.stroke()
-  // division ticks
-  ctx.lineWidth = 2
+  // division ticks stay legible at any zoom: constant screen px, not doc px
+  ctx.lineWidth = Math.max(1, 2 / scale)
   ctx.strokeStyle = 'rgba(11,99,197,.55)'
   const tickStep = Math.max(1, Math.round(docMM(10)))
+  const tickLen = 14 / scale
   for (let t = 0; t <= half; t += tickStep) {
     for (const s of [1, -1]) {
       const bx = px + s * t * ux, by = py + s * t * uy
       if (bx < -20 || bx > w + 20 || by < -20 || by > h + 20) continue
-      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx - uy * 14, by + ux * 14); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx - uy * tickLen, by + ux * tickLen); ctx.stroke()
     }
   }
-  // grip handle at the pivot
+  // grip handle at the pivot; constant screen size so it is easy to grab at
+  // fit-width zoom instead of shrinking to a few pixels
   ctx.setLineDash([])
   ctx.fillStyle = '#fff'
   ctx.strokeStyle = 'rgba(11,99,197,.9)'
-  ctx.lineWidth = 2.5
-  ctx.beginPath(); ctx.arc(px, py, 12, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
-  ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fillStyle = 'rgba(11,99,197,.9)'; ctx.fill()
+  ctx.lineWidth = Math.max(1.5, 2.5 / scale)
+  const gripR = 16 / scale
+  ctx.beginPath(); ctx.arc(px, py, gripR, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+  ctx.beginPath(); ctx.arc(px, py, 5 / scale, 0, Math.PI * 2); ctx.fillStyle = 'rgba(11,99,197,.9)'; ctx.fill()
   ctx.restore()
   drawRulerCtl(px, py)
 }
@@ -965,16 +1012,21 @@ function drawRulerCtl(px, py) {
   if (!ctl) {
     ctl = document.createElement('div')
     ctl.id = 'rulerCtl'
-    ctl.innerHTML = `<button id="rulCCW" title="Rotate left 10&#176;" aria-label="Rotate ruler left"><svg viewBox="0 0 24 24"><path d="M14.6 6.4 9 12l5.6 5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><button id="rulCW" title="Rotate right 10&#176;" aria-label="Rotate ruler right"><svg viewBox="0 0 24 24"><path d="M9.4 6.4 15 12l-5.6 5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
+    ctl.innerHTML = `<button id="rulCCW" title="Rotate left 10&#176;" aria-label="Rotate ruler left"><svg viewBox="0 0 24 24"><path d="M14.6 6.4 9 12l5.6 5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button><span id="rulAngle" class="rul-angle" title="Ruler angle">0&#176;</span><button id="rulCW" title="Rotate right 10&#176;" aria-label="Rotate ruler right"><svg viewBox="0 0 24 24"><path d="M9.4 6.4 15 12l-5.6 5.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`
     ctl.style.transformOrigin = '0 0'
     ctl.querySelector('#rulCCW').onclick = ev => { ev.stopPropagation(); ruler.angle -= 10; redrawRuler() }
     ctl.querySelector('#rulCW').onclick = ev => { ev.stopPropagation(); ruler.angle += 10; redrawRuler() }
     $('stackInner').append(ctl)
   }
-  ctl.style.left = (px + 26) + 'px'
-  ctl.style.top = (py + 26) + 'px'
-  ctl.style.transform = `scale(${1 / S.zoom})`
+  const gap = 22 / Math.max(0.08, S.zoom || 1)
+  ctl.style.left = (px + gap) + 'px'
+  ctl.style.top = (py + gap) + 'px'
+  ctl.style.transform = `scale(${1 / Math.max(0.08, S.zoom || 1)})`
   ctl.dataset.angle = String(ruler.angle)
+  ctl.dataset.px = String(px)
+  ctl.dataset.py = String(py)
+  const angle = ctl.querySelector('#rulAngle')
+  if (angle) angle.textContent = `${((Math.round(ruler.angle) + 180) % 360 + 360) % 360 - 180}\u00b0`
 }
 
 function redrawRuler() {
@@ -986,7 +1038,11 @@ function redrawRuler() {
 function rulerHandleHit(page, x, y) {
   if (!S.rulerOn) return false
   const { px, py } = rulerDir(page)
-  return (x - px) ** 2 + (y - py) ** 2 <= 24 * 24
+  // 24 screen px radius: generous for pen/touch at fit-width zoom without
+  // swallowing normal drawing away from the grip.
+  const scale = Math.max(0.08, S.zoom || 1)
+  const hit = 24 / scale
+  return (x - px) ** 2 + (y - py) ** 2 <= hit * hit
 }
 
 function rulerStartMove(x, y) {
@@ -2092,12 +2148,12 @@ function applyPaperBg(hex) {
   if (!rgb) return
   page.paper.bg = '#FF' + rgb.slice(1)
   const dark = colorLuma(rgb) < .42
-  // New ink must be legible on a midnight board. Existing dark strokes stay
-  // untouched; the user can switch back to a light board at any time.
-  if (dark && colorLuma(curPen().color) < .30) {
+  // New ink must be legible on a midnight board. Only near-black/neutral ink
+  // is flipped; saturated red/blue/green stays readable and stays selected.
+  if (dark && inkTooDarkForDarkBoard(curPen().color)) {
     curPen().color = '#FFFFFF'
     savePens()
-    showHint('Dark board on — pen switched to white for contrast')
+    showHint('Dark board on - pen switched to white for contrast')
   }
   markPaperChanged(page)
   syncPaperPanel()
@@ -2146,9 +2202,8 @@ function toggleDarkBoard() {
   const page = current(); if (!page) return
   const isDark = colorLuma(page.paper.bg) < .42
   applyPaperBg(isDark ? LIGHT_BOARD : DARK_BOARD)
-  // the board and the surrounding chrome should change together when the user
-  // asks for the pad.ws-style dark workspace; the moon button still toggles
-  // just the interface for people who prefer light paper.
+  // The board and surrounding chrome change together; setTheme also migrates
+  // the other factory-white pages so a multi-page note does not look striped.
   setTheme(!isDark)
 }
 
@@ -2159,17 +2214,61 @@ function initTheme() {
   setTheme(saved === 'dark', { persist: false })
 }
 
-function setTheme(dark, { persist = true } = {}) {
+const boardHex = page => '#' + String(page?.paper?.bg || '#FFFFFFFF').slice(-6).toUpperCase()
+
+// The interface theme and the factory sheet move together. Board colours the
+// user picked explicitly are preserved; only #FFFFFF <-> the app's #15181D
+// dark sheet are theme-managed.
+function syncBoardWithTheme(dark, { render = true, save = true } = {}) {
+  const from = dark ? LIGHT_BOARD : DARK_BOARD
+  const to = dark ? DARK_BOARD : LIGHT_BOARD
+  let changed = false
+  for (const page of S.pages) {
+    if (boardHex(page) !== from) continue
+    page.paper.bg = '#FF' + to.slice(1)
+    page.dirty = true
+    changed = true
+  }
+  if (!changed) return false
+  if (render) {
+    const page = current()
+    if (page) { renderPage(page); applyTransform() }
+    refreshPages()
+    syncPaperPanel()
+    syncPaperColorFlyout()
+    syncPenFlyout()
+  }
+  if (save) scheduleAutosave()
+  return true
+}
+
+function ensureThemePenContrast() {
+  if (!document.body.classList.contains('dark')) return
+  if (!inkTooDarkForDarkBoard(curPen().color)) return
+  curPen().color = '#FFFFFF'
+  savePens()
+  syncPenFlyout()
+  showHint('Dark mode on - pen switched to white for contrast')
+}
+
+function setTheme(dark, { persist = true, syncBoard = true } = {}) {
   document.body.classList.toggle('dark', !!dark)
   const b = $('btnTheme')
   if (b) {
     b.setAttribute('aria-pressed', dark ? 'true' : 'false')
-    b.title = dark ? 'Switch to light interface' : 'Switch to dark interface'
+    b.title = dark ? 'Switch to light mode' : 'Switch to dark mode'
     const use = b.querySelector('use')
     if (use) use.setAttribute('href', dark ? '#ic-sun' : '#ic-moon')
   }
   if (persist) {
     try { localStorage.setItem('wc:theme', dark ? 'dark' : 'light') } catch { /* ignore */ }
+  }
+  // The native Windows caption overlay sits above the page and has its own
+  // colour; without this the dark theme leaves a white rectangle in the corner.
+  try { window.WriteCanvasHost?.setTitleBarTheme?.(!!dark) } catch { /* ignore */ }
+  if (syncBoard) {
+    syncBoardWithTheme(!!dark)
+    if (dark) ensureThemePenContrast()
   }
 }
 
@@ -2672,6 +2771,19 @@ function colorLuma(hex) {
   const g = parseInt(full.slice(2, 4), 16) || 0
   const b = parseInt(full.slice(4, 6), 16) || 0
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+}
+
+// A red marker on a dark board is perfectly readable; only neutral near-black
+// ink disappears. Chroma keeps saturated hues from being swapped to white.
+function inkTooDarkForDarkBoard(hex) {
+  const h = String(hex || '#000000').replace('#', '')
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h.padEnd(6, '0')
+  const r = parseInt(full.slice(0, 2), 16) || 0
+  const g = parseInt(full.slice(2, 4), 16) || 0
+  const b = parseInt(full.slice(4, 6), 16) || 0
+  const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+  const chroma = (Math.max(r, g, b) - Math.min(r, g, b)) / 255
+  return luma < .30 && chroma < .16
 }
 
 function syncToolButtons() {

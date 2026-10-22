@@ -17,6 +17,7 @@
   --on-accent: #ffffff;
   --danger: #c62828;
   --paper-white: #ffffff;
+  --placeholder: #eef4fb;
   --field: #ffffff;
   --hover: #eceff4;
   --active: #e1e6ee;
@@ -25,24 +26,27 @@
   --tb-h: 76px;
 }
 body.dark {
-  --chrome: #1c1f25;
-  --panel: #20242b;
-  --surface: #23272f;
-  --surface-2: #1a1d22;
-  --workspace: #0e1014;
+  /* Chrome and the factory dark sheet share #15181D so the toolbar, rail and
+     paper read as one workspace instead of two unrelated dark themes. */
+  --chrome: #15181d;
+  --panel: #1b1f26;
+  --surface: #222831;
+  --surface-2: #171b21;
+  --workspace: #0b0d10;
+  --placeholder: #1a1f26;
   --navy: #8ab4f8;
   --ink: #e6e9ef;
-  --dim: #9aa4b2;
-  --line: #323844;
+  --dim: #99a4b3;
+  --line: #2b323d;
   --accent: #8ab4f8;
   --accent-strong: #b4d0ff;
   --accent-soft: #27354d;
   --on-accent: #10151d;
   --danger: #ff8e8e;
   --paper-white: #121418;
-  --field: #171a1f;
-  --hover: #2a2f38;
-  --active: #333944;
+  --field: #191d24;
+  --hover: #252c35;
+  --active: #2d3540;
   --svg-ink: #d9dee7;
   --shadow: 0 14px 44px rgba(0, 0, 0, .48), 0 2px 8px rgba(0, 0, 0, .30);
 }
@@ -96,6 +100,11 @@ body.native-frame #capRow { display: none; }
 .pageItem.cur { background: var(--accent); color: var(--on-accent); }
 .pageItem.cur .num { color: var(--on-accent); }
 .pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--surface), 0 2px 8px rgba(0,0,0,.25); }
+/* A full accent-blue slab is too loud against the midnight chrome. Keep the
+   selected page obvious with a quiet tint + accent edge instead. */
+body.dark .pageItem.cur { background: var(--accent-soft); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
+body.dark .pageItem.cur .num { color: var(--accent-strong); }
+body.dark .pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgba(0,0,0,.45); }
 #btnAddPage {
   margin: 0 16px 12px 16px; height: 38px; border: 1px solid var(--line);
   background: var(--surface); color: var(--ink); font-size: 20px; border-radius: 9px;
@@ -518,7 +527,7 @@ body.dark #penTypeRow .pt-sample { filter: invert(1); }
 #dlgOk { font-weight: 650; }
 
 /* empty page thumbs use the app surface until inked */
-.pageThumb.placeholder { background: var(--accent-soft) !important; box-shadow: inset 0 0 3px rgba(0,0,0,.08); }
+.pageThumb.placeholder { background: var(--placeholder) !important; box-shadow: inset 0 0 3px rgba(0,0,0,.08); }
 
 /* caret hot-zone: only tools that own a secondary flyout get one */
 .tb-toggle { position: relative; }
@@ -633,6 +642,13 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
 }
 #rulerCtl button:hover { background: var(--accent-soft); }
 #rulerCtl svg { width: 16px; height: 16px; display: block; }
+#rulerCtl .rul-angle {
+  min-width: 46px; height: 34px; padding: 0 7px; display: inline-flex;
+  align-items: center; justify-content: center; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--dim); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums;
+  box-shadow: 0 3px 12px rgba(0,0,0,.12);
+}
 
 /* lasso selection floating action bar (counter-scaled) */
 #selBar {

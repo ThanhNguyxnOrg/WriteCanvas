@@ -136,6 +136,20 @@ async function encodeGif(frames) {
 
 // ---------- IPC ----------
 function registerIpc() {
+  // Windows draws the caption buttons in a native overlay above the page; the
+  // overlay has its own colour and does not inherit body.dark. Keep it in step
+  // with the in-app theme so dark mode never leaves a white corner.
+  ipcMain.on('ui:titlebar-theme', (_e, dark) => {
+    if (!win || win.isDestroyed()) return
+    try {
+      win.setTitleBarOverlay({
+        color: dark ? '#15181D' : '#F7F8FA',
+        symbolColor: dark ? '#E6E9EF' : '#1A1A1A',
+        height: 32,
+      })
+    } catch { /* non-Windows or unsupported Electron */ }
+  })
+
   ipcMain.on('app:close-ready', () => {
     // only honor the handshake from a close we actually initiated; a stray
     // message must not disable the flush guard for the next real close

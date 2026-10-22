@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('WriteCanvasHost', {
   async savePage(payload) { return ipcRenderer.invoke('note:savePage', payload) },
   async exportAs(bytes, defaultName, kind) { return ipcRenderer.invoke('export:saveAs', { bytes, defaultName, kind }) },
   async exportPDF(pages, paper) { return ipcRenderer.invoke('export:pdf', { pages, paper }) },
+  // Keep the native Windows caption overlay in step with the in-app theme.
+  setTitleBarTheme(dark) { ipcRenderer.send('ui:titlebar-theme', !!dark) },
   // QA helper: UI test scripts grab the window surface through the main
   // process (CDP captureScreenshot stalls on the GPU-less compositor here)
   async captureWindow() { return ipcRenderer.invoke('debug:captureWindow') },
