@@ -1,16 +1,16 @@
 // Browser-safe Scrble PNG toolkit.
 //
-// The renderer-side twin of main/png-chunks.js + main/scrble-format.js: read
-// and write the private s* ancillary chunks without Node's Buffer or fs. The
-// public surface is deliberately small — callers deal in whole pages, not
-// chunk bookkeeping:
+// This is the ONE codec for the private s* ancillary chunks: the renderer,
+// main/scrble-format.js (via its Node facade) and tests all use this module.
+// It has no Electron, Buffer or fs dependency; callers deal in whole pages:
 //
 //   const out = writeNotePng(png, meta)
 //   const { meta, inkGif, vecJson } = readNotePng(out)
 //
-// All chunk framing, CRC32, IDAT placement and length-prefixed strings stay
-// inside this module. tests/png-toolkit.test.mjs cross-checks it both ways
-// against the main-process implementation so the two cannot drift silently.
+// All chunk framing, CRC32, IDAT placement, length-prefixed strings and the
+// legacy duplicate/interleaved repair stay inside. `readNotePng` accepts
+// options so the main process can read metadata without copying a large sINK
+// or decoding a large sVec on every library row.
 
 import { PLANNERS, SIZES, templatePathFor } from './paper.js'
 
@@ -36,6 +36,10 @@ const PATTERN_TEMPLATES = [
   'math20', 'math30', 'math40', 'music', 'todo',
 ]
 const KNOWN_SIZES = Object.keys(SIZES)
+
+// Chunk types this writer owns. A repeated one is the signature of the old
+// buggy writer; keep the list in sync with writeNotePng below.
+export const CHUNK_TYPES = ['sVER', 'sINK', 'sLYT', 'sBKG', 'sCRP', 'sSTD', 'sPNA', 'sBKC', 'sBRL', 'sVec']
 
 function crc32(bytes) {
   let c = 0xffffffff
@@ -138,7 +142,7 @@ function templateFromPath(path) {
   return 'blank'
 }
 
-function sizeFromName(name) {
+export function sizeFromName(name) {
   if (!name) return 'letter'
   const key = String(name).toLowerCase()
   for (const size of KNOWN_SIZES) if (key === size) return size
@@ -146,13 +150,65 @@ function sizeFromName(name) {
   return 'letter'
 }
 
+// Older builds inserted metadata between Chromium's many IDAT chunks and/or
+// wrote the same s* chunk dozens of times. Detect both so a page can be healed
+// before it is re-read or re-exported.
+export function pngIsBroken(png) {
+  const seenCustom = new Set()
+  let previousWasIdat = false
+  let sawIdat = false
+  for (const chunk of parseChunks(png)) {
+    if (chunk.type === 'IDAT') {
+      if (sawIdat && !previousWasIdat) return true
+      sawIdat = true
+      previousWasIdat = true
+      continue
+    }
+    previousWasIdat = false
+    if (CHUNK_TYPES.includes(chunk.type)) {
+      if (seenCustom.has(chunk.type)) return true
+      seenCustom.add(chunk.type)
+    }
+  }
+  return false
+}
+
+export function repairPng(png) {
+  const bytes = asBytes(png, 'png')
+  if (!pngIsBroken(bytes)) return bytes
+  const parsed = parseChunks(bytes)
+  const idat = []
+  const pre = []
+  const post = []
+  const seenCustom = new Set()
+  let sawIdat = false
+  for (const chunk of parsed) {
+    if (chunk.type === 'IHDR' || chunk.type === 'IEND') continue
+    if (chunk.type === 'IDAT') {
+      idat.push(chunk)
+      sawIdat = true
+      continue
+    }
+    if (CHUNK_TYPES.includes(chunk.type)) {
+      if (seenCustom.has(chunk.type)) continue
+      seenCustom.add(chunk.type)
+    }
+    if (!sawIdat || chunk.type === 'PLTE' || chunk.type === 'tRNS') pre.push(chunk)
+    else post.push(chunk)
+  }
+  const ihdr = parsed.find(c => c.type === 'IHDR')
+  const iend = parsed.find(c => c.type === 'IEND')
+  return buildPng([ihdr, ...pre, ...idat, ...post, iend].filter(Boolean))
+}
+
 // meta mirrors the main-process writeNotePng contract:
 // { sizeName, orientation, template, templatePath?, bgColor, borderLines,
 //   fullPage?, inkGif?, vecJson? }
 export function writeNotePng(png, meta = {}) {
   const entries = [{ type: 'sVER', data: u32be(3) }]
-  if (meta.inkGif && meta.inkGif.byteLength) {
-    entries.push({ type: 'sINK', data: asBytes(meta.inkGif, 'inkGif') })
+  if (meta.inkGif != null) {
+    const ink = asBytes(meta.inkGif, 'inkGif')
+    if (ink.byteLength) entries.push({ type: 'sINK', data: ink })
   }
 
   const hasTemplate = meta.template && meta.template !== 'blank' && meta.template !== 'custom' ? 1 : 0
@@ -171,10 +227,11 @@ export function writeNotePng(png, meta = {}) {
   return upsertChunks(png, entries)
 }
 
-// One parse returns everything a page loader needs. inkGif is a copy so the
-// caller cannot mutate the source buffer through the view; vecJson is already
-// decoded UTF-8.
-export function readNotePng(png) {
+// One parse returns everything a page loader needs. inkGif is an owned copy,
+// so the caller can retain or mutate it; vecJson is already decoded UTF-8.
+// Set ink/vec to false when only metadata is needed (library scans) so a large
+// sINK is not copied and a large sVec is not decoded.
+export function readNotePng(png, { ink = true, vec = true } = {}) {
   const chunks = parseChunks(png)
   const find = type => chunks.find(c => c.type === type)
   const meta = {}
@@ -197,13 +254,13 @@ export function readNotePng(png) {
   meta.orientation = meta.layoutByte === 1 ? 'landscape' : 'portrait'
   meta.template = meta.hasTemplate ? templateFromPath(meta.templatePath) : 'blank'
   meta.size = sizeFromName(meta.sizeName)
-  const ink = find('sINK')
-  meta.hasInkGif = !!ink
-  const vec = find('sVec')
+  const inkChunk = find('sINK')
+  const vecChunk = find('sVec')
+  meta.hasInkGif = !!inkChunk
 
   return {
     meta,
-    inkGif: ink ? new Uint8Array(ink.data) : null,
-    vecJson: vec ? decoder.decode(vec.data) : null,
+    inkGif: ink && inkChunk ? new Uint8Array(inkChunk.data) : null,
+    vecJson: vec && vecChunk ? decoder.decode(vecChunk.data) : null,
   }
 }

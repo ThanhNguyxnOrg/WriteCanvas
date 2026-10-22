@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { readNotePng, writeNotePng } from '../src/js/png-toolkit.js'
-import { TEMPLATES, templatePathFor } from '../src/js/paper.js'
+import { pngIsBroken, readNotePng, repairPng, writeNotePng } from '../src/js/png-toolkit.js'
+import { PLANNERS, TEMPLATES, templatePathFor } from '../src/js/paper.js'
 
 const require_ = createRequire(import.meta.url)
 const chunks = require_('../main/png-chunks.js')
@@ -73,7 +73,7 @@ describe('png-toolkit Scrble chunk round-trip', () => {
     assert.equal(read.bgColor, '#FF102030')
     assert.equal(read.borderLines, false)
     assert.equal(read.hasInkGif, true)
-    assert.deepEqual(inkGif, GIF)
+    assert.deepEqual([...inkGif], [...GIF])
     assert.equal(vecJson, VEC)
 
     // flag payloads, not just their decoded metadata
@@ -126,6 +126,18 @@ describe('png-toolkit Scrble chunk round-trip', () => {
     assert.equal(vecJson, null)
   })
 
+  it('preserves existing sINK/sVec when a later write omits them', () => {
+    const first = writeNotePng(PNG, meta)
+    const second = writeNotePng(first, {
+      sizeName: meta.sizeName,
+      orientation: meta.orientation,
+      template: meta.template,
+    })
+    const read = readNotePng(second)
+    assert.deepEqual([...read.inkGif], [...GIF])
+    assert.equal(read.vecJson, VEC)
+  })
+
   it('treats an unknown template path as blank while preserving the path', () => {
     const bytes = writeNotePng(PNG, {
       template: 'ruled',
@@ -136,6 +148,66 @@ describe('png-toolkit Scrble chunk round-trip', () => {
     assert.equal(read.hasTemplate, true)
     assert.equal(read.template, 'blank')
     assert.equal(read.templatePath, '/Assets/Paper/Custom/HighRes/unknown.png')
+  })
+})
+
+describe('png-toolkit legacy repair', () => {
+  it('flags metadata interleaved between IDATs and restores one consecutive run', () => {
+    const split = parse(splitIdat(PNG))
+    const firstIdat = split.findIndex(c => c.type === 'IDAT')
+    const broken = chunks.buildPNG([
+      ...split.slice(0, firstIdat + 1),
+      { type: 'sVER', data: Buffer.from([0, 0, 0, 3]) },
+      ...split.slice(firstIdat + 1),
+    ])
+    assert.equal(pngIsBroken(broken), true)
+    const fixed = repairPng(broken)
+    assert.equal(pngIsBroken(fixed), false)
+    const mainFixed = scrble.repairPNG(Buffer.from(broken))
+    assert.ok(Buffer.isBuffer(mainFixed))
+    assert.equal(pngIsBroken(mainFixed), false)
+
+    const types = parse(fixed).map(c => c.type)
+    const idats = types.map((t, i) => (t === 'IDAT' ? i : -1)).filter(i => i >= 0)
+    for (let i = 1; i < idats.length; i++) assert.equal(idats[i], idats[i - 1] + 1)
+    assert.equal(types.filter(t => t === 'sVER').length, 1)
+    const before = Buffer.concat(split.filter(c => c.type === 'IDAT').map(c => c.data))
+    const after = Buffer.concat(parse(fixed).filter(c => c.type === 'IDAT').map(c => c.data))
+    assert.deepEqual(after, before)
+  })
+
+  it('deduplicates repeated s* chunks and preserves the page bytes', () => {
+    const split = parse(splitIdat(PNG))
+    const firstIdat = split.findIndex(c => c.type === 'IDAT')
+    const broken = chunks.buildPNG([
+      ...split.slice(0, firstIdat + 1),
+      { type: 'sVER', data: Buffer.from([0, 0, 0, 3]) },
+      { type: 'sVER', data: Buffer.from([0, 0, 0, 3]) },
+      { type: 'sLYT', data: Buffer.from([0]) },
+      ...split.slice(firstIdat + 1),
+    ])
+    assert.equal(pngIsBroken(broken), true)
+    const fixed = repairPng(broken)
+    const types = parse(fixed).map(c => c.type)
+    assert.equal(types.filter(t => t === 'sVER').length, 1)
+    assert.equal(types.filter(t => t === 'sLYT').length, 1)
+    assert.equal(types.filter(t => t === 'IDAT').length, 2)
+  })
+
+  it('leaves a healthy page untouched and main delegates to the same codec', () => {
+    assert.equal(pngIsBroken(PNG), false)
+    assert.equal(repairPng(PNG), PNG) // same Buffer instance, no needless copy
+    assert.equal(scrble.pngIsBroken(PNG), false)
+    assert.equal(scrble.repairPNG(PNG), PNG)
+  })
+})
+
+describe('png-toolkit read options', () => {
+  it('can skip the large sINK/sVec payloads while still reporting their presence', () => {
+    const light = readNotePng(writeNotePng(PNG, meta), { ink: false, vec: false })
+    assert.equal(light.meta.hasInkGif, true)
+    assert.equal(light.inkGif, null)
+    assert.equal(light.vecJson, null)
   })
 })
 
@@ -171,18 +243,32 @@ describe('png-toolkit main-process interop', () => {
     assert.equal(read.orientation, 'portrait')
     assert.equal(read.template, 'ruled')
     assert.equal(read.templatePath, '/Assets/Paper/Square/HighRes/ruled.png')
-    assert.deepEqual(inkGif, GIF)
+    assert.deepEqual([...inkGif], [...GIF])
     assert.equal(vecJson, '{"v":2}')
   })
 
   it('agrees with main on every template path and orientation', () => {
-    for (const template of Object.keys(TEMPLATES)) {
+    for (const template of [...Object.keys(TEMPLATES), ...PLANNERS]) {
       for (const orientation of ['portrait', 'landscape']) {
         assert.equal(
           templatePathFor(template, orientation),
           scrble.TEMPLATE_PATH(template, orientation),
           `${template}/${orientation}`,
         )
+      }
+    }
+  })
+
+  it('round-trips every planner template in both orientations', () => {
+    for (const template of PLANNERS) {
+      for (const orientation of ['portrait', 'landscape']) {
+        const read = readNotePng(writeNotePng(PNG, {
+          template,
+          orientation,
+          sizeName: 'Letter',
+        })).meta
+        assert.equal(read.template, template, `${template}/${orientation}`)
+        assert.equal(read.templatePath, templatePathFor(template, orientation), `${template}/${orientation}`)
       }
     }
   })
@@ -218,5 +304,14 @@ describe('png-toolkit malformed input', () => {
     const bytes = writeNotePng(PNG, meta)
     const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
     assert.equal(readNotePng(buffer).meta.size, 'a4')
+  })
+
+  it('rejects an untyped inkGif instead of silently skipping it', () => {
+    assert.throws(
+      () => writeNotePng(PNG, { inkGif: [0x47, 0x49] }),
+      /inkGif must be a Uint8Array or ArrayBuffer/,
+    )
+    const bytes = writeNotePng(PNG, { inkGif: Uint8Array.of(0x47, 0x49).buffer })
+    assert.equal(readNotePng(bytes).meta.hasInkGif, true)
   })
 })
