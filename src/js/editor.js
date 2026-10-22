@@ -3,6 +3,7 @@
 import { bridge } from './bridge.js'
 import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
 import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
+import { clipLineToRect } from './ruler.js'
 import { Recorder, playReplay } from './replay.js'
 
 const $ = id => document.getElementById(id)
@@ -1029,8 +1030,9 @@ function drawRulerLayer(page) {
   const { ux, uy, px, py, w, h } = rulerDir(page)
   const scale = Math.max(0.08, S.zoom || 1)
   const half = (w + h) * 0.52 // long enough to cross any page
-  const x0 = clamp(px - ux * half, 0, w), y0 = clamp(py - uy * half, 0, h)
-  const x1r = clamp(px + ux * half, 0, w), y1r = clamp(py + uy * half, 0, h)
+  const seg = clipLineToRect(px, py, ux, uy, w, h)
+  if (!seg) return
+  const { x0, y0, x1: x1r, y1: y1r } = seg
   ctx.save()
   // body of the stencil: a thick translucent band under the line
   ctx.strokeStyle = 'rgba(11,99,197,.16)'

@@ -11,6 +11,7 @@ import {
   DEFAULT_PEN_SLOTS,
 } from '../src/js/pen.js'
 import { SIZES, TEMPLATES, paperDocSize } from '../src/js/paper.js'
+import { clipLineToRect } from '../src/js/ruler.js'
 
 describe('pen and paper pure logic', () => {
   it('strokeIntersectsCircle hits the spine plus half the pen width', () => {
@@ -52,5 +53,27 @@ describe('pen and paper pure logic', () => {
     assert.deepEqual(paperDocSize('a4', 'portrait'), { w: SIZES.a4.w, h: SIZES.a4.h })
     assert.deepEqual(paperDocSize('a4', 'landscape'), { w: SIZES.a4.h, h: SIZES.a4.w })
     assert.deepEqual(paperDocSize('unknown', 'portrait'), { w: SIZES.letter.w, h: SIZES.letter.h })
+  })
+})
+
+describe('ruler line clipping', () => {
+  it('preserves the requested angle instead of clamping x/y independently', () => {
+    const w = 2500, h = 3235
+    for (const [px, py] of [[1250, 1779], [1563, 721], [100, 100], [2400, 3100]]) {
+      for (const deg of [0, 10, 20, 45, 90, 135, -40]) {
+        const rad = deg * Math.PI / 180
+        const seg = clipLineToRect(px, py, Math.cos(rad), Math.sin(rad), w, h)
+        assert.ok(seg, `expected an intersection at ${deg}° from ${px},${py}`)
+        const drawn = Math.atan2(seg.y1 - seg.y0, seg.x1 - seg.x0) * 180 / Math.PI
+        assert.ok(Math.abs(drawn - deg) < 1e-6, `requested ${deg}°, drew ${drawn}°`)
+        for (const [x, y] of [[seg.x0, seg.y0], [seg.x1, seg.y1]]) {
+          assert.ok(x >= -1e-9 && x <= w + 1e-9 && y >= -1e-9 && y <= h + 1e-9)
+        }
+      }
+    }
+  })
+
+  it('returns null when the line misses the page', () => {
+    assert.equal(clipLineToRect(-100, -100, 1, 0, 2500, 3235), null)
   })
 })
