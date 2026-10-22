@@ -8,7 +8,8 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs"
   },
   "build": {
     "appId": "com.writecanvas.app",
