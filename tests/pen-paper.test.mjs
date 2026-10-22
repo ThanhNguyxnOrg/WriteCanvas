@@ -26,6 +26,9 @@ describe('pen and paper pure logic', () => {
     assert.equal(strokeIntersectsCircle(line, 300, 205, 10), true)
     assert.equal(strokeIntersectsCircle(line, 300, 211, 10), true) // within 10 + half width
     assert.equal(strokeIntersectsCircle(line, 300, 260, 10), false)
+    // sparse samples: the ink between vertices must still be selectable/erasable
+    assert.equal(strokeIntersectsCircle(line, 200, 200, 1), true)
+    assert.equal(strokeIntersectsCircle(line, 200, 250, 1), false)
   })
 
   it('makeStroke and addPoint drop samples closer than minDist', () => {

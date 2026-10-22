@@ -26,6 +26,7 @@
     <symbol id="ic-shapes" viewBox="0 0 24 24"><rect x="2.8" y="4" width="8.4" height="8.4" rx="1.2" stroke="currentColor" stroke-width="1.7" fill="none"/><circle cx="16.9" cy="8.2" r="4.2" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M8.5 20.2 12 13.8l3.5 6.4z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></symbol>
     <symbol id="ic-eraser" viewBox="0 0 24 24"><path d="M5.2 14.7 12.4 7.5a2 2 0 0 1 2.8 0l3.3 3.3a2 2 0 0 1 0 2.8l-5.6 5.6H9.3l-4.1-4.1a1.6 1.6 0 0 1 0-2.4z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/><path d="M12.5 8.4l3.6 3.6M13.5 19.2h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
     <symbol id="ic-lasso" viewBox="0 0 24 24"><path d="M4.2 11.4c0-3.9 3.5-7 7.8-7s7.8 3.1 7.8 7-3.5 7-7.8 7c-1.4 0-2.7-.3-3.8-.8" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-dasharray="3 2.4"/><path d="m5.1 16.2 5.9 5.9-2.5.3-.7 2.5-2.7-8.7z" fill="currentColor"/></symbol>
+    <symbol id="ic-click" viewBox="0 0 24 24"><path d="M5.5 3.8 18 11.2l-5.5 1.7-2.4 5.5z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/><path d="m15.8 15.9 3.7 3.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
     <symbol id="ic-hand" viewBox="0 0 24 24"><path d="M7.3 12.6V6.7a1.25 1.25 0 0 1 2.5 0v4.7m0 0V5.4a1.25 1.25 0 0 1 2.5 0v5.9m0 0V6.7a1.25 1.25 0 0 1 2.5 0v4.8m0 0V8.6a1.25 1.25 0 0 1 2.5 0v5.5c0 3.5-2.4 5.9-5.7 5.9-2.2 0-3.8-1.1-5-3.1l-1.8-3a1.3 1.3 0 0 1 2.2-1.4l1.3 2.2" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="ic-moon" viewBox="0 0 24 24"><path d="M20 15.1A8.4 8.4 0 0 1 8.9 4a8.5 8.5 0 1 0 11.1 11.1z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></symbol>
     <symbol id="ic-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
@@ -70,7 +71,7 @@
         <button class="tb-toggle" id="tbRuler" title="Ruler (R)" aria-label="Ruler" aria-pressed="false"><svg><use href="#ic-ruler"/></svg><span class="tb-label">Ruler</span></button>
         <button class="tb-toggle" id="tbObject" title="Shapes and text (G)" aria-label="Shapes and text" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#ic-shapes"/></svg><span class="tb-label">Shapes</span><span class="tb-caret" aria-hidden="true"></span></button>
         <button class="tb-toggle" id="tbEraser" title="Eraser (E)" aria-label="Eraser" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#ic-eraser"/></svg><span class="tb-label">Eraser</span><span class="tb-caret" data-fly="eraserFlyout" aria-hidden="true"></span></button>
-        <button class="tb-toggle" id="tbLasso" title="Select strokes with a lasso" aria-label="Select strokes" aria-pressed="false"><svg><use href="#ic-lasso"/></svg><span class="tb-label">Select</span></button>
+        <button class="tb-toggle" id="tbLasso" title="Select strokes — click or lasso" aria-label="Select strokes" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#ic-lasso"/></svg><span class="tb-label">Select</span><span class="tb-caret" data-fly="selectFlyout" aria-hidden="true"></span></button>
         <button class="tb-toggle" id="tbEye" title="Pan and view" aria-label="Pan and view" aria-pressed="false"><svg><use href="#ic-hand"/></svg><span class="tb-label">Pan</span></button>
       </div>
       <button id="btnTheme" class="tb-btn tb-theme" title="Dark interface" aria-label="Toggle dark interface" aria-pressed="false"><svg><use href="#ic-moon"/></svg></button>
@@ -172,12 +173,22 @@
           <button id="btnTextTool" class="sh-textbtn"><svg><use href="#ic-text"/></svg>Text box</button>
         </div>
 
+        <div id="selectFlyout" class="flyout hidden" role="dialog" aria-label="Select">
+          <div class="flyout-head"><span class="flyout-title">Select</span><button id="selectClose" class="flyout-x" title="Close" aria-label="Close selection settings">&times;</button></div>
+          <div id="selModes" role="radiogroup" aria-label="Selection mode">
+            <button id="selLasso" class="er-opt active" aria-pressed="true"><svg><use href="#ic-lasso"/></svg>Lasso</button>
+            <button id="selClick" class="er-opt" aria-pressed="false"><svg><use href="#ic-click"/></svg>Click</button>
+          </div>
+          <div class="flyout-note">Click: tap a stroke to select it. Lasso: drag a loop. Drag inside the box to move.</div>
+        </div>
+
         <div id="eraserFlyout" class="flyout hidden" role="dialog" aria-label="Eraser">
           <div class="flyout-head"><span class="flyout-title">Eraser</span><button id="eraserClose" class="flyout-x" title="Close" aria-label="Close eraser settings">&times;</button></div>
           <div id="erModes" role="radiogroup" aria-label="Eraser mode">
             <button id="erStroke" class="er-opt active" aria-pressed="true"><svg><use href="#ic-eraser"/></svg>Stroke</button>
             <button id="erSegment" class="er-opt" aria-pressed="false"><svg><use href="#ic-eraserpoint"/></svg>Segment</button>
             <button id="erSheet" class="er-opt" aria-pressed="false"><svg><use href="#ic-erasersheet"/></svg>Sheet</button>
+            <button id="erDrag" class="er-opt" aria-pressed="false"><svg><use href="#ic-hand"/></svg>Drag</button>
           </div>
           <div id="erSizeRow">
             <div class="flyout-label">SEGMENT SIZE</div>

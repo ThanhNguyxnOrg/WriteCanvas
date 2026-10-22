@@ -556,9 +556,10 @@ body.dark #shapeGrid .sh-card canvas { filter: invert(1) brightness(1.05); }
 .sh-textbtn svg { width: 18px; height: 18px; }
 .sh-textbtn:hover { background: var(--hover); border-color: var(--accent); }
 
-/* eraser flyout */
-#eraserFlyout { width: 388px; }
-#erModes { display: flex; gap: 6px; }
+/* select + eraser flyouts */
+#selectFlyout { width: 340px; }
+#eraserFlyout { width: 412px; }
+#erModes, #selModes { display: flex; gap: 6px; }
 .er-opt {
   flex: 1; height: 44px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
   font-size: 13px; cursor: pointer; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -686,7 +687,7 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
   from { opacity: 0; transform: translateY(-5px); }
   to { opacity: 1; transform: translateY(0); }
 }
-#penFlyout, #shapeFlyout, #eraserFlyout, #paperColorFlyout, #colorPopover { animation: flyIn .14s cubic-bezier(.16,.84,.3,1); }
+#penFlyout, #shapeFlyout, #selectFlyout, #eraserFlyout, #paperColorFlyout, #colorPopover { animation: flyIn .14s cubic-bezier(.16,.84,.3,1); }
 #topbar, .tb-pen-current { user-select: none; -webkit-user-select: none; }
 
 /* responsive: keep every command visible and readable at 1280, then simplify */
@@ -722,7 +723,7 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #penFlyout, #shapeFlyout, #eraserFlyout, #paperColorFlyout, #colorPopover { animation: none; }
+  #penFlyout, #shapeFlyout, #selectFlyout, #eraserFlyout, #paperColorFlyout, #colorPopover { animation: none; }
   #topbar .tb-btn, #topbar .tb-toggle, .tb-pen-current, .tb-swatch { transition: none; }
   .tb-swatch:hover { transform: none; }
 }

@@ -17,7 +17,8 @@ export const S = {
   penSlots: DEFAULT_PEN_SLOTS.map(s => ({ ...s })),
   penIndex: 0,
   eraserMM: 5,           // segment eraser factory sizes: S=2, M=5, L=10
-  eraserMode: 'stroke',  // stroke eraser vs segment vs sheet (whole-page)
+  eraserMode: 'stroke',  // stroke / segment / sheet (whole-page) / drag-only
+  selectMode: 'lasso',   // lasso drag vs click a stroke to select it
   shapeKind: null,       // selected gallery shape; next drag on the page creates it
   shapeFill: false,
   rulerOn: false,
@@ -484,12 +485,17 @@ function onPointerDown(e) {
     placeTextBox(page, x, y)
   } else if (S.tool === 'erase') {
     if (S.eraserMode === 'sheet') { eraseSheet(page); return }
-    erasePending = { whole: [], pairs: [] }
-    eraseAt(page, x, y)
+    const dragOnly = S.eraserMode === 'drag'
+    erasePending = {
+      whole: [], pairs: [], mode: S.eraserMode,
+      armed: !dragOnly, startX: x, startY: y,
+    }
+    if (dragOnly) paintEraserCursor(page, x, y)
+    else eraseAt(page, x, y)
   } else if (S.tool === 'lasso') {
     const sel = S.selection
     if (sel && page === sel.page && x >= sel.bbox.x - 12 && x <= sel.bbox.x + sel.bbox.w + 12 && y >= sel.bbox.y - 12 && y <= sel.bbox.y + sel.bbox.h + 12) {
-      dragSel = { lx: x, ly: y, dx: 0, dy: 0 }
+      dragSel = { lx: x, ly: y, dx: 0, dy: 0, sx: x, sy: y, moved: false }
       return
     }
     lassoBegin(page, x, y)
@@ -516,9 +522,23 @@ function drawLiveSlice(page) {
 }
 
 // the factory eraser modes: 'stroke' removes touched strokes whole, 'segment'
-// cuts the stroke where the eraser circle crosses (S/M/L via S.eraserMM)
+// cuts the stroke where the eraser circle crosses (S/M/L via S.eraserMM),
+// 'drag' behaves like stroke but only after the pointer has actually moved.
 function eraseCursorR() {
-  return docMM(S.eraserMode === 'stroke' ? 4 : S.eraserMM)
+  return docMM(S.eraserMode === 'segment' ? S.eraserMM : 4)
+}
+
+// Screen-space gesture threshold, converted to document units. A tap should
+// keep working at fit-width zoom without a tiny pen jitter becoming a drag.
+function gestureSlopDoc() {
+  return 6 / (S.zoom || 1)
+}
+
+function paintEraserCursor(page, x, y, r = eraseCursorR()) {
+  const lc = ctxOf('liveC')
+  lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  lc.strokeStyle = '#f669'; lc.fillStyle = '#4d4d4d33'
+  lc.beginPath(); lc.arc(x, y, r, 0, Math.PI * 2); lc.fill(); lc.stroke()
 }
 
 function splitStrokeAroundCircle(st, x, y, r) {
@@ -542,11 +562,6 @@ function splitStrokeAroundCircle(st, x, y, r) {
 
 function eraseAt(page, x, y) {
   const r = eraseCursorR()
-  const lc = ctxOf('liveC')
-  const paintCursor = () => {
-    lc.strokeStyle = '#f669'; lc.fillStyle = '#4d4d4d33'
-    lc.beginPath(); lc.arc(x, y, r, 0, Math.PI * 2); lc.fill(); lc.stroke()
-  }
   const kept = [], whole = [], pairs = []
   for (const st of page.strokes) {
     if (!strokeIntersectsCircle(st, x, y, r)) { kept.push(st); continue }
@@ -556,15 +571,14 @@ function eraseAt(page, x, y) {
     }
     whole.push(st)
   }
-  if (!whole.length && !pairs.length) { lc.clearRect(0, 0, docSize(page).w, docSize(page).h); paintCursor(); return }
+  if (!whole.length && !pairs.length) { paintEraserCursor(page, x, y, r); return }
   firstCommitPreCapture(page)
   page.strokes = kept
-  if (!erasePending) erasePending = { whole: [], pairs: [] }
+  if (!erasePending) erasePending = { whole: [], pairs: [], mode: S.eraserMode, armed: true }
   erasePending.whole.push(...whole)
   erasePending.pairs.push(...pairs)
   redrawInk(page)
-  lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
-  paintCursor()
+  paintEraserCursor(page, x, y, r)
 }
 
 function onPointerMove(e) {
@@ -600,12 +614,25 @@ function onPointerMove(e) {
   if (live) {
     if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
   } else if (erasePending) {
+    const ep = erasePending
+    if (!ep.armed) {
+      const slop = gestureSlopDoc()
+      if ((x - ep.startX) ** 2 + (y - ep.startY) ** 2 < slop * slop) return
+      ep.armed = true
+      eraseAt(page, ep.startX, ep.startY)
+    }
     eraseAt(page, x, y)
   } else if (lasso) {
     lassoAddPoint(x, y)
   } else if (dragSel) {
-    dragSel.dx += x - dragSel.lx; dragSel.dy += y - dragSel.ly
-    dragSel.lx = x; dragSel.ly = y
+    const d = dragSel
+    if (!d.moved) {
+      const slop = gestureSlopDoc()
+      if ((x - d.sx) ** 2 + (y - d.sy) ** 2 < slop * slop) return
+      d.moved = true
+    }
+    d.dx += x - d.lx; d.dy += y - d.ly
+    d.lx = x; d.ly = y
     drawSelectionPreview(page)
   } else if (laserLive) {
     laserAddPoint(page, x, y, false)
@@ -710,7 +737,9 @@ function setTool(t) {
   renderPenStack()
   stackInnerClass()
   if (t === 'laser') showHint('Laser pointer — trail fades, never saved')
-  else if (t === 'lasso') showHint('Circle strokes to select, drag inside to move')
+  else if (t === 'lasso') showHint(S.selectMode === 'click'
+    ? 'Click a stroke to select, or drag a lasso; drag inside the box to move'
+    : 'Circle strokes to select, drag inside to move')
   else if (t === 'view') showHint('View mode — drag anywhere to pan')
   else if (t === 'shape') showHint('Drag on the page to size the shape')
 }
@@ -741,11 +770,15 @@ function strokeBBox(strokes) {
 
 function lassoBegin(page, x, y) {
   if (S.selection && S.selection.page !== page) clearSelection()
-  lasso = { pts: [{ x, y }] }
+  lasso = { pts: [{ x, y }], startX: x, startY: y, moved: false }
 }
 
 function lassoAddPoint(x, y) {
   if (!lasso) return
+  const slop = gestureSlopDoc()
+  if (!lasso.moved && (x - lasso.startX) ** 2 + (y - lasso.startY) ** 2 >= slop * slop) {
+    lasso.moved = true
+  }
   const last = lasso.pts[lasso.pts.length - 1]
   if ((last.x - x) ** 2 + (last.y - y) ** 2 < 16) return
   lasso.pts.push({ x, y })
@@ -769,10 +802,33 @@ function drawPolyPath(c, pts, dashed) {
   c.restore()
 }
 
+function strokeAt(page, x, y) {
+  const r = docMM(2)
+  for (let i = page.strokes.length - 1; i >= 0; i--) {
+    if (strokeIntersectsCircle(page.strokes[i], x, y, r)) return page.strokes[i]
+  }
+  return null
+}
+
+function selectStrokeAt(page, x, y) {
+  const st = strokeAt(page, x, y)
+  if (!st) { clearSelection(); return }
+  S.selection = { page, strokes: [st], bbox: strokeBBox([st]) }
+  drawSelectionBox(page)
+  showSelBar(page)
+}
+
 function lassoCommit(page) {
-  const pts = lasso ? lasso.pts : null
+  const l = lasso
   lasso = null
   const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
+  // Click mode adds tap-to-select without taking away the drag lasso. A real
+  // drag still follows the original polygon path below.
+  if (l && !l.moved && S.selectMode === 'click') {
+    selectStrokeAt(page, l.startX, l.startY)
+    return
+  }
+  const pts = l ? l.pts : null
   if (!pts || pts.length < 3) { clearSelection(); return }
   const hits = page.strokes.filter(st => anyPtInPoly(st.pts, pts))
   if (!hits.length) { clearSelection(); return }
@@ -1481,9 +1537,17 @@ function onPointerUp(e) {
       page.dirty = true
       scheduleAutosave()
       refreshCurrentThumb()
+    } else if (ep.mode === 'drag' && !ep.armed) {
+      showHint('Drag over ink to erase')
     }
   } else if (dragSel) {
-    selectionCommitMove(page)
+    const d = dragSel
+    if (!d.moved && S.selectMode === 'click') {
+      dragSel = null
+      selectStrokeAt(page, d.sx, d.sy)
+    } else {
+      selectionCommitMove(page)
+    }
   } else if (lasso) {
     lassoCommit(page)
   } else if (laserLive) {
@@ -1951,6 +2015,7 @@ function syncFlyoutAria() {
   const pairs = [
     ['penFlyout', $('tbPenCurrent')],
     ['shapeFlyout', $('tbObject')],
+    ['selectFlyout', $('tbLasso')],
     ['eraserFlyout', $('tbEraser')],
     ['saveFlyout', $('btnSave')],
     ['paperColorFlyout', $('ppBgColor')],
@@ -2505,6 +2570,7 @@ export function init(app) {
   buildShapeGrid()
   wireTextTool()
   $('shapeClose').onclick = () => closeToolFlyout('shapeFlyout')
+  $('selectClose').onclick = () => closeToolFlyout('selectFlyout')
   $('eraserClose').onclick = () => closeToolFlyout('eraserFlyout')
   initTheme()
 
@@ -2618,7 +2684,7 @@ export function init(app) {
       else if (k === 't') { e.preventDefault(); startTextTool() }
       else if (k === 'escape') {
         closeColorPopover()
-        for (const f of ['shapeFlyout', 'eraserFlyout', 'penFlyout', 'saveFlyout', 'paperColorFlyout']) closeToolFlyout(f)
+        for (const f of ['shapeFlyout', 'selectFlyout', 'eraserFlyout', 'penFlyout', 'saveFlyout', 'paperColorFlyout']) closeToolFlyout(f)
         if (libCloser) toggleLibraryFlyout()
         $('paperPanel').classList.add('hidden')
         if (S.tool === 'shape') setTool('pen')
@@ -2850,24 +2916,40 @@ function wireToolbarToggles() {
       const fly = z.dataset.fly
       if (!fly || !$(fly) || !b) return
       ev.stopPropagation()
+      if (fly === 'selectFlyout') syncSelectFlyout()
       if (fly === 'eraserFlyout') syncEraserFlyout()
       openToolFlyout(fly, b, { ignore: z })
     })
   })
-  const est = $('erStroke'), esg = $('erSegment'), esh = $('erSheet')
+  const sll = $('selLasso'), slc = $('selClick')
+  if (sll) sll.onclick = () => { S.selectMode = 'lasso'; syncSelectFlyout() }
+  if (slc) slc.onclick = () => { S.selectMode = 'click'; syncSelectFlyout() }
+  const est = $('erStroke'), esg = $('erSegment'), esh = $('erSheet'), edg = $('erDrag')
   if (est) est.onclick = () => { S.eraserMode = 'stroke'; syncEraserFlyout() }
   if (esg) esg.onclick = () => { S.eraserMode = 'segment'; syncEraserFlyout() }
   if (esh) esh.onclick = () => { S.eraserMode = 'sheet'; syncEraserFlyout() }
+  if (edg) edg.onclick = () => { S.eraserMode = 'drag'; syncEraserFlyout() }
   document.querySelectorAll('#erSizes .er-chip').forEach(ch => {
     ch.onclick = () => { S.eraserMM = parseFloat(ch.dataset.mm) || 5; syncEraserFlyout() }
   })
+  syncSelectFlyout()
   syncEraserFlyout()
 }
 
+function syncSelectFlyout() {
+  const modes = { lasso: $('selLasso'), click: $('selClick') }
+  for (const [k, b] of Object.entries(modes)) {
+    if (!b) continue
+    b.classList.toggle('active', S.selectMode === k)
+    b.setAttribute('aria-pressed', S.selectMode === k ? 'true' : 'false')
+  }
+}
+
 // the factory eraser modes (SetupFlyout copy: Stroke Eraser / Segment
-// Eraser - Small/Medium/Large) — sheet eraser stands in for erase-all
+// Eraser - Small/Medium/Large) — sheet eraser stands in for erase-all;
+// Drag is the additive "only erase after the pointer moves" option.
 function syncEraserFlyout() {
-  const modes = { stroke: $('erStroke'), segment: $('erSegment'), sheet: $('erSheet') }
+  const modes = { stroke: $('erStroke'), segment: $('erSegment'), sheet: $('erSheet'), drag: $('erDrag') }
   for (const [k, b] of Object.entries(modes)) {
     b.classList.toggle('active', S.eraserMode === k)
     b.setAttribute('aria-pressed', S.eraserMode === k ? 'true' : 'false')

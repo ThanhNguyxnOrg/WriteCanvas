@@ -318,9 +318,23 @@ export function addPoint(stroke, x, y, p, minDist) {
 export function strokeIntersectsCircle(stroke, cx, cy, r) {
   const R = r + (stroke.width || 0) / 2
   const R2 = R * R
-  for (const pt of stroke.pts) {
-    const dx = pt.x - cx, dy = pt.y - cy
-    if (dx * dx + dy * dy <= R2) return true
+  const pts = stroke.pts || []
+  // A fast stroke can have only a few samples, so testing just the vertices
+  // misses the ink between them (click-select and the eraser both rely on this).
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i]
+    const b = pts[i + 1]
+    if (!b) {
+      const dx = a.x - cx, dy = a.y - cy
+      if (dx * dx + dy * dy <= R2) return true
+      break
+    }
+    const dx = b.x - a.x, dy = b.y - a.y
+    const len2 = dx * dx + dy * dy
+    let t = len2 ? ((cx - a.x) * dx + (cy - a.y) * dy) / len2 : 0
+    t = t < 0 ? 0 : t > 1 ? 1 : t
+    const ex = cx - (a.x + t * dx), ey = cy - (a.y + t * dy)
+    if (ex * ex + ey * ey <= R2) return true
   }
   return false
 }

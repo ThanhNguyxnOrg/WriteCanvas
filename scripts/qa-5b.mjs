@@ -52,6 +52,15 @@ async function sweep(ws, pts, geo, { upDelay = 60 } = {}) {
   await sleep(upDelay)
 }
 
+async function clickDoc(ws, xDoc, yDoc, geo) {
+  const x = geo.left + xDoc * geo.zoom, y = geo.top + yDoc * geo.zoom
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none' })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 })
+  await sleep(25)
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(120)
+}
+
 async function key(ws, keyName) {
   await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: '${keyName}', bubbles: true }))`)
   await sleep(60)
@@ -123,7 +132,7 @@ async function main() {
   // qa-5b must be runnable repeatedly inside one app process: reset the
   // session state earlier sections assume (pen tool, ruler off/straight)
   await selectPen(ws)
-  await evalJs(ws, `__wc.S.rulerOn = false; __wc.ruler && (__wc.ruler.angle = 0)`)
+  await evalJs(ws, `__wc.S.rulerOn = false; __wc.ruler && (__wc.ruler.angle = 0); __wc.S.eraserMode = 'stroke'; __wc.S.selectMode = 'lasso'`)
   const strokesOf = () => evalJs(ws, `__wc.S.pages[0].strokes.length`)
 
   // ---------- 1. pen draws ----------
@@ -324,6 +333,65 @@ async function main() {
   await click(ws, `document.getElementById('selDel')`)
   ok('lasso: delete removes strokes', await strokesOf() === stDup, 'strokes=' + await strokesOf())
   ok('lasso: selection cleared after delete', await evalJs(ws, `!__wc.S.selection && !document.getElementById('selBar')`))
+
+  // ---------- 5b. additive Select Click + Eraser Drag options ----------
+  // Both are new choices: Lasso and Stroke keep their original click behavior.
+  await evalJs(ws, `(() => { const p = __wc.S.pages[0]; p.strokes.length = 0; p.undo.length = 0; p.redo.length = 0; return true })()`)
+  await selectPen(ws)
+  await sweep(ws, [[600, 700], [900, 740], [1200, 700], [1450, 760]], geo)
+  await sweep(ws, [[600, 1300], [900, 1330], [1300, 1310], [1500, 1340]], geo)
+  ok('options: two fresh strokes', await strokesOf() === 2)
+  const firstPt = JSON.parse(await evalJs(ws, `JSON.stringify(__wc.S.pages[0].strokes[0].pts[Math.floor(__wc.S.pages[0].strokes[0].pts.length / 2)])`))
+  const secondPt = JSON.parse(await evalJs(ws, `JSON.stringify(__wc.S.pages[0].strokes[1].pts[Math.floor(__wc.S.pages[0].strokes[1].pts.length / 2)])`))
+  await click(ws, `document.getElementById('tbLasso')`)
+  await evalJs(ws, `document.querySelector('#topbar .tb-caret[data-fly="selectFlyout"]').click()`)
+  await sleep(80)
+  ok('select: flyout opens', await evalJs(ws, `!document.getElementById('selectFlyout').classList.contains('hidden')`))
+  await click(ws, `document.getElementById('selClick')`)
+  ok('select: Click option applies', await evalJs(ws, `__wc.S.selectMode`) === 'click')
+  await click(ws, `document.getElementById('selectClose')`)
+  await clickDoc(ws, firstPt.x, firstPt.y, geo)
+  const clickSel = JSON.parse(await evalJs(ws, `JSON.stringify({ sel: !!__wc.S.selection, n: __wc.S.selection ? __wc.S.selection.strokes.length : 0, first: __wc.S.selection ? __wc.S.selection.strokes[0] === __wc.S.pages[0].strokes[0] : false, bar: !!document.getElementById('selBar') })`))
+  ok('select: click selects one stroke', clickSel.sel && clickSel.n === 1 && clickSel.first && clickSel.bar, JSON.stringify(clickSel))
+  await clickDoc(ws, 300, 250, geo)
+  ok('select: click empty clears', await evalJs(ws, `!__wc.S.selection && !document.getElementById('selBar')`))
+  const circ2 = []
+  for (let i = 0; i <= 28; i++) {
+    const a = (i / 28) * Math.PI * 2
+    circ2.push([secondPt.x + Math.cos(a) * 520, secondPt.y + Math.sin(a) * 150])
+  }
+  await sweep(ws, circ2, geo)
+  ok('select: drag lasso still works in Click mode', await evalJs(ws, `!!__wc.S.selection && __wc.S.selection.strokes.length === 1`))
+  await clickDoc(ws, 300, 250, geo)
+  await evalJs(ws, `document.querySelector('#topbar .tb-caret[data-fly="selectFlyout"]').click()`)
+  await sleep(60)
+  await click(ws, `document.getElementById('selLasso')`)
+  await click(ws, `document.getElementById('selectClose')`)
+  await clickDoc(ws, firstPt.x, firstPt.y, geo)
+  ok('select: Lasso keeps click-no-op', await evalJs(ws, `!__wc.S.selection`))
+
+  await click(ws, `document.getElementById('tbEraser')`)
+  await evalJs(ws, `document.querySelector('#topbar .tb-caret[data-fly="eraserFlyout"]').click()`)
+  await sleep(80)
+  await click(ws, `document.getElementById('erDrag')`)
+  ok('eraser: Drag option applies', await evalJs(ws, `__wc.S.eraserMode`) === 'drag')
+  await click(ws, `document.getElementById('eraserClose')`)
+  await clickDoc(ws, firstPt.x, firstPt.y, geo)
+  ok('eraser: Drag click does not erase', await strokesOf() === 2)
+  await sweep(ws, [[400, secondPt.y], [secondPt.x - 150, secondPt.y], [secondPt.x + 150, secondPt.y], [secondPt.x + 350, secondPt.y]], geo)
+  ok('eraser: Drag sweep erases', await strokesOf() === 1)
+  await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))`)
+  await sleep(60)
+  ok('eraser: Drag undo restores', await strokesOf() === 2)
+  await evalJs(ws, `document.querySelector('#topbar .tb-caret[data-fly="eraserFlyout"]').click()`)
+  await sleep(60)
+  await click(ws, `document.getElementById('erStroke')`)
+  await click(ws, `document.getElementById('eraserClose')`)
+  await clickDoc(ws, firstPt.x, firstPt.y, geo)
+  ok('eraser: Stroke click still erases', await strokesOf() === 1)
+  await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))`)
+  await sleep(60)
+  ok('eraser: Stroke undo restores', await strokesOf() === 2)
 
   // ---------- 6. view mode pans ----------
   await selectPen(ws)
