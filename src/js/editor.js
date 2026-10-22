@@ -163,7 +163,7 @@ function applyTransform() {
   stack.style.width = (w * S.zoom) + 'px'
   stack.style.height = (h * S.zoom) + 'px'
   // HUD layers redraw so their counter-scaled chrome tracks the zoom
-  if (S.rulerOn) drawRulerLayer(page)
+  if (S.rulerOn) redrawRuler()
   updateSelectionChrome(page)
 }
 
@@ -226,7 +226,7 @@ function zoomAt(cx, cy, factor) {
   requestAnimationFrame(() => {
     host.scrollLeft = px * z2 - (cx - hRect.left)
     host.scrollTop = py * z2 - (cy - hRect.top)
-    if (S.rulerOn) { ensureRulerVisible(); drawRulerLayer(current()) }
+    if (S.rulerOn) { ensureRulerVisible(); redrawRuler() }
   })
 }
 
@@ -911,7 +911,8 @@ function updateSelectionChrome(page) {
 }
 
 // ---------- ruler (stencil line: ink snaps along it; drag the grip to move) ----------
-const ruler = { angle: 0, fx: 0.5, fy: 0.55 } // fractions of the doc size
+// exported so QA scripts can reset the stencil (ruler state is per session)
+export const ruler = { angle: 0, fx: 0.5, fy: 0.55 } // fractions of the doc size
 let rulerGrip = null
 
 // Keep the stencil reachable. The default position is 55% down a Letter page,
@@ -982,18 +983,23 @@ function drawRulerLayer(page) {
   ctx.strokeStyle = 'rgba(11,99,197,.85)'
   ctx.lineWidth = 3
   ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1r, y1r); ctx.stroke()
-  // division ticks stay legible at any zoom: constant screen px, not doc px
+  // division ticks stay legible at any zoom: constant screen px, not doc px.
+  // All ticks share one path (one stroke() call) — hundreds of tiny stroke()
+  // calls per drag frame used to make moving the ruler feel choppy.
   ctx.lineWidth = Math.max(1, 2 / scale)
   ctx.strokeStyle = 'rgba(11,99,197,.55)'
   const tickStep = Math.max(1, Math.round(docMM(10)))
   const tickLen = 14 / scale
+  ctx.beginPath()
   for (let t = 0; t <= half; t += tickStep) {
     for (const s of [1, -1]) {
       const bx = px + s * t * ux, by = py + s * t * uy
       if (bx < -20 || bx > w + 20 || by < -20 || by > h + 20) continue
-      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx - uy * tickLen, by + ux * tickLen); ctx.stroke()
+      ctx.moveTo(bx, by)
+      ctx.lineTo(bx - uy * tickLen, by + ux * tickLen)
     }
   }
+  ctx.stroke()
   // grip handle at the pivot; constant screen size so it is easy to grab at
   // fit-width zoom instead of shrinking to a few pixels
   ctx.setLineDash([])
@@ -1029,9 +1035,17 @@ function drawRulerCtl(px, py) {
   if (angle) angle.textContent = `${((Math.round(ruler.angle) + 180) % 360 + 360) % 360 - 180}\u00b0`
 }
 
+// Interactive ruler repaints coalesce into ONE paint per animation frame.
+// Every mousemove used to paint the whole layer off-rAF, which on this
+// GPU-less compositor made dragging the stencil jitter instead of glide.
+let rulerPaintQueued = 0
 function redrawRuler() {
-  const page = current(); if (!page) return
-  drawRulerLayer(page)
+  if (rulerPaintQueued) return
+  rulerPaintQueued = requestAnimationFrame(() => {
+    rulerPaintQueued = 0
+    const page = current()
+    if (page && document.body.contains($('canvasHost'))) drawRulerLayer(page)
+  })
 }
 
 // ruler grip dragging (a pointer down on the handle circle moves the line)
@@ -1056,7 +1070,7 @@ function rulerMoveUpdate(page, x, y) {
   ruler.fx = clamp(fx / docSize(page).w, 0.02, 0.98)
   ruler.fy = clamp(fy / docSize(page).h, 0.02, 0.98)
   rulerGrip = { lx: x, ly: y }
-  drawRulerLayer(page)
+  redrawRuler()
 }
 
 

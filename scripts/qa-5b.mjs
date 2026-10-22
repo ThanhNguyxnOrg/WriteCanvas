@@ -100,6 +100,13 @@ async function main() {
     }
   })
   await send(ws, 'Runtime.enable')
+  // the renderer boots asynchronously __wc is not defined after a fresh app start; poll
+  for (let i = 0; i < 50; i++) {
+    try { if (await evalJs(ws, `!!window.__wc`)) break } catch { }
+    await sleep(300)
+    try { await send(ws, 'Runtime.enable') } catch { }
+  }
+  if (!(await evalJs(ws, `!!window.__wc`))) throw new Error('app renderer did not expose __wc — is WriteCanvas running?')
   const openId = await evalJs(ws, `__wc.S.noteId`)
 
   // ---------- setup: a clean QA note ----------
@@ -113,6 +120,10 @@ async function main() {
     return { left: r.left, top: r.top, zoom: r.width / inner.offsetWidth, w: inner.offsetWidth, h: inner.offsetHeight }
   })()`)
   ok('setup: note opened', !!geo && geo.w > 1000 && geo.zoom > 0.2, JSON.stringify(geo))
+  // qa-5b must be runnable repeatedly inside one app process: reset the
+  // session state earlier sections assume (pen tool, ruler off/straight)
+  await selectPen(ws)
+  await evalJs(ws, `__wc.S.rulerOn = false; __wc.ruler && (__wc.ruler.angle = 0)`)
   const strokesOf = () => evalJs(ws, `__wc.S.pages[0].strokes.length`)
 
   // ---------- 1. pen draws ----------
@@ -134,6 +145,9 @@ async function main() {
   await selectPen(ws)
 
   // ---------- 3. ruler: snap, rotate, grip drag ----------
+  // rulers keep their transform for the whole session: make this section
+  // deterministic even when the script runs twice in one process
+  await evalJs(ws, `__wc.ruler ? (__wc.ruler.angle = 0) : null; __wc.S.rulerOn = false`)
   await click(ws, `document.getElementById('tbRuler')`)
   ok('ruler: on', await evalJs(ws, `__wc.S.rulerOn`) === true)
   ok('ruler: layer painted', await evalJs(ws, inkShare(`document.getElementById('rulerC')`)) > 0.0005)

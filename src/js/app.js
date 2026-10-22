@@ -2,7 +2,7 @@
 // library tree in sync with main-process pushes; exposes a small test hook.
 
 import { bridge } from './bridge.js'
-import { init as initEditor, S, openNote, saveCurrentPage } from './editor.js'
+import { init as initEditor, S, openNote, saveCurrentPage, ruler } from './editor.js'
 import { init as initLib, update as libUpdate, selectNote, selectedFolder } from './library.js'
 import { promptText } from './ctx.js'
 
@@ -75,6 +75,6 @@ async function main() {
 }
 
 // deterministic test hooks for the Playwright/CDP flows
-window.__wc = { App, S, saveCurrentPage, openNote }
+window.__wc = { App, S, saveCurrentPage, openNote, ruler }
 
 main()
