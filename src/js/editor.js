@@ -1619,6 +1619,8 @@ export function saveCurrentPage() {
       failedPages.add(page)
       console.error(err)
       if (S.noteId === noteId && S.currentPage === idx) setSaveState('err')
+      // the note was deleted from under us: there is nothing to retry into
+      if (/note not found/i.test(err && err.message)) return false
       // transient OneDrive/AV lock: retry while the page is still dirty
       clearTimeout(autosaveTimer)
       autosaveTimer = setTimeout(() => { if (page.dirty) saveCurrentPage() }, 5000)
@@ -2326,6 +2328,7 @@ async function exportMenu() {
     { label: 'Page → JPEG', act: () => exportImg('jpg') },
     { label: 'Note → PDF (all pages)', act: () => exportPDF() },
     { label: 'Replay → GIF', act: () => exportGif() },
+    { label: 'Note → .wcanvas project (all pages)', act: () => exportProject() },
   ]
   pick(items, 300, 60)
 }
@@ -2353,6 +2356,15 @@ async function exportGif() {
     if (p?.inkGif) gifBytes = new Uint8Array(p.inkGif)
   } else if (page.inkGif) gifBytes = page.inkGif
   if (gifBytes) await bridge.exportAs(gifBytes, `${S.note.name}-replay`, 'gif')
+}
+// Portable .wcanvas project: a snapshot of every saved page (vector strokes +
+// replay + paper), separate from image/PDF export. Flush the open page first
+// so the file is current; main builds the zip from disk pages.
+async function exportProject() {
+  if (!S.noteId) return
+  await saveCurrentPage()
+  const r = await bridge.exportProject(S.noteId)
+  if (r && r.path) showHint(`Project saved: ${r.pages} page(s)`)
 }
 
 // ---------- replay ----------
@@ -2631,6 +2643,7 @@ export function init(app) {
       case 'new-note': app.cmdNewNote(); break
       case 'new-folder': app.cmdNewFolder(); break
       case 'import': app.cmdImport(); break
+      case 'import-project': app.cmdImportProject(); break
       case 'reveal-library': bridge.revealLibraryFolder(); break
       case 'zoom': app.cmdZoom(arg); break
     }

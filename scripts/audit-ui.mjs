@@ -249,7 +249,7 @@ ok('page is clean after save', await state(`__wc.S.pages[__wc.S.currentPage].dir
 // export menu opens from the save flyout (native dialog items are not clicked)
 await realClick(`document.getElementById('btnSave')`)
 await realClick(`document.getElementById('btnExport')`)
-ok('btnExport -> export menu opens (4 items)', await state(`!document.getElementById('ctxMenu').classList.contains('hidden') && document.getElementById('ctxMenu').children.length === 4`), 'items=' + await state(`document.getElementById('ctxMenu').children.length`))
+ok('btnExport -> export menu opens (5 items)', await state(`!document.getElementById('ctxMenu').classList.contains('hidden') && document.getElementById('ctxMenu').children.length === 5`), 'items=' + await state(`document.getElementById('ctxMenu').children.length`))
 await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 await sleep(80)
 ok('Escape closes export menu', await state(`document.getElementById('ctxMenu').classList.contains('hidden')`))

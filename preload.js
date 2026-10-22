@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('WriteCanvasHost', {
   async savePage(payload) { return ipcRenderer.invoke('note:savePage', payload) },
   async exportAs(bytes, defaultName, kind) { return ipcRenderer.invoke('export:saveAs', { bytes, defaultName, kind }) },
   async exportPDF(pages, paper) { return ipcRenderer.invoke('export:pdf', { pages, paper }) },
+  // portable project .wcanvas (ZIP manifest + pages), separate from image/PDF export
+  async exportProject(noteId) { return ipcRenderer.invoke('export:project', { noteId }) },
+  async importProject() { return ipcRenderer.invoke('project:import') },
   // Keep the native Windows caption overlay in step with the in-app theme.
   setTitleBarTheme(dark) { ipcRenderer.send('ui:titlebar-theme', !!dark) },
   // QA helper: UI test scripts grab the window surface through the main

@@ -20,6 +20,8 @@ const host = () => {
       async savePage(payload) { return invoke('note_save_page', payload) },
       async exportAs(bytes, defaultName, kind) { return invoke('export_save_as', { bytes, defaultName, kind }) },
       async exportPDF(pages, paper) { return invoke('export_pdf', { pages, paper }) },
+      async exportProject(noteId) { return invoke('export_project', { noteId }) },
+      async importProject() { return invoke('project_import') },
       on(cmd, cb) {
         window.__TAURI__.event.listen('cmd', e => cb(e.payload.cmd, e.payload.arg))
       },

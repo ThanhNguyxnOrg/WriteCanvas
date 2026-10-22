@@ -7,6 +7,7 @@ const os = require('node:os')
 const { Library, sanitizeName, pageFileName } = require('./library')
 const { writeNotePng, readNoteMeta, extractInkGif, extractVecJson, pngIsBroken, repairPNG } = require('./scrble-format')
 const { GIFEncoder, quantize, applyPalette } = require('gifenc')
+const { buildNoteZip, readNoteZip } = require('./wcanvas-export')
 
 let win = null
 let lib = null
@@ -96,6 +97,7 @@ function menu() {
         { label: 'New Folder', click: send('new-folder') },
         { type: 'separator' },
         { label: 'Import PNG…', click: send('import') },
+        { label: 'Import .wcanvas Project…', click: send('import-project') },
         { label: 'Open Library Folder', click: send('reveal-library') },
         { type: 'separator' },
         { label: 'Save Page', accelerator: 'CmdOrCtrl+S', click: send('save') },
@@ -370,6 +372,138 @@ function registerIpc() {
       try { await fs.rmdir(tmp) } catch { }
     }
     return res.filePath
+  })
+
+  // .wcanvas = one portable project file (ZIP + manifest + Scrble pages).
+  // Reads pages straight from disk so the export is a snapshot of what is
+  // actually saved — the renderer flushes the open page first (exportProject
+  // in editor.js), so only genuinely unsaved scratch is excluded.
+  // QA hooks (mirrors the debug:captureWindow precedent): when WC_QA_EXPORT /
+  // WC_QA_IMPORT point at a path, the native dialogs are bypassed so CDP test
+  // scripts can round-trip a full project without a human at the dialog.
+  ipcMain.handle('export:project', async (_e, { noteId }) => {
+    const item = lib.get(Number(noteId))
+    if (!item || item.type !== 'note') throw new Error('note not found')
+    if (!item.note) item.note = { pages: [{}], currentPage: 0 }
+    const pages = []
+    for (const [i, p] of item.note.pages.entries()) {
+      const entry = { file: null, data: null, paper: p.paper ? JSON.parse(JSON.stringify(p.paper)) : null }
+      if (p.file) {
+        try {
+          let buf = await fs.readFile(lib.pagePath(p.file))
+          if (pngIsBroken(buf)) buf = repairPNG(buf) // export heals like note:load does
+          // under a stable page-NN.png name, not the library's per-note file
+          entry.file = `page-${String(i + 1).padStart(2, '0')}.png`
+          entry.data = buf
+        } catch {
+          // page image missing on disk: keep the page in the manifest as blank
+          entry.file = null
+        }
+      }
+      pages.push(entry)
+    }
+    const parent = item.parent != null ? lib.get(Number(item.parent)) : null
+    const { zip } = buildNoteZip({
+      name: item.name,
+      createdAt: item.created ? new Date(Number(item.created) || Date.now()).toISOString() : undefined,
+      modifiedAt: item.modified ? new Date(Number(item.modified) || Date.now()).toISOString() : undefined,
+      project: parent && parent.type === 'folder' ? parent.name : null,
+      tool: item.tool,
+      pages,
+    })
+    const res = process.env.WC_QA_EXPORT
+      ? { canceled: false, filePath: path.resolve(process.env.WC_QA_EXPORT) }
+      : await dialog.showSaveDialog(win, {
+          defaultPath: `${sanitizeName(item.name)}.wcanvas`,
+          filters: [{ name: 'WriteCanvas Project', extensions: ['wcanvas'] }],
+          title: 'Export WriteCanvas project',
+        })
+    if (res.canceled || !res.filePath) return null
+    // atomic write: temp file in the same directory, then rename over the
+    // target (retry briefly — sync clients hold files open, like library.js)
+    const tmp = `${res.filePath}.tmp-${process.pid}-${Date.now()}`
+    try {
+      await fs.writeFile(tmp, zip)
+      let renamed = false
+      for (let a = 0; a < 3 && !renamed; a++) {
+        try {
+          await fs.rename(tmp, res.filePath)
+          renamed = true
+        } catch { await new Promise(r => setTimeout(r, 120 * (a + 1))) }
+      }
+      if (!renamed) {
+        await fs.copyFile(tmp, res.filePath)
+        await fs.unlink(tmp)
+      }
+    } catch (err) {
+      try { await fs.unlink(tmp) } catch { }
+      throw err
+    }
+    if (!process.env.WC_QA_EXPORT) shell.showItemInFolder(res.filePath)
+    return { path: res.filePath, pages: pages.length, bytes: zip.length }
+  })
+
+  // Open a .wcanvas project: validated zip (zip-slip guarded, exact manifest
+  // pages enforced), then copied into the library as a NEW note — a project
+  // file never overwrites live notes.
+  ipcMain.handle('project:import', async () => {
+    const res = process.env.WC_QA_IMPORT
+      ? { canceled: false, filePaths: [path.resolve(process.env.WC_QA_IMPORT)] }
+      : await dialog.showOpenDialog(win, {
+          properties: ['openFile'],
+          filters: [{ name: 'WriteCanvas Project', extensions: ['wcanvas'] }],
+          title: 'Import WriteCanvas project',
+        })
+    if (res.canceled || !res.filePaths[0]) return []
+    const { manifest, files } = readNoteZip(await fs.readFile(res.filePaths[0]))
+    const byName = new Map(files.map(f => [f.name, f.data]))
+    // land in the recorded project folder when it exists in this library
+    let folder = lib.get(1) ? 1 : 0
+    if (manifest.project) {
+      const f = lib.index.items.find(i => i.type === 'folder' &&
+        String(i.name).toLowerCase() === String(manifest.project).toLowerCase())
+      if (f) folder = f.id
+    }
+    const base = sanitizeName(manifest.name) || sanitizeName(path.basename(res.filePaths[0], path.extname(res.filePaths[0]))) || 'Imported'
+    // every page file must be free: unique among sibling notes, unowned by any
+    // other note, and not already on disk (same care the PNG import loop has)
+    const pagesFree = name => {
+      for (let i = 0; i < manifest.pages.length; i++) {
+        const file = pageFileName(name, i)
+        if (lib.index.items.some(n => n.type === 'note' &&
+          (n.note?.pages || []).some(p => p.file && String(p.file).toLowerCase() === file.toLowerCase()))) return false
+        if (fss.existsSync(lib.pagePath(file))) return false
+      }
+      return true
+    }
+    let finalName = base, probe = 1
+    while (lib.siblingNameTaken(folder, 'note', finalName, 0) || !pagesFree(finalName)) finalName = `${base} ${++probe}`
+    const note = lib.create('note', finalName, folder)
+    const pages = []
+    try {
+      for (let i = 0; i < manifest.pages.length; i++) {
+        const want = manifest.pages[i]
+        const page = {}
+        if (want.file) {
+          const file = pageFileName(note.name, i)
+          await fs.writeFile(lib.pagePath(file), byName.get(want.file))
+          page.file = file
+        }
+        if (want.paper) page.paper = { ...want.paper }
+        pages.push(page)
+      }
+    } catch (err) {
+      // never leave a half-imported note in the working index
+      lib.index.items = lib.index.items.filter(i => i !== note)
+      throw err
+    }
+    note.note = { pages, currentPage: 0 }
+    const paper0 = manifest.pages[0] && manifest.pages[0].paper
+    note.paper = paper0 ? { ...paper0 } : { size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF' }
+    if (manifest.tool) note.tool = { ...manifest.tool }
+    await lib.persist()
+    pushLibrary()
+    return [note.id]
   })
 }
 

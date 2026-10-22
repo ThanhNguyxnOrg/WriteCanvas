@@ -29,6 +29,10 @@ const App = {
     const ids = await bridge.importNotes()
     if (ids.length) this.openNote(ids[0])
   },
+  async cmdImportProject() {
+    const ids = await bridge.importProject()
+    if (ids.length) this.openNote(ids[0])
+  },
   reloadLibrary() {
     bridge.library().then(libUpdate)
   },
