@@ -5,14 +5,15 @@ name: Store package
 # Manual on purpose: a Store package is tied to the identity Partner Center
 # assigned to the reserved product, and it is worth looking at the version before
 # it is uploaded. The identity is public (it is inside every installed package),
-# so it lives in package.json under build.msix.
+# so it lives in store/identity.json.
 #
 # No certificate is involved. The Store re-signs Store submissions itself; a
 # certificate is only needed to sideload outside the Store.
 #
 # The package is built with electron-builder 26 through `npm run dist:store`,
-# while the release pipeline stays on the pinned electron-builder 25: the MSIX
-# target is newer than the tool that packages macOS and Linux.
+# while the release pipeline stays on the pinned electron-builder 25: version 25
+# rejects the `msix` and `toolsets` config keys outright, so they are passed as
+# overrides by the script instead.
 on:
   workflow_dispatch:
 
@@ -49,8 +50,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $expectedName = (node -p "require('./package.json').build.msix.identityName").Trim()
-          $expectedPublisher = (node -p "require('./package.json').build.msix.publisher").Trim()
+          $expectedName = (node -p "require('./store/identity.json').identityName").Trim()
+          $expectedPublisher = (node -p "require('./store/identity.json').publisher").Trim()
 
           $upload = Get-ChildItem dist/*.msixupload | Select-Object -First 1
           if (-not $upload) { throw 'electron-builder produced no .msixupload' }

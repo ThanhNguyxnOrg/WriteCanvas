@@ -13,9 +13,16 @@ the only work left is building the package, filling the listing and submitting i
 | Package Family Name | `ThanhNguyxn.WriteCanvas_pajb20v6p2hpm` |
 | Status | In draft |
 
-These four values live in `package.json` under `build.msix`; the workflow checks
-the built manifest against them, because a mismatch is the one rejection that is
-both easy to avoid and impossible to fix after upload.
+These values live in `store/identity.json`. `npm run dist:store` passes them to
+electron-builder 26 as `-c.msix.*` overrides, and the workflow reads the built
+manifest back and compares it with that file, because a mismatch is the one
+rejection that is both easy to avoid and impossible to fix after upload.
+
+They are deliberately **not** in `package.json`: electron-builder 25 validates its
+config schema strictly and refuses to build at all when it meets an unknown
+`msix` or `toolsets` key — which is what broke every release job on the first
+attempt. Keeping the Store config on the Store path leaves the pinned release
+toolchain untouched.
 
 ## Why MSIX, and why a separate toolchain
 

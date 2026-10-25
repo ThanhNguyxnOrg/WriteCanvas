@@ -56,3 +56,20 @@ test('every platform has an icon that exists and is large enough', () => {
     assert.ok(width >= 256 && width === height, `${icon} should be a square of at least 256px, got ${width}x${height}`)
   }
 })
+
+test('the Store identity is complete and shaped like the Partner Center values', () => {
+  const identity = JSON.parse(readFileSync(new URL('store/identity.json', root), 'utf8'))
+  for (const key of ['applicationId', 'identityName', 'publisher', 'publisherDisplayName', 'displayName']) {
+    assert.ok(identity[key] && identity[key].trim(), `store/identity.json has no ${key}`)
+  }
+  // Partner Center: 3-50 characters of [a-zA-Z0-9.-]; the publisher is an X.500
+  // name that must match the reserved product exactly.
+  assert.match(identity.identityName, /^[A-Za-z0-9.-]{3,50}$/)
+  assert.match(identity.publisher, /^CN=/)
+})
+
+test('the MSIX config is not left in package.json where electron-builder 25 would reject it', () => {
+  assert.equal(manifest.build.msix, undefined)
+  assert.equal(manifest.build.toolsets, undefined)
+  assert.equal(manifest.scripts['dist:store'], 'node scripts/build-store.mjs')
+})
