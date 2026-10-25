@@ -121,11 +121,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The deb target shells out to fakeroot; the runner image does usually have
-      # it, and this makes the job independent of that.
+      # The deb target shells out to fakeroot, and the smoke launch below needs a
+      # display for Electron. Installing both keeps the job independent of what
+      # the runner image happens to include.
       - name: Install packaging tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq fakeroot
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fakeroot xvfb
 
       - name: Build the installer
         env:
@@ -139,6 +140,12 @@ jobs:
       # have caught the 0.1.0 installer opening to "No host bridge found".
       - name: Verify the packaged bundle
         run: node .github/scripts/verify-package.mjs
+
+      # Starts the packaged app on this runner and asks the page whether the
+      # bridge and the editor came up. A bundle can be complete and still fail to
+      # launch on one platform, which is exactly what this catches.
+      - name: Launch the packaged app
+        run: node .github/scripts/smoke-package.mjs
 
       - name: Collect the installer
         uses: actions/upload-artifact@v7
