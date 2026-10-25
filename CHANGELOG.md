@@ -11,7 +11,12 @@ written before the release commit — see
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-10-25
+## [0.1.2] - 2026-10-25
+
+The first release with installers that run. The 0.1.0 and 0.1.1 packages shipped
+without `preload.js`, so the installed app opened to "No host bridge found" while
+running from source worked; those releases are withdrawn and this one replaces
+them.
 
 ### Added
 
@@ -19,26 +24,6 @@ written before the release commit — see
   deb on Linux are built and attached to the release. They are built only when a
   release is published, so an ordinary commit never spends three operating
   systems' worth of packaging time.
-
-### Fixed
-
-- **Linux packaging** — the deb target failed with "Please specify author
-  'email' in the application package.json", so the Linux installers were missing
-  from the first release. The package now declares an author.
-
-### Changed
-
-- Re-publishing a version replaces only that version's installer files; earlier
-  releases keep theirs.
-
-## [0.1.0] - 2026-10-25
-
-First tagged release. WriteCanvas opens an existing Scrble Ink library, adds the
-tools a desktop note-taking workflow needs, and writes notes back in a format
-Scrble Ink still reads.
-
-### Added
-
 - **Library** — folders and notes in a chosen folder, stored as
   `Scribble/<Name>#<NN>.png` beside an `index.json`, mirroring the Scrble Ink
   layout so a library can be shared between the two apps. Create, rename, move,
@@ -71,8 +56,22 @@ Scrble Ink still reads.
   one zip.
 - **Keyboard** — shortcuts resolved per platform, with a help sheet that shows
   Windows, macOS or Linux chords depending on where the app is running.
-- **Packaging** — NSIS on Windows, DMG on macOS, AppImage and deb on Linux, from
-  one code path.
+
+### Fixed
+
+- **Packaged app had no bridge** — `preload.js` was missing from `build.files`, so
+  the renderer could not reach the main process and the window showed "No host
+  bridge found". The file is now shipped, and a test fails if a root-level file
+  the main process opens is left out of the bundle.
+- **App icon** — the installers and the window now carry the WriteCanvas icon
+  instead of Electron's default.
+- **Linux packaging** — the deb target failed with "Please specify author
+  'email' in the application package.json"; the package now declares an author.
+
+### Changed
+
+- Re-publishing a version replaces only that version's installer files; earlier
+  releases keep theirs.
 
 ### Security
 
@@ -80,6 +79,5 @@ Scrble Ink still reads.
   `WriteCanvasHost` bridge in `preload.js`; every library path from the renderer
   is resolved and validated in the main process before it is used.
 
-[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v0.1.1
-[0.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v0.1.2

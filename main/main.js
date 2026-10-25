@@ -51,6 +51,9 @@ async function createWindow() {
       sandbox: true,
       backgroundThrottling: false,
     },
+    // The window and taskbar icon on Linux and in development; a packaged
+    // Windows build takes its icon from the executable instead.
+    icon: path.join(__dirname, '..', 'src', 'img', 'writecanvas.png'),
   })
   win.loadFile(path.join(__dirname, '..', 'src', 'index.html'))
   win.on('page-title-updated', e => e.preventDefault())

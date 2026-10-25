@@ -1,7 +1,7 @@
 {
   "name": "writecanvas",
   "productName": "WriteCanvas",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Cross-platform note-taking & inking app. Reads and writes Scrble-Ink-compatible PNG notes (sINK replay + paper chunks).",
   "license": "Apache-2.0",
   "author": {
@@ -23,7 +23,7 @@
     "start:debug": "electron . --remote-debugging-port=9222",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs tests/shortcuts.test.mjs tests/library-pages.test.mjs tests/auto-merge.test.mjs tests/release-notes.test.mjs tests/workflows.test.mjs"
+    "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs tests/shortcuts.test.mjs tests/library-pages.test.mjs tests/auto-merge.test.mjs tests/release-notes.test.mjs tests/workflows.test.mjs tests/package.test.mjs"
   },
   "build": {
     "appId": "com.writecanvas.app",
@@ -31,17 +31,21 @@
     "files": [
       "main/**",
       "src/**",
+      "preload.js",
       "node_modules/gifenc/**",
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "src/img/writecanvas.png"
     },
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "icon": "src/img/writecanvas.png"
     },
     "linux": {
       "category": "Utility",
+      "icon": "src/img/writecanvas.png",
       "target": [
         "AppImage",
         "deb"
