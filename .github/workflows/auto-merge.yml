@@ -57,5 +57,9 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           REVIEW_ASSIGNEE: ${{ vars.REVIEW_ASSIGNEE || 'RealThanhNguyxn' }}
           BLOCKING_LABELS: needs-review,do-not-merge,breaking,security,wip
-          SENSITIVE_PATHS: .github/**,main/**,preload.js
+          # Paths a person always reads. Workflow files are handled separately by
+          # the script: moving an action to another version is routine, anything
+          # else in them stops for review.
+          SENSITIVE_PATHS: main/**,preload.js
+          WORKFLOW_PATHS: .github/workflows/**
         run: node .github/scripts/auto-merge.mjs

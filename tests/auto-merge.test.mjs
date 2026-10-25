@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { decide, globToRegExp, isMajorBump } from '../.github/scripts/auto-merge.mjs'
+import { decide, globToRegExp, isMajorBump, isRoutineWorkflowBump } from '../.github/scripts/auto-merge.mjs'
 
 test('globToRegExp / directory spans', () => {
   assert.equal(globToRegExp('.github/**').test('.github/workflows/ci.yml'), true)
@@ -38,12 +38,76 @@ test('decide merges a routine renderer change', () => {
   assert.equal(verdict.action, 'merge')
 })
 
-test('decide hands sensitive paths to a human', () => {
-  for (const file of ['main/main.js', 'preload.js', '.github/workflows/release.yml']) {
+// What dependabot actually sends for an action bump: nothing but the refs move.
+const ACTION_BUMP = [
+  '@@ -41,11 +41,11 @@ jobs:',
+  '           owner: ${{ github.repository_owner }}',
+  '           repositories: ${{ github.event.repository.name }}',
+  '',
+  '-      - uses: actions/checkout@v5',
+  '+      - uses: actions/checkout@v7',
+  '',
+  '-      - uses: actions/setup-node@v5',
+  '+      - uses: actions/setup-node@v7',
+  '         with:',
+  '           node-version: 22',
+].join('\n').split('\n')
+
+// A permission change, an added job or an edited script: the part of a workflow
+// that a person has to read.
+const STRUCTURAL_CHANGE = [
+  '@@ -18,7 +18,7 @@ jobs:',
+  '     runs-on: ubuntu-latest',
+  '-    permissions:',
+  '-      contents: write',
+  '+    permissions:',
+  '+      contents: read',
+  '     steps:',
+  '-      - run: gh pr merge "$PR" --squash',
+  '+      - run: gh pr merge "$PR" --merge',
+].join('\n').split('\n')
+
+test('isRoutineWorkflowBump sees a version bump and nothing else', () => {
+  assert.equal(isRoutineWorkflowBump(ACTION_BUMP), true)
+  assert.equal(isRoutineWorkflowBump(STRUCTURAL_CHANGE), false)
+  assert.equal(isRoutineWorkflowBump([]), false)
+  assert.equal(isRoutineWorkflowBump(undefined), false)
+  // Context alone is not a change.
+  assert.equal(isRoutineWorkflowBump(['@@ -1,3 +1,3 @@', ' unchanged', ' also unchanged']), false)
+})
+
+test('decide lands a routine action bump on its own', () => {
+  const verdict = decide({
+    title: 'chore(ci): bump the actions group with 2 updates',
+    files: ['.github/workflows/ci.yml'],
+    patches: { '.github/workflows/ci.yml': ACTION_BUMP },
+  })
+  assert.equal(verdict.action, 'merge')
+})
+
+test('decide holds a workflow change that is not a version bump', () => {
+  for (const patches of [{}, { '.github/workflows/release.yml': STRUCTURAL_CHANGE }]) {
+    const verdict = decide({
+      title: 'ci: change how the release job merges',
+      files: ['.github/workflows/release.yml'],
+      patches,
+    })
+    assert.equal(verdict.action, 'review')
+    assert.match(verdict.reason, /workflow structure/)
+  }
+})
+
+test('decide hands protected paths to a human', () => {
+  for (const file of ['main/main.js', 'preload.js', 'main/deep/nested/module.js']) {
     const verdict = decide({ title: 'feat: add a thing', files: ['src/js/paper.js', file] })
     assert.equal(verdict.action, 'review', `${file} must require review`)
-    assert.match(verdict.reason, /sensitive/)
+    assert.match(verdict.reason, /need a human/)
   }
+})
+
+test('decide merges an ordinary configuration change', () => {
+  const verdict = decide({ title: 'chore: label the issue templates', files: ['.github/CODEOWNERS'] })
+  assert.equal(verdict.action, 'merge')
 })
 
 test('decide hands blocking labels to a human', () => {

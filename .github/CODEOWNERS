@@ -1,19 +1,17 @@
-# Review ownership. CODEOWNERS requests a review as soon as a pull request
-# touches a listed path, which is the second half of the auto-merge policy: the
-# workflow merges routine changes and hands these paths to a human (see
-# docs/AUTOMATION.md).
+# Review ownership, aligned with the auto-merge policy in
+# .github/scripts/auto-merge.mjs.
+#
+# Only the paths a person always reads are listed. There is deliberately no `*`
+# entry: routine changes are merged by ThanhNguyxnAgent after CI, and a pull
+# request held by the policy is assigned to the owner by that workflow anyway.
+# Adding a `*` here would request a review on every dependency bump and turn the
+# notification into noise.
 #
 # Replace @RealThanhNguyxn with an organisation team such as
 # @ThanhNguyxnOrg/owners if the project grows past one maintainer.
 
-*                   @RealThanhNguyxn
-
-# CI/CD and security surfaces: an unreviewed change here can publish, merge or
-# release anything, so these always need a person.
-/.github/           @RealThanhNguyxn
-
-# Electron main process and the preload bridge: file system access, IPC and the
-# context-isolated boundary.
+# Electron main process and the context-isolated preload bridge: file system
+# access, IPC, and the boundary the renderer cannot cross.
 /main/              @RealThanhNguyxn
 /preload.js         @RealThanhNguyxn
 

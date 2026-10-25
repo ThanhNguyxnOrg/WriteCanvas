@@ -1,13 +1,18 @@
 // Auto-merge policy for .github/workflows/auto-merge.yml.
 //
-// ThanhNguyxnAgent merges a pull request only when all of the following hold:
-//   - it is not a draft,
-//   - the CI run that just finished was for the same commit as the PR head,
-//   - it carries no blocking label,
-//   - it touches no sensitive path,
-//   - it is not a major dependency bump.
-// Anything else is left alone, labelled `needs-review`, and assigned to the
-// owner in REVIEW_ASSIGNEE so a human decides.
+// ThanhNguyxnAgent merges by default. Everything is merged unless it is one of
+// the few things a person has to see:
+//   - a draft, a pull request for another branch, or a run whose commit is no
+//     longer the head,
+//   - a blocking label (an explicit veto, e.g. do-not-merge),
+//   - a protected path: the Electron main process and the context-isolated
+//     bridge, where file access and IPC live,
+//   - a workflow change that does more than move an action to another version,
+//   - a major dependency bump.
+//
+// A routine dependency or action bump therefore lands on its own, while a
+// rewrite of a job, a permission or a shell script in .github/workflows stops
+// and asks for a human. Anything else is merged.
 //
 // decide() is pure so tests/auto-merge.test.mjs can cover the policy without
 // GitHub; the CLI half at the bottom only talks to `gh`.
@@ -17,7 +22,12 @@ import { pathToFileURL } from 'node:url'
 const list = (value, fallback) => (value || fallback).split(',').map(s => s.trim()).filter(Boolean)
 
 export const BLOCKING_LABELS = list(process.env.BLOCKING_LABELS, 'needs-review,do-not-merge,breaking,security,wip')
-export const SENSITIVE_PATHS = list(process.env.SENSITIVE_PATHS, '.github/**,main/**,preload.js')
+// The main process and the preload bridge are the trust boundary. A change
+// there is always read by a person.
+export const SENSITIVE_PATHS = list(process.env.SENSITIVE_PATHS, 'main/**,preload.js')
+// Workflow files are treated separately: a version bump is routine, anything
+// else in them is not.
+export const WORKFLOW_PATHS = list(process.env.WORKFLOW_PATHS, '.github/workflows/**')
 
 const ESCAPE = /[.+^${}()|[\]\\]/g
 
@@ -56,16 +66,45 @@ export function isMajorBump(title) {
   return Number(m[2]) > Number(m[1])
 }
 
+// One changed line of a unified diff that only moves an action to another ref:
+//   -      - uses: actions/checkout@v5
+//   +      - uses: actions/checkout@v7
+const ACTION_PIN = /^[+-]\s*(?:-\s*)?uses:\s*[\w.-]+\/[\w.-]+(?:\/[\w.-]+)*@\S+/
+
+// True when a workflow file's diff does nothing but re-point actions at other
+// versions - which is all a dependency bump does. A change to a job, a
+// permission, a trigger or a shell script returns false, so it waits for a
+// person. A patch we were not given is treated as unknown, not as routine.
+export function isRoutineWorkflowBump(patchLines) {
+  if (!Array.isArray(patchLines) || !patchLines.length) return false
+  let changed = 0
+  for (const line of patchLines) {
+    if (!/^[+-]/.test(line)) continue // context lines and hunk headers
+    if (/^(\+\+\+|---)/.test(line)) continue // file headers
+    if (/^[+-]\s*$/.test(line)) continue // a blank line added or removed
+    changed++
+    if (!ACTION_PIN.test(line)) return false
+  }
+  return changed > 0
+}
+
+function describe(files, limit = 5) {
+  const shown = files.slice(0, limit).join(', ')
+  return files.length > limit ? `${shown} (+${files.length - limit} more)` : shown
+}
+
 export function decide({
   title = '',
   labels = [],
   files = [],
+  patches = {},
   isDraft = false,
   headMatches = true,
   baseRef = 'master',
   targetBranch = 'master',
   blockingLabels = BLOCKING_LABELS,
   sensitivePaths = SENSITIVE_PATHS,
+  workflowPaths = WORKFLOW_PATHS,
 } = {}) {
   if (baseRef !== targetBranch) return { action: 'skip', reason: `targets ${baseRef}, not ${targetBranch}` }
   if (isDraft) return { action: 'skip', reason: 'draft pull request' }
@@ -74,16 +113,21 @@ export function decide({
   const blocked = labels.filter(l => blockingLabels.includes(l))
   if (blocked.length) return { action: 'review', reason: `blocking label: ${blocked.join(', ')}` }
 
-  const sensitive = files.filter(f => sensitivePaths.some(p => globToRegExp(p).test(f)))
-  if (sensitive.length) {
-    const shown = sensitive.slice(0, 5).join(', ')
-    const more = sensitive.length > 5 ? ` (+${sensitive.length - 5} more)` : ''
-    return { action: 'review', reason: `touches sensitive paths: ${shown}${more}` }
+  const protectedFiles = files.filter(f => sensitivePaths.some(p => globToRegExp(p).test(f)))
+  if (protectedFiles.length) {
+    return { action: 'review', reason: `touches paths that need a human: ${describe(protectedFiles)}` }
+  }
+
+  const structural = files
+    .filter(f => workflowPaths.some(p => globToRegExp(p).test(f)))
+    .filter(f => !isRoutineWorkflowBump(patches[f]))
+  if (structural.length) {
+    return { action: 'review', reason: `changes workflow structure: ${describe(structural)}` }
   }
 
   if (isMajorBump(title)) return { action: 'review', reason: 'major dependency bump' }
 
-  return { action: 'merge', reason: 'green CI, no blocking label, no sensitive path' }
+  return { action: 'merge', reason: 'green CI, nothing that needs a person' }
 }
 
 // ---------- CLI half ----------
@@ -121,14 +165,22 @@ function main() {
     ['pr', 'view', prNumber, '--repo', repo, '--json', 'title,url,isDraft,labels,headRefOid,mergeable,baseRefName'],
     { json: true },
   )
-  const files = gh(['api', `repos/${repo}/pulls/${prNumber}/files`, '--paginate', '--jq', '.[].filename'])
+  // One JSON object per line: the file list and the patches, so the policy can
+  // tell a routine action bump from a rewrite of a workflow. GitHub omits the
+  // patch for a large or binary file; that is treated as unknown, not routine.
+  const changed = gh(['api', `repos/${repo}/pulls/${prNumber}/files`, '--paginate', '--jq', '.[] | @json'])
     .split('\n')
     .filter(Boolean)
+    .map(line => JSON.parse(line))
+  const files = changed.map(f => f.filename)
+  const patches = {}
+  for (const f of changed) if (f.patch) patches[f.filename] = f.patch.split('\n')
 
   const verdict = decide({
     title: pr.title,
     labels: pr.labels.map(l => l.name),
     files,
+    patches,
     isDraft: pr.isDraft,
     headMatches: pr.headRefOid === process.env.HEAD_SHA,
     baseRef: pr.baseRefName,

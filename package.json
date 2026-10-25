@@ -4,6 +4,10 @@
   "version": "0.1.0",
   "description": "Cross-platform note-taking & inking app. Reads and writes Scrble-Ink-compatible PNG notes (sINK replay + paper chunks).",
   "license": "Apache-2.0",
+  "author": {
+    "name": "ThanhNguyxnOrg",
+    "email": "RealThanhNguyxn@users.noreply.github.com"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ThanhNguyxnOrg/WriteCanvas.git"
@@ -37,6 +41,7 @@
       "target": "dmg"
     },
     "linux": {
+      "category": "Utility",
       "target": [
         "AppImage",
         "deb"

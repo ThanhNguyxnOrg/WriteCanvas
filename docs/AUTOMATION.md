@@ -74,26 +74,36 @@ label: it is not asked to add one.
 ## The auto-merge policy
 
 The decision lives in `.github/scripts/auto-merge.mjs` as a pure function, so it
-can be tested without GitHub; the workflow only supplies the inputs. A pull
-request is **merged** with the Agent token when all of the following hold:
+can be tested without GitHub; the workflow only supplies the inputs. **The
+default is to merge.** A pull request is merged with the Agent token when CI for
+that exact commit finished successfully and the commit is still the head of the
+branch, it is not a draft, it targets `master`, and it is not one of the few
+things below.
 
-- CI for that exact commit finished successfully, and the commit is still the
-  head of the branch,
-- the pull request is not a draft and targets `master`,
-- it carries none of the blocking labels,
-- it touches no sensitive path,
-- it is not a major dependency bump.
+| Held for a person | Why |
+|---|---|
+| A blocking label | `do-not-merge`, `breaking`, `security`, `wip` and `needs-review` are explicit vetoes. |
+| `main/**` or `preload.js` | The trust boundary: file access, IPC, and the context-isolated bridge. A change here is always read by a person. |
+| A workflow change that is more than an action version bump | A rewritten job, permission, trigger or shell script can publish, merge or release anything. |
+| A major dependency bump | Detected from the Dependabot title; a major jump can break the ink and file APIs. |
 
-Anything else is **left open**, labelled `needs-review`, and assigned to the owner
-in `REVIEW_ASSIGNEE` — with a comment saying which rule held it. Drafts, pull
-requests that target another branch, and runs whose commit is no longer the head
-are **skipped silently**, because the next run will pick them up.
+Everything else lands on its own — including a routine Dependabot **action** bump.
+Moving `actions/checkout@v5` to `actions/checkout@v7` is the one kind of workflow
+change that is a version bump and nothing else, so the policy lets it through. The
+moment such a diff contains anything other than a `uses:` line — an added job, a
+changed permission, an edited script — it stops and asks.
+
+Held pull requests are labelled `needs-review` and assigned to the owner in
+`REVIEW_ASSIGNEE`, with a comment naming the rule that held them. Drafts, pull
+requests targeting another branch, and runs whose commit is no longer the head are
+**skipped silently**, because the next run will pick them up.
 
 | Input | Default | Meaning |
 |---|---|---|
 | `BLOCKING_LABELS` | `needs-review, do-not-merge, breaking, security, wip` | Any of these holds the pull request. |
-| `SENSITIVE_PATHS` | `.github/**, main/**, preload.js` | A change here always needs a person: CI/CD, the Electron main process, and the context-isolated bridge. |
-| Major dependency bump | title pattern `from 1.2.3 to 2.0.0` | A major jump can break the ink and file APIs, so it waits for a human. |
+| `SENSITIVE_PATHS` | `main/**, preload.js` | A change here always needs a person. |
+| `WORKFLOW_PATHS` | `.github/workflows/**` | Checked against the diff: a version bump passes, anything else is held. |
+| Major dependency bump | title pattern `from 1.2.3 to 2.0.0` | Waits for a human. |
 
 Two safety details in the merge itself:
 
@@ -104,17 +114,22 @@ Two safety details in the merge itself:
 
 ### Consequences worth knowing
 
-- **A Dependabot minor or patch bump to `package.json` and the lockfile merges by
-  itself.** Those paths are not sensitive by design, which is what makes the
-  weekly update useful.
-- **A GitHub Actions update never auto-merges**, because it edits `.github/`, and
-  a major npm bump never auto-merges either. Both are held for review.
+- **A Dependabot patch or minor npm bump merges by itself**, which is what makes
+  the weekly update useful.
+- **A routine action bump merges by itself too**, but a change to how a workflow
+  behaves — a job, a permission, a trigger, a script — is held. That line is
+  deliberate: the workflows that mint the Agent token run with the App's private
+  key in the environment, so the *structure* of CI is the thing worth reading,
+  while re-pointing an action at a newer version is not.
 - **Fork pull requests are treated the same way.** This workflow uses
   `workflow_run`, which runs in the base repository's context with access to the
   secrets — a workflow triggered directly by a fork pull request would not see
   them at all.
 - **Pull requests from the maintainer are not exempt.** The policy looks at the
-  labels, the paths and the title, not at who opened it.
+  labels, the paths, the diff and the title, not at who opened it.
+- **`needs-review` is sticky by design.** Once a pull request is held, the label
+  keeps holding it on later runs; approving means merging it (see below), which
+  clears the label.
 
 ### Changing the policy
 
