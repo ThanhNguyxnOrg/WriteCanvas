@@ -1,0 +1,95 @@
+name: Release
+
+# Publish a version by pushing a commit to master whose subject is
+# `release: v1.4.0`. The notes are taken from the matching section of
+# CHANGELOG.md, so the changelog decides what a release says.
+#
+#   git commit --allow-empty -m "release: v1.4.0"
+#   git push
+#
+# The tag and the GitHub Release are created with a ThanhNguyxnAgent token, so
+# the Release page names the Agent as the author rather than github-actions[bot].
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, without the leading v (e.g. 1.4.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: tag and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint ThanhNguyxnAgent token
+        id: agent
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ steps.agent.outputs.token }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Resolve the version
+        id: version
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: node .github/scripts/release-notes.mjs resolve
+
+      - name: Skip an already published version
+        id: guard
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::v${{ steps.version.outputs.version }} is already published; nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the notes from CHANGELOG.md
+        id: notes
+        if: steps.version.outputs.should_release == 'true' && steps.guard.outputs.skip == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node .github/scripts/release-notes.mjs notes
+
+      - name: Create the tag and the release
+        if: steps.version.outputs.should_release == 'true' && steps.guard.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
+        run: |
+          # A hyphen in the version (1.4.0-rc.1) marks a pre-release, so it is
+          # published as one and never becomes the "latest" release.
+          pre=""
+          case "$VERSION" in *-*) pre="--prerelease" ;; esac
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v$VERSION" \
+            --notes-file "$NOTES_FILE" \
+            --target "$GITHUB_SHA" \
+            $pre
+          echo "::notice::published v$VERSION as ThanhNguyxnAgent"

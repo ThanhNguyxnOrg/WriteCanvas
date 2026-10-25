@@ -3,6 +3,15 @@
   "productName": "WriteCanvas",
   "version": "0.1.0",
   "description": "Cross-platform note-taking & inking app. Reads and writes Scrble-Ink-compatible PNG notes (sINK replay + paper chunks).",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ThanhNguyxnOrg/WriteCanvas.git"
+  },
+  "homepage": "https://github.com/ThanhNguyxnOrg/WriteCanvas#readme",
+  "bugs": {
+    "url": "https://github.com/ThanhNguyxnOrg/WriteCanvas/issues"
+  },
   "main": "main/main.js",
   "type": "commonjs",
   "scripts": {
@@ -10,7 +19,7 @@
     "start:debug": "electron . --remote-debugging-port=9222",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs"
+    "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs tests/shortcuts.test.mjs tests/library-pages.test.mjs tests/auto-merge.test.mjs tests/release-notes.test.mjs"
   },
   "build": {
     "appId": "com.writecanvas.app",

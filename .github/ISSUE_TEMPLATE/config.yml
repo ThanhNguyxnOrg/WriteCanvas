@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/ThanhNguyxnOrg/WriteCanvas/security/advisories/new
+    about: Report a vulnerability privately instead of opening a public issue.
+  - name: Question or usage help
+    url: https://github.com/ThanhNguyxnOrg/WriteCanvas/discussions
+    about: Ask about setting up a library, importing notes, or a keyboard shortcut.
+  - name: Documentation
+    url: https://github.com/ThanhNguyxnOrg/WriteCanvas/blob/master/docs/README.md
+    about: Architecture, note format, development and release process.

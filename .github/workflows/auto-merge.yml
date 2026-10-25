@@ -1,0 +1,61 @@
+name: Auto merge
+
+# Runs after CI finishes. workflow_run is used instead of `pull_request` because
+# it executes in the base repository context, where the organisation secrets are
+# available — a workflow triggered directly by a fork pull request never sees
+# BOT_APP_ID or BOT_PRIVATE_KEY.
+#
+# Every write here (merge, label, review request, comment) is performed with a
+# short-lived installation token minted from those secrets, so the pull request
+# records ThanhNguyxnAgent as the actor, not github-actions[bot].
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-merge-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: evaluate pull request
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint ThanhNguyxnAgent token
+        id: agent
+        uses: actions/create-github-app-token@v3
+        with:
+          # The organisation secret holds the numeric App ID; the JWT `iss`
+          # claim accepts either an app ID or a client ID. If the secret is ever
+          # swapped for a client ID (starts with `Iv`), rename this input to
+          # `client-id` — see docs/AUTOMATION.md.
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Apply the auto-merge policy
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REVIEW_ASSIGNEE: ${{ vars.REVIEW_ASSIGNEE || 'RealThanhNguyxn' }}
+          BLOCKING_LABELS: needs-review,do-not-merge,breaking,security,wip
+          SENSITIVE_PATHS: .github/**,main/**,preload.js
+        run: node .github/scripts/auto-merge.mjs

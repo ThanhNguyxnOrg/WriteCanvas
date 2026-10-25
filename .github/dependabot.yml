@@ -1,0 +1,51 @@
+# Dependency updates for the npm manifest and the workflow actions.
+#
+# Pull requests opened here run the normal CI. Patch and minor bumps are then
+# merged by ThanhNguyxnAgent (see .github/workflows/auto-merge.yml); a major
+# bump is treated as an important change and is assigned to a human owner
+# instead, because a major release can break the ink/file APIs the app relies on.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    target-branch: master
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Asia/Ho_Chi_Minh
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    labels:
+      - dependencies
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Electron and electron-builder majors are a platform decision, not a
+      # drive-by bump: the app targets Windows, macOS and Linux from one code
+      # path and pins the Electron major deliberately.
+      - dependency-name: electron
+        update-types: ["version-update:semver-major"]
+      - dependency-name: electron-builder
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: master
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Asia/Ho_Chi_Minh
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+    groups:
+      actions:
+        patterns: ["*"]

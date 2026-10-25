@@ -1,0 +1,71 @@
+name: Repo setup
+
+# One-shot, manual housekeeping for the repository. Every change is sent with a
+# ThanhNguyxnAgent token, so the audit log and the settings actor show the Agent
+# rather than a personal account or github-actions[bot].
+#
+# Nothing runs on push or on a schedule: open the Actions tab, pick "Repo setup",
+# press "Run workflow" and tick what you want applied.
+on:
+  workflow_dispatch:
+    inputs:
+      labels:
+        description: Create or refresh the labels used by the auto-merge policy
+        type: boolean
+        default: true
+      auto_merge:
+        description: Enable GitHub's own auto-merge switch on pull requests
+        type: boolean
+        default: true
+      delete_branch_on_merge:
+        description: Delete the head branch after a pull request is merged
+        type: boolean
+        default: true
+      allow_update_branch:
+        description: Offer the "Update branch" button on pull requests
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: apply repository settings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint ThanhNguyxnAgent token
+        id: agent
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Create the labels
+        if: inputs.labels
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+        run: |
+          set -euo pipefail
+          create() {
+            gh label create "$1" --repo "$GITHUB_REPOSITORY" --color "$2" --description "$3" --force
+          }
+          create dependencies  "0366d6" "Dependency and action updates"
+          create needs-review  "FBCA04" "Held for a human owner by ThanhNguyxnAgent"
+          create do-not-merge  "b60205" "Must not be merged automatically"
+          create breaking      "d93f0b" "Breaking change; a human must confirm"
+          create security      "5319e7" "Security relevant; a human must confirm"
+          create wip           "cccccc" "Work in progress"
+
+      - name: Update the merge settings
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY" \
+            -F allow_auto_merge=${{ inputs.auto_merge }} \
+            -F delete_branch_on_merge=${{ inputs.delete_branch_on_merge }} \
+            -F allow_update_branch=${{ inputs.allow_update_branch }}
+          echo "::notice::repository merge settings updated as ThanhNguyxnAgent"

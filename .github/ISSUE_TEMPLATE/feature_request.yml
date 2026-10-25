@@ -1,0 +1,60 @@
+name: Feature request
+description: Propose a tool, a workflow or a change in behaviour
+title: "[Feature] "
+labels: ["needs-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        WriteCanvas aims to stay close to how Scrble Ink behaves while adding the
+        parts a desktop note-taking workflow needs. Saying which of those two a
+        proposal belongs to helps a lot.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the app makes hard today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: Describe the behaviour, not the implementation. Sketches are welcome.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Tool or gesture inside the editor
+        - Library, notes and folders
+        - Note format, import or export
+        - Keyboard, accessibility or platform behaviour
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Where does this matter most?
+      options:
+        - All platforms
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other apps, other approaches, or why the current behaviour is not enough.
+    validations:
+      required: false

@@ -1,0 +1,22 @@
+# Review ownership. CODEOWNERS requests a review as soon as a pull request
+# touches a listed path, which is the second half of the auto-merge policy: the
+# workflow merges routine changes and hands these paths to a human (see
+# docs/AUTOMATION.md).
+#
+# Replace @RealThanhNguyxn with an organisation team such as
+# @ThanhNguyxnOrg/owners if the project grows past one maintainer.
+
+*                   @RealThanhNguyxn
+
+# CI/CD and security surfaces: an unreviewed change here can publish, merge or
+# release anything, so these always need a person.
+/.github/           @RealThanhNguyxn
+
+# Electron main process and the preload bridge: file system access, IPC and the
+# context-isolated boundary.
+/main/              @RealThanhNguyxn
+/preload.js         @RealThanhNguyxn
+
+# Licensing and the release notes are legal and product records.
+/LICENSE            @RealThanhNguyxn
+/CHANGELOG.md       @RealThanhNguyxn

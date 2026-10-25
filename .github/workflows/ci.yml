@@ -1,0 +1,67 @@
+name: CI
+
+# The unit tests are plain node:test files and never load Electron, so the
+# suite runs on all three desktop targets the app ships to. That is the point:
+# a Windows-only or macOS-only regression in main/ or src/js/ shows up here.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests / ${{ matrix.os }} / node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        # 22.x matches the Node version embedded in the pinned Electron major;
+        # 24.x matches the Node version used for local development.
+        node: ["22.x"]
+        include:
+          - os: ubuntu-latest
+            node: "24.x"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # --ignore-scripts keeps the Electron binary download out of CI: nothing
+      # in tests/ requires it. If integration tests that boot the app are added
+      # later, this flag has to go.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Run unit tests
+        run: npm test
+
+  syntax:
+    name: syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: node --check every module
+        shell: bash
+        run: |
+          status=0
+          for file in main/*.js preload.js src/js/*.js .github/scripts/*.mjs; do
+            if node --check "$file"; then
+              echo "ok   $file"
+            else
+              echo "FAIL $file"
+              status=1
+            fi
+          done
+          exit $status

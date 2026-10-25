@@ -1,0 +1,88 @@
+name: Bug report
+description: Something in the editor, the library or a save path behaves wrongly
+title: "[Bug] "
+labels: ["needs-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. WriteCanvas touches real note
+        files, so please do not attach a note you cannot lose — a copy of the
+        library, or a note you exported first, is enough to reproduce most bugs.
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: All three desktop targets are first class; the OS changes which inking stack is in play.
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: WriteCanvas version
+      description: Shown in the library footer, or the tag you built from.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: input
+    attributes:
+      label: Input device
+      options:
+        - Mouse
+        - Pen / stylus
+        - Touch
+        - Trackpad
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal sequence. Mention the tool in use (pen, eraser, ruler, laser, select).
+      placeholder: |
+        1. Open note X
+        2. Select the highlighter
+        3. Draw across the page boundary
+        4. See ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste any console output, or drag in a screenshot. Redact personal note content.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Note data
+      options:
+        - label: The problem involves a note this app wrote in Scrble Ink format
+        - label: The problem involves a note made in Scrble Ink itself
+        - label: The note is available for me to test against a fix
