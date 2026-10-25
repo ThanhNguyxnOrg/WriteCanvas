@@ -149,9 +149,12 @@ what to apply. It can:
   the workflow does not need it),
 - delete the head branch on merge, and offer the "Update branch" button.
 
-Current state: auto-merge is **off**, `master` has **no branch protection**, and
-the label set above does not exist yet. The auto-merge workflow works regardless,
-because it merges directly with the Agent token.
+Current state, as applied by `repo-setup.yml`: the labels above exist,
+`allow_auto_merge`, `allow_update_branch` and `delete_branch_on_merge` are
+enabled, and `master` has **no branch protection**. The auto-merge workflow does
+not depend on any of it — it merges directly with the Agent token — but the
+labels are what the policy reads, so they have to exist before it can hold a
+pull request.
 
 **If branch protection is added later**, remember that a required review will also
 apply to the Agent: either add the App as a bypass actor, or keep the sensitive-path
