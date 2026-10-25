@@ -18,9 +18,8 @@ written before the release commit — see
 - **Microsoft Store package** — WriteCanvas is listed for Windows as an AppX
   package built from the same source as the installer. Store submissions need no
   purchased certificate: Microsoft re-signs the package during publishing. The
-  package identity is reserved in Partner Center and recorded in
-  [docs/STORE.md](docs/STORE.md), together with the listing copy and the
-  submission steps.
+  package identity is reserved in Partner Center and stored in
+  `store/identity.json`.
 - **More architectures** — a macOS DMG for Intel Macs and a Linux arm64 AppImage
   are built on runners of those architectures, and each release build launches the
   packaged app on its own platform before the files are attached.
