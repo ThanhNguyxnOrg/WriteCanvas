@@ -71,7 +71,7 @@ touched.
 | `WriteCanvas.Setup.<version>.exe` | Windows x64, NSIS assisted setup — it asks where to install |
 | `WriteCanvas-<version>-mac-x64.dmg` | macOS Intel |
 | `WriteCanvas-<version>-mac-arm64.dmg` | macOS Apple silicon |
-| `WriteCanvas-<version>-linux-x64.AppImage` | Linux x64 |
+| `WriteCanvas-<version>-linux-x86_64.AppImage` | Linux x64 |
 | `writecanvas_<version>_amd64.deb` | Linux x64, Debian/Ubuntu |
 | `WriteCanvas-<version>-linux-arm64.AppImage` | Linux arm64 |
 
