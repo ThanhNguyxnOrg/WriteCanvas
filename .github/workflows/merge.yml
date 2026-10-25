@@ -1,0 +1,87 @@
+name: Merge
+
+# The counterpart to the auto-merge policy. When the policy holds a pull request
+# for a human, a person reads it and then asks the Agent to merge it, so the
+# merge still comes from the Agent token rather than from a personal account.
+#
+# Nothing here runs on its own: open the Actions tab, pick "Merge", type the pull
+# request number and run it.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to merge
+        required: true
+        type: string
+      method:
+        description: Merge method
+        required: true
+        type: choice
+        default: squash
+        options:
+          - squash
+          - merge
+          - rebase
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    name: merge as ThanhNguyxnAgent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint ThanhNguyxnAgent token
+        id: agent
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Check the pull request is safe to merge
+        id: check
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          info=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,labels,mergeable,headRefOid,url,state)
+          echo "url=$(echo "$info" | jq -r .url)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(echo "$info" | jq -r .headRefOid)" >> "$GITHUB_OUTPUT"
+
+          state=$(echo "$info" | jq -r .state)
+          if [ "$state" != "OPEN" ]; then
+            echo "::error::pull request #$PR is $state, not open"
+            exit 1
+          fi
+          if [ "$(echo "$info" | jq -r .isDraft)" = "true" ]; then
+            echo "::error::pull request #$PR is a draft"
+            exit 1
+          fi
+          # do-not-merge is an explicit veto, and a person overriding it has to
+          # remove the label and think about why it was there.
+          if echo "$info" | jq -r '.labels[].name' | grep -qx "do-not-merge"; then
+            echo "::error::pull request #$PR carries the do-not-merge label"
+            exit 1
+          fi
+          mergeable=$(echo "$info" | jq -r .mergeable)
+          if [ "$mergeable" != "MERGEABLE" ]; then
+            echo "::error::pull request #$PR is not mergeable ($mergeable)"
+            exit 1
+          fi
+
+      - name: Merge
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+          PR: ${{ inputs.pr }}
+          METHOD: ${{ inputs.method }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR" --repo "$GITHUB_REPOSITORY" "--$METHOD" \
+            --delete-branch --match-head-commit "${{ steps.check.outputs.sha }}"
+          # Clear the hold, so a merged pull request is not left looking blocked.
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --remove-label needs-review >/dev/null 2>&1 || true
+          echo "::notice::merged ${{ steps.check.outputs.url }} as ThanhNguyxnAgent"

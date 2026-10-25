@@ -37,37 +37,53 @@ That push does the rest:
 | Step | What happens |
 |---|---|
 | Resolve | The subject is parsed. A push whose subject is not `release: vX.Y.Z` ends here with a notice and changes nothing. |
-| Guard | If `vX.Y.Z` is already published, the job stops. Re-running is safe. |
-| Notes | The `## [X.Y.Z]` section of `CHANGELOG.md` becomes `release-notes.md`. A missing section fails the job with that message. |
-| Publish | `gh release create vX.Y.Z --target <the pushed commit>` creates the tag and the Release, authored by **ThanhNguyxnAgent**. |
+| Guard | If `vX.Y.Z` is already published, the run stops — unless it was asked to replace that version's files (see below). |
+| Build | Four packaging jobs, one per installer: NSIS on Windows, DMG on macOS, AppImage and deb on Linux. **This is the only place a build happens**; an ordinary push never triggers one, because each job downloads Electron and packages the app. |
+| Publish | The notes come from the `## [X.Y.Z]` section of `CHANGELOG.md`, and the installers built above are attached to the release. Created with a ThanhNguyxnAgent token, so the Release page names the Agent. |
 
 A version containing a hyphen (`release: v0.2.0-rc.1`) is published as a
 pre-release and never becomes the "latest" release.
 
-### Releasing from the Actions tab
+### Replacing the files of a published version
 
-`Release` also supports manual dispatch with a `version` input, which is useful
-when the release commit is not the head of `master` any more, or when you want to
-publish a version whose commit is already pushed. It runs exactly the same steps.
+`Release` also supports manual dispatch, with two inputs: `version`, and `force`.
+The manual path is useful when the release commit is not the head of `master` any
+more, or when you want to re-publish:
 
-## What a release is not
+- `force: false` (default) — a version that is already published is left alone.
+- `force: true` — the notes are refreshed and the installers of **that version
+  only** are replaced (`--clobber`). Other releases keep their files and tags.
 
-- **No installers are attached.** The workflow publishes a tag and notes only.
-  Build artifacts are produced locally with `npm run dist` (NSIS, DMG, AppImage,
-  deb) and attached by hand if you want them on the Release page. Adding signed
-  builds is a deliberate future step, not an accident of this workflow.
-- **No version bump commit is pushed.** You bump `package.json` yourself, in the
-  release commit.
-- **No maintenance branches.** There is one line of development; a fix goes to
-  `master` and ships in the next release.
+So the rule for a bad build is: fix whatever made it bad, then run `Release` again
+with `force: true` for that same version. Nothing else in the release history is
+touched.
+
+## What a release contains
+
+- A tag on the release commit, and a GitHub Release whose notes are written by a
+  person in `CHANGELOG.md`.
+- Four installers: `WriteCanvas Setup <version>.exe`, `WriteCanvas-<version>.dmg`,
+  `WriteCanvas-<version>.AppImage` and `writecanvas_<version>_amd64.deb`.
+
+**The builds are unsigned.** There is no code-signing certificate configured, so
+Windows SmartScreen and macOS Gatekeeper will warn the first time the installer
+runs, and macOS may require an explicit right-click → Open. Signing is a
+deliberate gap, not a bug: it needs a paid certificate per platform, and adding it
+means adding the secrets and the signing steps to the build job.
+
+Also note that the build job does not wait for CI to finish on the same commit.
+The release commit is normally an empty commit on top of a green `master`, which
+is what makes that acceptable. Do not put code changes in a release commit.
 
 ## When something goes wrong
 
 | Symptom | Cause and remedy |
 |---|---|
 | Job failed at "Build the notes" | `CHANGELOG.md` has no `## [X.Y.Z]` section. Add it, push the fix, then re-run the workflow or push a new release commit. The tag was not created, so nothing is half-published. |
+| Job failed in one of the build jobs | That platform's installer did not build. The release was not created, because publishing waits for the builds. Fix the cause and re-run; nothing needs cleaning up. |
 | Warning about `package.json` | The version there does not match the release commit. Fix it in a follow-up commit; the release already exists. |
-| The release exists but the notes are wrong | Edit the changelog **and** the GitHub Release: `gh release edit v0.2.0 --notes-file notes.md`. The workflow will not rewrite an existing release. |
+| The release exists but the notes are wrong | Edit the changelog, then run `Release` with `version` set and `force: true`; the notes of that release are refreshed. |
+| The installer is broken or stale | Run `Release` with `version` set and `force: true`: the files of that version are replaced, other releases are untouched. |
 | Wrong tag on the wrong commit | Delete the release and the tag, fix the changelog or the commit, then re-run: `gh release delete v0.2.0 --yes --cleanup-tag`. Deleting a published tag is destructive — re-check the notes and the commit first. |
 | A push that was meant to release did nothing | Check the subject line. It must be the first line, exactly `release: vX.Y.Z` (a leading `v` is optional, `release:` is not). |
 

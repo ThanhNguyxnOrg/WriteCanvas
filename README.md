@@ -47,6 +47,9 @@ sheet names Linux chords explicitly.
 
 ## Getting started
 
+Grab an installer from [Releases](https://github.com/ThanhNguyxnOrg/WriteCanvas/releases)
+— NSIS on Windows, DMG on macOS, AppImage or deb on Linux — or run it from source:
+
 ```bash
 git clone https://github.com/ThanhNguyxnOrg/WriteCanvas.git
 cd WriteCanvas
@@ -54,9 +57,11 @@ npm ci
 npm start
 ```
 
-On first run the app offers a library folder and defaults to
-`Documents/WriteCanvas`. Point it at an existing Scrble Ink library to read the
-notes you already have; the app never modifies a page until you draw on it.
+The builds are unsigned, so Windows and macOS will warn the first time you run the
+installer (`docs/RELEASING.md` explains why). On first launch the app offers a
+library folder and defaults to `Documents/WriteCanvas`. Point it at an existing
+Scrble Ink library to read the notes you already have; the app never modifies a
+page until you draw on it.
 
 | Command | What it does |
 |---|---|

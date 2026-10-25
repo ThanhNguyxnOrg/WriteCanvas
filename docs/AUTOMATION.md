@@ -60,12 +60,16 @@ gh variable set REVIEW_ASSIGNEE --org ThanhNguyxnOrg --body ThanhNguyxnOrg/owner
 | `ci.yml` | Push to `master`, every pull request, manual | Nothing. Runs the unit suite on Ubuntu, Windows and macOS, plus a `node --check` pass over every module. |
 | `codeql.yml` | Push to `master`, pull requests into `master`, weekly | Code scanning alerts only. Runs the `security-and-quality` query pack over the JavaScript. |
 | `auto-merge.yml` | CI finishing on a pull request | Merges, or labels and assigns for review. See the policy below. |
-| `release.yml` | Push to `master`, manual | Creates the tag and the GitHub Release. See [RELEASING.md](RELEASING.md). |
+| `merge.yml` | Manual only | Merges one pull request a person has approved, with the Agent token. See below. |
+| `release.yml` | Push to `master`, manual | Builds the installers for three operating systems, then creates the tag and the GitHub Release. See [RELEASING.md](RELEASING.md). |
 | `repo-setup.yml` | Manual only | Repository merge settings and labels. Never runs on its own. |
 
-`.github/dependabot.yml` opens the dependency pull requests: npm weekly (minor and
-patch grouped into one pull request, majors left separate), and GitHub Actions
-weekly, grouped.
+`.github/dependabot.yml` opens the dependency pull requests and does nothing else:
+npm weekly (minor and patch grouped into one pull request, majors left separate),
+and GitHub Actions weekly, grouped. It requests no labels, because every write on
+a pull request — the label, the review request, the merge — belongs to
+ThanhNguyxnAgent. That is also why Dependabot no longer complains about a missing
+label: it is not asked to add one.
 
 ## The auto-merge policy
 
@@ -122,6 +126,23 @@ Two safety details in the merge itself:
 
 `npm test` runs the policy tests on every push, so a rule change with no test
 fails CI rather than silently merging something it should not.
+
+## Approving a held pull request
+
+A pull request the policy held is waiting for a person, not for another robot. Read
+it, and if it is right, merge it with the Agent rather than by hand:
+
+Actions → **Merge** → *Run workflow* → the pull request number → method
+(`squash` by default).
+
+`merge.yml` then refuses anything that should not be merged blindly — a draft, a
+pull request carrying `do-not-merge`, or one whose branch state is not
+`MERGEABLE` — and otherwise merges with the Agent token, `--match-head-commit`,
+and deletes the branch. It also clears the `needs-review` hold afterwards, so a
+merged pull request is not left looking blocked.
+
+This exists so the identity rule holds even for manual work: whoever decided, the
+write still comes from ThanhNguyxnAgent.
 
 ## The App's permissions
 

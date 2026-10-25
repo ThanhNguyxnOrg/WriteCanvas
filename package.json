@@ -19,7 +19,7 @@
     "start:debug": "electron . --remote-debugging-port=9222",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
-    "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs tests/shortcuts.test.mjs tests/library-pages.test.mjs tests/auto-merge.test.mjs tests/release-notes.test.mjs"
+    "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs tests/shortcuts.test.mjs tests/library-pages.test.mjs tests/auto-merge.test.mjs tests/release-notes.test.mjs tests/workflows.test.mjs"
   },
   "build": {
     "appId": "com.writecanvas.app",

@@ -1,14 +1,19 @@
 name: Release
 
 # Publish a version by pushing a commit to master whose subject is
-# `release: v1.4.0`. The notes are taken from the matching section of
-# CHANGELOG.md, so the changelog decides what a release says.
+# `release: v1.4.0`. The notes come from the matching section of CHANGELOG.md,
+# and the installers for all three desktop targets are built and attached to the
+# release.
 #
 #   git commit --allow-empty -m "release: v1.4.0"
 #   git push
 #
-# The tag and the GitHub Release are created with a ThanhNguyxnAgent token, so
-# the Release page names the Agent as the author rather than github-actions[bot].
+# Building happens only here, never on an ordinary push: three operating systems
+# each download Electron and package the app, which is far too much work to do
+# for a commit that is not a release.
+#
+# The release, its tag and its assets are written with a ThanhNguyxnAgent token,
+# so the Release page names the Agent as the author.
 on:
   push:
     branches: [master]
@@ -18,6 +23,11 @@ on:
         description: Version to publish, without the leading v (e.g. 1.4.0)
         required: true
         type: string
+      force:
+        description: Replace the files of an already published version
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,8 +37,109 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.guard.outputs.skip }}
+    steps:
+      - name: Mint ThanhNguyxnAgent token
+        id: agent
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Resolve the version
+        id: version
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: node .github/scripts/release-notes.mjs resolve
+
+      # A published version is left alone unless the run was asked to replace
+      # its files, which is what `force` is for. Only that version is touched;
+      # other releases keep their assets.
+      - name: Check whether this version is already published
+        id: guard
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ steps.agent.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "${FORCE:-false}" = "true" ]; then
+              echo "::notice::v$VERSION exists; its files will be replaced"
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::v$VERSION is already published; nothing to do (pass force to replace its files)"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build / ${{ matrix.os }}
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.skip == 'false'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            glob: dist/*.exe
+          - os: macos-latest
+            glob: dist/*.dmg
+          - os: ubuntu-latest
+            glob: dist/*.AppImage
+          - os: ubuntu-latest
+            glob: dist/*.deb
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      # Unlike the test job this one needs the real Electron binary, because the
+      # packaged app has to contain it.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the installer
+        env:
+          # No code signing: the builds are unsigned, so electron-builder must not
+          # go looking for a certificate.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist -- --publish never
+
+      - name: Collect the installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}-${{ strategy.job-index }}
+          path: ${{ matrix.glob }}
+          if-no-files-found: error
+          retention-days: 3
+
   publish:
-    name: tag and publish
+    name: publish release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.skip == 'false'
     runs-on: ubuntu-latest
     steps:
       - name: Mint ThanhNguyxnAgent token
@@ -48,48 +159,53 @@ jobs:
         with:
           node-version: 22
 
-      - name: Resolve the version
-        id: version
-        env:
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: node .github/scripts/release-notes.mjs resolve
-
-      - name: Skip an already published version
-        id: guard
-        if: steps.version.outputs.should_release == 'true'
-        env:
-          GH_TOKEN: ${{ steps.agent.outputs.token }}
-        run: |
-          if gh release view "v${{ steps.version.outputs.version }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::v${{ steps.version.outputs.version }} is already published; nothing to do"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build the notes from CHANGELOG.md
-        id: notes
-        if: steps.version.outputs.should_release == 'true' && steps.guard.outputs.skip == 'false'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: node .github/scripts/release-notes.mjs notes
 
-      - name: Create the tag and the release
-        if: steps.version.outputs.should_release == 'true' && steps.guard.outputs.skip == 'false'
+      - name: Collect the installers
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create the release, or replace its files
         env:
           GH_TOKEN: ${{ steps.agent.outputs.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-          NOTES_FILE: ${{ steps.notes.outputs.notes_file }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          NOTES_FILE: ${{ runner.temp }}/release-notes.md
         run: |
+          set -euo pipefail
+          tag="v$VERSION"
           # A hyphen in the version (1.4.0-rc.1) marks a pre-release, so it is
           # published as one and never becomes the "latest" release.
           pre=""
           case "$VERSION" in *-*) pre="--prerelease" ;; esac
-          gh release create "v$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "v$VERSION" \
-            --notes-file "$NOTES_FILE" \
-            --target "$GITHUB_SHA" \
-            $pre
-          echo "::notice::published v$VERSION as ThanhNguyxnAgent"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::notice::$tag already exists; replacing its files and notes"
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "$tag" --notes-file "$NOTES_FILE" \
+              --target "$GITHUB_SHA" $pre
+          fi
+
+          # --clobber replaces an asset with the same name, so re-running a
+          # release swaps the installers of that version and leaves every other
+          # release untouched. An array is used because the default installer
+          # names contain spaces ("WriteCanvas Setup 1.4.0.exe"), which an
+          # unquoted glob would split into separate arguments.
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::error::no installers were collected from the build jobs"
+            exit 1
+          fi
+          gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+
+          echo "::notice::published $tag with installers, as ThanhNguyxnAgent"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "asset: \(.name) (\(.size) bytes)"'

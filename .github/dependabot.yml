@@ -1,5 +1,12 @@
 # Dependency updates for the npm manifest and the workflow actions.
 #
+# Dependabot's only job is to open the pull requests. It deliberately writes
+# nothing else - no labels are requested here - because every write on a pull
+# request (labels, review requests, the merge itself) is performed by
+# ThanhNguyxnAgent. That keeps a single identity doing the acting, and it is why
+# no `labels:` key appears below: asking Dependabot to label its own pull requests
+# annotated them with a bot identity and failed whenever a label was missing.
+#
 # Pull requests opened here run the normal CI. Patch and minor bumps are then
 # merged by ThanhNguyxnAgent (see .github/workflows/auto-merge.yml); a major
 # bump is treated as an important change and is assigned to a human owner
@@ -19,8 +26,6 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: scope
-    labels:
-      - dependencies
     groups:
       npm-minor-patch:
         patterns: ["*"]
@@ -44,8 +49,6 @@ updates:
       timezone: Asia/Ho_Chi_Minh
     commit-message:
       prefix: "chore(ci)"
-    labels:
-      - dependencies
     groups:
       actions:
         patterns: ["*"]
