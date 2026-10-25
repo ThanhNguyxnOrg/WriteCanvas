@@ -11,6 +11,27 @@ written before the release commit — see
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-25
+
+### Added
+
+- **Microsoft Store package** — WriteCanvas is listed for Windows as an MSIX
+  package built from the same source as the installer. Store submissions need no
+  purchased certificate: Microsoft re-signs the package during publishing. The
+  package identity is reserved in Partner Center and recorded in
+  [docs/STORE.md](docs/STORE.md), together with the listing copy and the
+  submission steps.
+- **More architectures** — a macOS DMG for Intel Macs and a Linux arm64 AppImage
+  are built on runners of those architectures, and each release build launches the
+  packaged app on its own platform before the files are attached.
+
+### Changed
+
+- Linux arm64 ships the AppImage only. The deb target is produced with fpm, whose
+  bundled toolchain is x86-only and cannot run on an arm64 runner.
+- Re-publishing a version replaces only that version's files; earlier releases
+  keep theirs.
+
 ## [1.0.0] - 2026-10-25
 
 First stable release. It replaces the 0.1.x development builds, including 0.1.2,
@@ -79,5 +100,6 @@ whose installers were the first ones that ran; those builds have been withdrawn.
   `WriteCanvasHost` bridge in `preload.js`; every library path from the renderer
   is resolved and validated in the main process before it is used.
 
-[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.0.0

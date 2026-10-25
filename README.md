@@ -105,7 +105,7 @@ below is the whole set; each page is self-contained.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | Run from source | yes | yes | yes |
-| Installer | NSIS x64 | DMG x64 + arm64 | AppImage + deb, x64 + arm64 |
+| Installer | NSIS x64 | DMG x64 + arm64 | AppImage x64 + arm64, deb x64 |
 | Interface shortcuts | `Ctrl` | `⌘` | `Ctrl` |
 | Redo chord | `Ctrl+Y` | `⇧⌘Z` | `Ctrl+Y` |
 

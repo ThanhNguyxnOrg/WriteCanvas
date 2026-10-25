@@ -1,7 +1,7 @@
 {
   "name": "writecanvas",
   "productName": "WriteCanvas",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cross-platform note-taking & inking app. Reads and writes Scrble-Ink-compatible PNG notes (sINK replay + paper chunks).",
   "license": "Apache-2.0",
   "author": {
@@ -23,6 +23,7 @@
     "start:debug": "electron . --remote-debugging-port=9222",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
+    "dist:store": "npx --yes electron-builder@26.18.0 --win msix --x64 --publish never",
     "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs tests/shortcuts.test.mjs tests/library-pages.test.mjs tests/auto-merge.test.mjs tests/release-notes.test.mjs tests/workflows.test.mjs tests/package.test.mjs"
   },
   "build": {
@@ -38,6 +39,17 @@
     "win": {
       "target": "nsis",
       "icon": "src/img/writecanvas.png"
+    },
+    "toolsets": {
+      "winCodeSign": "1.1.0"
+    },
+    "msix": {
+      "applicationId": "WriteCanvas",
+      "identityName": "ThanhNguyxn.WriteCanvas",
+      "publisher": "CN=8328F2C5-2515-47AB-888E-BB7C866567C2",
+      "publisherDisplayName": "ThanhNguyxn",
+      "displayName": "WriteCanvas",
+      "createMsixupload": true
     },
     "nsis": {
       "oneClick": false,

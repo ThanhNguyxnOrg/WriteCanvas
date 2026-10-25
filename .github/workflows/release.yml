@@ -101,17 +101,25 @@ jobs:
       matrix:
         # One job per architecture, on a runner of that architecture, so the
         # launch check below runs the real binary rather than an emulation.
+        # Linux arm64 ships the AppImage only: the deb target is built with fpm,
+        # and electron-builder's bundled fpm is an x86 binary that cannot run on
+        # an arm64 runner.
         include:
           - os: windows-latest
             arch: x64
+            targets: --win nsis
           - os: macos-15-intel
             arch: x64
+            targets: --mac dmg
           - os: macos-latest
             arch: arm64
+            targets: --mac dmg
           - os: ubuntu-latest
             arch: x64
+            targets: --linux AppImage deb
           - os: ubuntu-24.04-arm
             arch: arm64
+            targets: --linux AppImage
     steps:
       - uses: actions/checkout@v7
 
@@ -137,7 +145,7 @@ jobs:
           # No code signing: the builds are unsigned, so electron-builder must not
           # go looking for a certificate.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist -- --publish never --${{ matrix.arch }}
+        run: npm run dist -- --publish never --${{ matrix.arch }} ${{ matrix.targets }}
 
       # Reads the app.asar that is about to be packaged and refuses to continue
       # if the bridge or the renderer is missing. This is the check that would

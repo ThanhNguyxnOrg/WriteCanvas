@@ -48,8 +48,9 @@ async function evaluateOn(wsUrl, expression) {
 }
 
 // Startup is not instant: the first target is about:blank while the window
-// navigates to src/index.html. Wait for the real page, and retry the check if
-// the execution context is replaced mid-navigation.
+// navigates to src/index.html, and the editor modules finish after that. Wait for
+// the real page, retry while the execution context is replaced mid-navigation,
+// and keep waiting until the editor has actually rendered.
 async function readState(expression) {
   const deadline = Date.now() + TIMEOUT_MS
   let last = 'the app never opened a window'
@@ -69,8 +70,10 @@ async function readState(expression) {
     }
     try {
       const value = await evaluateOn(page.webSocketDebuggerUrl, expression)
-      if (typeof value === 'string') return JSON.parse(value)
-      last = 'the app window did not return a value'
+      const state = typeof value === 'string' ? JSON.parse(value) : null
+      if (state?.bridgeError) throw new Error('the app is showing the "No host bridge" message')
+      if (state && state.bridge === 'object' && state.canvas && state.tools > 0) return state
+      last = `waiting for the editor to render (${JSON.stringify(state)})`
     } catch (error) {
       last = error.message
     }

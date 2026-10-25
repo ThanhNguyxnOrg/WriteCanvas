@@ -1,0 +1,82 @@
+name: Store package
+
+# Builds the MSIX package for Microsoft Store submission.
+#
+# Manual on purpose: a Store package is tied to the identity Partner Center
+# assigned to the reserved product, and it is worth looking at the version before
+# it is uploaded. The identity is public (it is inside every installed package),
+# so it lives in package.json under build.msix.
+#
+# No certificate is involved. The Store re-signs Store submissions itself; a
+# certificate is only needed to sideload outside the Store.
+#
+# The package is built with electron-builder 26 through `npm run dist:store`,
+# while the release pipeline stays on the pinned electron-builder 25: the MSIX
+# target is newer than the tool that packages macOS and Linux.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  msix:
+    name: build msix
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the Store package
+        run: npm run dist:store
+
+      - name: Verify the packaged bundle
+        env:
+          PACKAGE_ARCH: x64
+        run: node .github/scripts/verify-package.mjs
+
+      # Reads the identity back out of the package. A mismatch with Partner
+      # Center is the one rejection that is easy to avoid, and impossible to fix
+      # after upload.
+      - name: Check the manifest identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedName = (node -p "require('./package.json').build.msix.identityName").Trim()
+          $expectedPublisher = (node -p "require('./package.json').build.msix.publisher").Trim()
+
+          $upload = Get-ChildItem dist/*.msixupload | Select-Object -First 1
+          if (-not $upload) { throw 'electron-builder produced no .msixupload' }
+
+          Copy-Item $upload.FullName "$env:TEMP\upload.zip" -Force
+          Expand-Archive "$env:TEMP\upload.zip" "$env:TEMP\upload" -Force
+          $msix = Get-ChildItem "$env:TEMP\upload" -Recurse -Filter *.msix | Select-Object -First 1
+          if (-not $msix) { throw 'the .msixupload does not contain a .msix' }
+
+          Copy-Item $msix.FullName "$env:TEMP\app.zip" -Force
+          Expand-Archive "$env:TEMP\app.zip" "$env:TEMP\app" -Force
+          [xml]$manifest = Get-Content "$env:TEMP\app\AppxManifest.xml"
+          $identity = $manifest.Package.Identity
+          "identity: $($identity.Name)"
+          "publisher: $($identity.Publisher)"
+
+          if ($identity.Name -ne $expectedName) { throw "identity name is $($identity.Name), expected $expectedName" }
+          if ($identity.Publisher -ne $expectedPublisher) { throw "publisher is $($identity.Publisher), expected $expectedPublisher" }
+          "::notice::MSIX identity matches Partner Center values in package.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: writecanvas-store-msix
+          path: |
+            dist/*.msix
+            dist/*.msixbundle
+            dist/*.msixupload
+          if-no-files-found: error
+          retention-days: 7

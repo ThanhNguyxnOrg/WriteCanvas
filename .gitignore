@@ -2,7 +2,7 @@ node_modules/
 dist/
 dist-*/
 out/
-build/
+# build/ holds the Windows Store tile assets (build/appx), so it is tracked.
 *.log
 .playwright-mcp/
 .DS_Store

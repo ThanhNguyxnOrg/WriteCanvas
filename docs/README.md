@@ -9,6 +9,7 @@ root [README](../README.md) is only a signpost to this folder.
 |---|---|
 | [PLATFORMS.md](PLATFORMS.md) | What each operating system does differently, what the installers are, and the complete keyboard table. |
 | [FORMAT.md](FORMAT.md) | What a note file actually is, so you can trust your library to another tool or hand-edit a PNG. |
+| [PRIVACY.md](PRIVACY.md) | What the app stores and what it sends — nothing leaves the machine. |
 
 ## If you contribute code
 
@@ -25,6 +26,7 @@ root [README](../README.md) is only a signpost to this folder.
 |---|---|
 | [AUTOMATION.md](AUTOMATION.md) | Every workflow, the secrets they use, the auto-merge policy, and the pull requests ThanhNguyxnAgent deliberately refuses to merge. |
 | [RELEASING.md](RELEASING.md) | Turn a `release: vX.Y.Z` commit into a tag and a GitHub Release, and how the changelog is read. |
+| [STORE.md](STORE.md) | Build the MSIX package, the reserved identity, the listing copy and the Partner Center steps. |
 | [SECURITY.md](../SECURITY.md) | Private reporting channels and what is considered in scope. |
 | [CHANGELOG.md](../CHANGELOG.md) | The released history, which is also the source of the release notes. |
 
