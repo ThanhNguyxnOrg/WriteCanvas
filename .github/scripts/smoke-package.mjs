@@ -9,7 +9,7 @@
 //
 // Runs inside each release build job, on its own operating system.
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { findPackagedApp } from './package-paths.mjs'
@@ -124,19 +124,34 @@ if (process.platform === 'linux' && !process.env.DISPLAY) {
 }
 
 console.log(`launching ${command} ${spawnArgs.join(' ')}`)
-const child = spawn(command, spawnArgs, { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] })
-let output = ''
-child.stdout.on('data', chunk => { output += chunk })
-child.stderr.on('data', chunk => { output += chunk })
+
+// The child's output goes to a file, not a pipe. xvfb-run and Electron spawn
+// their own children, and an orphan holding a pipe open keeps the CI step from
+// finishing even after this script exits. On POSIX the child gets its own process
+// group so the whole tree can be killed at once.
+const logPath = join(sandbox, 'app.log')
+const logFd = openSync(logPath, 'w')
+const child = spawn(command, spawnArgs, {
+  cwd: process.cwd(),
+  env,
+  detached: process.platform !== 'win32',
+  stdio: ['ignore', logFd, logFd],
+})
+closeSync(logFd)
 
 const stop = () => {
   try {
     if (process.platform === 'win32') {
       spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
     } else {
-      child.kill('SIGKILL')
+      // Negative pid = the process group, so Xvfb and Electron die with it.
+      process.kill(-child.pid, 'SIGKILL')
     }
   } catch { /* already gone */ }
+}
+
+const readLog = () => {
+  try { return readFileSync(logPath, 'utf8').split('\n').slice(-20).join('\n') } catch { return '' }
 }
 
 // A hard stop, so a wedged child or a hung socket can never leave the CI step
@@ -163,7 +178,7 @@ try {
 
   console.log(`::notice::launched ${app.exe} as ${state.platform}; bridge present, ${state.tools} tool toggles`)
 } catch (error) {
-  console.error(output.split('\n').slice(-20).join('\n'))
+  console.error(readLog())
   fail(error.message)
 } finally {
   clearTimeout(watchdog)
