@@ -33,6 +33,23 @@ test('every action is pinned to a major tag or a commit sha', () => {
   }
 })
 
+test('the same action is pinned to the same major in every workflow', () => {
+  const pins = new Map()
+  for (const f of files) {
+    for (const line of read(f).split('\n')) {
+      const m = /uses:\s*(\S+)@(v\d+|[0-9a-f]{40})\s*$/.exec(line)
+      if (!m) continue
+      const [, action, ref] = m
+      const seen = pins.get(action)
+      assert.ok(
+        !seen || seen === ref,
+        `${action} is pinned to ${seen} in one workflow and to ${ref} in another`,
+      )
+      pins.set(action, ref)
+    }
+  }
+})
+
 test('no workflow uses pull_request_target', () => {
   for (const f of files) {
     assert.doesNotMatch(read(f), /pull_request_target/, `${f} must not run in the target context`)
