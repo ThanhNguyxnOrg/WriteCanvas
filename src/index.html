@@ -55,7 +55,10 @@
     <header id="topbar">
       <div class="tb-group tb-file" id="tbLeft">
         <button id="btnMenu" class="tb-btn" title="Library and menu" aria-label="Library and menu" aria-keyshortcuts="Control+O"><svg><use href="#ic-menu"/></svg></button>
-        <button id="btnSave" class="tb-btn" title="Save note (Ctrl+S)" aria-label="Save note" aria-keyshortcuts="Control+S"><svg><use href="#ic-save"/></svg></button>
+        <div class="tb-split tb-save-split">
+          <button id="btnSave" class="tb-btn" title="Save now (Ctrl+S)" aria-label="Save now" aria-keyshortcuts="Control+S"><svg><use href="#ic-save"/></svg></button>
+          <button id="btnSaveMore" class="tb-more tb-export" title="Save and export options" aria-label="Save and export options" aria-haspopup="menu" aria-expanded="false"><svg><use href="#ic-export"/></svg></button>
+        </div>
         <button id="btnUndo" class="tb-btn" title="Undo (Ctrl+Z)" aria-label="Undo" aria-keyshortcuts="Control+Z" disabled><svg><use href="#ic-undo"/></svg></button>
         <button id="btnRedo" class="tb-btn" title="Redo (Ctrl+Y)" aria-label="Redo" aria-keyshortcuts="Control+Y" disabled><svg><use href="#ic-redo"/></svg></button>
         <button id="btnNew" class="tb-btn" title="New note" aria-label="New note"><svg><use href="#ic-page"/></svg></button>
@@ -70,8 +73,14 @@
         <button class="tb-toggle" id="tbLaser" title="Laser pointer (V) — temporary red trail, never saved" aria-label="Laser pointer, temporary trail" aria-pressed="false"><svg><use href="#ic-laser"/></svg><span class="tb-label">Laser</span></button>
         <button class="tb-toggle" id="tbRuler" title="Ruler (R)" aria-label="Ruler" aria-pressed="false"><svg><use href="#ic-ruler"/></svg><span class="tb-label">Ruler</span></button>
         <button class="tb-toggle" id="tbObject" title="Shapes and text (G)" aria-label="Shapes and text" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#ic-shapes"/></svg><span class="tb-label">Shapes</span><span class="tb-caret" aria-hidden="true"></span></button>
-        <button class="tb-toggle" id="tbEraser" title="Eraser (E)" aria-label="Eraser" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#ic-eraser"/></svg><span class="tb-label">Eraser</span><span class="tb-caret" data-fly="eraserFlyout" aria-hidden="true"></span></button>
-        <button class="tb-toggle" id="tbLasso" title="Select strokes — click or lasso" aria-label="Select strokes" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#ic-lasso"/></svg><span class="tb-label">Select</span><span class="tb-caret" data-fly="selectFlyout" aria-hidden="true"></span></button>
+        <div class="tb-tool-split">
+          <button class="tb-toggle" id="tbEraser" title="Eraser (E)" aria-label="Eraser" aria-pressed="false"><svg><use href="#ic-eraser"/></svg><span class="tb-label">Eraser</span></button>
+          <button class="tb-modebtn" data-fly="eraserFlyout" title="Eraser modes" aria-label="Eraser mode: Stroke. Open options" aria-haspopup="dialog" aria-expanded="false"><span id="erModeLabel">Stroke</span><span class="mode-chevron" aria-hidden="true">▾</span></button>
+        </div>
+        <div class="tb-tool-split">
+          <button class="tb-toggle" id="tbLasso" title="Select strokes - click or lasso" aria-label="Select strokes" aria-pressed="false"><svg><use href="#ic-lasso"/></svg><span class="tb-label">Select</span></button>
+          <button class="tb-modebtn" data-fly="selectFlyout" title="Selection modes" aria-label="Selection mode: Lasso. Open options" aria-haspopup="dialog" aria-expanded="false"><span id="selModeLabel">Lasso</span><span class="mode-chevron" aria-hidden="true">▾</span></button>
+        </div>
         <button class="tb-toggle" id="tbEye" title="Pan and view" aria-label="Pan and view" aria-pressed="false"><svg><use href="#ic-hand"/></svg><span class="tb-label">Pan</span></button>
       </div>
       <button id="btnTheme" class="tb-btn tb-theme" title="Dark interface" aria-label="Toggle dark interface" aria-pressed="false"><svg><use href="#ic-moon"/></svg></button>
@@ -81,19 +90,29 @@
     <main id="main">
       <aside id="sidebar">
         <div id="pagesBar"></div>
-        <button id="btnAddPage" title="Add page">+</button>
+        <div id="pageNav" role="group" aria-label="Page navigation">
+          <button id="btnPrevPage" title="Previous page (Ctrl+PageUp)" aria-label="Previous page">‹</button>
+          <button id="btnAddPage" title="Add page" aria-label="Add page">+</button>
+          <button id="btnNextPage" title="Next page (Ctrl+PageDown)" aria-label="Next page">›</button>
+        </div>
       </aside>
 
       <section id="viewport">
         <div id="canvasHost">
           <div id="canvasStack">
             <div id="stackInner">
+              <div id="peekPrev" class="pagePeek prev" aria-hidden="true">
+                <div class="peekSheet"><span class="peekLabel"></span></div>
+              </div>
               <canvas id="paperC"></canvas>
               <canvas id="rasterC"></canvas>
               <canvas id="inkC"></canvas>
               <canvas id="liveC"></canvas>
               <canvas id="laserC"></canvas>
               <canvas id="rulerC"></canvas>
+              <div id="peekNext" class="pagePeek next" aria-hidden="true">
+                <div class="peekSheet"><span class="peekLabel"></span></div>
+              </div>
               <div id="titleStrip"><span>TITLE</span></div>
             </div>
           </div>
@@ -116,17 +135,20 @@
           <div class="flyout-foot"><button id="penDone" class="fs-btn accent">Done</button></div>
         </div>
 
-        <div id="saveFlyout" class="flyout hidden" role="dialog" aria-label="Save">
+        <div id="saveFlyout" class="flyout hidden" role="dialog" aria-label="Note details">
+          <div class="flyout-head">
+            <span class="flyout-title">Note details</span>
+            <button id="saveClose" class="flyout-x" title="Close" aria-label="Close note details">&#10005;</button>
+          </div>
           <label class="fs-label" for="saveTitle">Title</label>
           <div class="fs-input">
             <input id="saveTitle" type="text" autocomplete="off" spellcheck="false">
             <button id="saveTitleClear" class="fs-clear" title="Clear" aria-label="Clear title">&#10005;</button>
           </div>
-          <label class="fs-label" for="saveProject">Project</label>
+          <label class="fs-label" for="saveProject">Project folder</label>
           <div class="fs-input"><input id="saveProject" type="text" placeholder="new folder name" autocomplete="off" spellcheck="false"></div>
           <div class="fs-actions">
-            <button id="btnExport" class="fs-btn accent">Options</button>
-            <button id="btnSaveConfirm" class="fs-btn">Save</button>
+            <button id="btnSaveConfirm" class="fs-btn accent">Apply</button>
           </div>
         </div>
 

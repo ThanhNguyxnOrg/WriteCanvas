@@ -97,6 +97,7 @@ body.native-frame #capRow { display: none; }
   width: 140px; height: 186px; background: #fff center/cover no-repeat;
   border-radius: 3px; box-shadow: 0 1px 4px rgba(0,0,0,.22); flex: 0 0 auto;
 }
+.pageItem:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .pageItem.cur { background: var(--accent); color: var(--on-accent); }
 .pageItem.cur .num { color: var(--on-accent); }
 .pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--surface), 0 2px 8px rgba(0,0,0,.25); }
@@ -105,12 +106,22 @@ body.native-frame #capRow { display: none; }
 body.dark .pageItem.cur { background: var(--accent-soft); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
 body.dark .pageItem.cur .num { color: var(--accent-strong); }
 body.dark .pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgba(0,0,0,.45); }
+#pageNav { display: flex; gap: 6px; margin: 0 16px 12px; }
 #btnAddPage {
-  margin: 0 16px 12px 16px; height: 38px; border: 1px solid var(--line);
+  flex: 1; min-width: 0; height: 38px; border: 1px solid var(--line);
   background: var(--surface); color: var(--ink); font-size: 20px; border-radius: 9px;
   cursor: pointer;
 }
 #btnAddPage:hover { background: var(--hover); border-color: var(--accent); }
+#btnPrevPage, #btnNextPage {
+  width: 38px; min-width: 38px; height: 38px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink); font-size: 22px; line-height: 1;
+  border-radius: 9px; cursor: pointer;
+}
+#btnPrevPage:hover:not(:disabled), #btnNextPage:hover:not(:disabled) {
+  background: var(--hover); border-color: var(--accent);
+}
+#btnPrevPage:disabled, #btnNextPage:disabled { opacity: .32; cursor: default; }
 
 /* ---------- toolbar v2: 76px command bar, labelled tools, one clear pen control ---------- */
 #main { flex: 1; display: flex; min-height: 0; min-width: 0; }
@@ -137,7 +148,8 @@ body.dark #topbar { box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
 #topbar .tb-btn:active:not(:disabled) { background: var(--active); }
 #topbar .tb-btn:disabled { opacity: .28; cursor: default; }
 #topbar button:focus-visible, .tb-pen-current:focus-visible, .tb-swatch:focus-visible,
-#btnAddPage:focus-visible, .penType:focus-visible {
+#btnAddPage:focus-visible, #btnPrevPage:focus-visible, #btnNextPage:focus-visible,
+.penType:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 #btnTheme { margin-left: 1px; }
@@ -192,6 +204,9 @@ body.dark .tb-pen-current.is-pen { border-color: rgba(138,180,248,.55); }
 }
 .tb-swatch:hover { transform: translateY(-1px); box-shadow: inset 0 0 0 1px rgba(0,0,0,.18), 0 2px 6px rgba(0,0,0,.18); }
 .tb-swatch.sel { box-shadow: inset 0 0 0 1px rgba(0,0,0,.18), 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+/* A black/navy swatch needs a light keyline to stay visible on the dark bar. */
+body.dark .tb-swatch { box-shadow: inset 0 0 0 1px rgba(255,255,255,.30); }
+body.dark .tb-swatch.sel { box-shadow: inset 0 0 0 1px rgba(255,255,255,.30), 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
 
 /* labelled tools: 60x60 targets, icon above a readable name */
 .tb-toggle {
@@ -202,6 +217,8 @@ body.dark .tb-pen-current.is-pen { border-color: rgba(138,180,248,.55); }
 }
 .tb-toggle svg { width: 24px; height: 24px; display: block; transform: none; }
 .tb-label { font-size: 11px; line-height: 1.1; font-weight: 600; color: var(--dim); letter-spacing: .05px; }
+.tb-sub { font-size: 9px; line-height: 1; color: var(--dim); opacity: .8; margin-top: -1px; }
+.tb-toggle.active .tb-sub { color: var(--on-accent); opacity: .9; }
 .tb-toggle:hover:not(.active) { background: var(--hover); }
 .tb-toggle:active:not(.active) { background: var(--active); }
 #topbar button.tb-toggle.active {
@@ -210,19 +227,76 @@ body.dark .tb-pen-current.is-pen { border-color: rgba(138,180,248,.55); }
 }
 #topbar button.tb-toggle.active .tb-label { color: var(--on-accent); }
 #topbar button.tb-toggle.active:hover { background: var(--accent); filter: brightness(1.04); }
+
+/* Split tool + always-visible mode label. The mode half is a real 24px
+   target, so "Stroke" / "Click" is one click away instead of a tiny caret. */
+.tb-tool-split { display: flex; flex-direction: column; width: 62px; height: 62px; flex: none; }
+.tb-tool-split .tb-toggle {
+  width: 100%; height: 38px; padding: 2px 2px 0; gap: 1px;
+  border-radius: 10px 10px 0 0;
+}
+.tb-tool-split .tb-toggle svg { width: 22px; height: 22px; }
+.tb-tool-split .tb-label { font-size: 10.5px; }
+.tb-tool-split .tb-toggle.active { border-radius: 10px 10px 0 0; }
+.tb-modebtn {
+  width: 100%; height: 24px; padding: 0 1px; border: 0; background: transparent;
+  color: var(--dim); font-size: 9.5px; font-weight: 600; line-height: 1;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  gap: 3px; border-radius: 0 0 10px 10px; white-space: nowrap;
+}
+.tb-modebtn:hover { background: var(--hover); color: var(--ink); }
+.tb-tool-split .tb-toggle.active + .tb-modebtn {
+  background: var(--accent); color: var(--on-accent);
+  box-shadow: 0 3px 10px rgba(11, 99, 197, .25);
+}
+.tb-tool-split .tb-toggle.active + .tb-modebtn:hover { background: var(--accent); filter: brightness(1.04); }
+.mode-chevron { font-size: 8px; opacity: .75; }
 /* The laser is a presentation pointer, not another ink pen. A red active
    state plus the beam/dot icon keeps it from reading as a red marker. */
 #topbar button#tbLaser.active { background: #c62828; box-shadow: 0 3px 10px rgba(198, 40, 40, .28); }
 #topbar button#tbLaser.active .tb-label { color: #fff; }
 #topbar button#tbLaser.active:hover { background: #b71c1c; }
-.tb-caret {
-  position: absolute; right: 8px; top: 9px; width: 0; height: 0; opacity: .45;
-  border-left: 3px solid transparent; border-right: 3px solid transparent;
-  border-top: 3.6px solid currentColor;
+.tb-split { position: relative; display: inline-flex; flex: 0 0 auto; }
+.tb-more {
+  position: absolute; right: 1px; top: 4px; width: 24px; height: 24px;
+  padding: 0; border: 0; border-radius: 7px; background: transparent;
+  color: var(--dim); cursor: pointer; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 13px; line-height: 1;
 }
-.tb-toggle.active .tb-caret { opacity: .8; }
+.tb-more:hover { background: var(--hover); color: var(--ink); }
+.tb-split .tb-toggle.active + .tb-more { color: var(--on-accent); }
+.tb-split .tb-toggle.active + .tb-more:hover { background: rgba(255,255,255,.16); color: var(--on-accent); }
 
-#saveState { display: none; }
+/* Save is a split command: the floppy saves immediately; the download half
+   opens the export/note menu directly, with no second "Options" dialog. */
+.tb-save-split { display: inline-flex; align-items: stretch; position: relative; }
+.tb-save-split #btnSave { border-radius: 10px 0 0 10px; }
+.tb-save-split .tb-more {
+  position: static; width: 30px; height: auto; min-height: 48px;
+  border-left: 1px solid var(--line); border-radius: 0 10px 10px 0;
+  font-size: 0; color: var(--dim);
+}
+.tb-save-split .tb-more:hover { background: var(--hover); color: var(--ink); }
+.tb-save-split .tb-export svg { width: 18px; height: 18px; display: block; }
+
+/* Keep the live-region in the a11y tree without spending toolbar width. The
+   save button itself carries the visible saving/saved/error dot. */
+#saveState {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+#btnSave { position: relative; }
+#btnSave[data-save-state="saving"] { opacity: .62; }
+#btnSave[data-save-state="saved"]::after,
+#btnSave[data-save-state="error"]::after {
+  content: ''; position: absolute; right: 7px; bottom: 7px;
+  width: 7px; height: 7px; border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--chrome);
+}
+#btnSave[data-save-state="saved"]::after { background: #6fd68f; }
+#btnSave[data-save-state="error"]::after { background: var(--danger); }
+body.dark #btnSave[data-save-state="saved"]::after,
+body.dark #btnSave[data-save-state="error"]::after { box-shadow: 0 0 0 2px var(--chrome); }
 
 /* ---------- canvas viewport ---------- */
 #viewport { position: relative; flex: 1; background: var(--workspace); overflow: hidden; display: flex; }
@@ -238,6 +312,56 @@ body.dark .tb-pen-current.is-pen { border-color: rgba(138,180,248,.55); }
 }
 body.dark #canvasStack { box-shadow: 0 2px 8px rgba(0,0,0,.55), 0 18px 52px rgba(0,0,0,.40); }
 #stackInner { position: relative; transform-origin: 0 0; }
+
+/* Neighbour peek: while a page boundary is being pulled, the adjacent sheet
+   slides in with the same 10px seam it would have in a continuous stack. The
+   strip fills the gap the pull opens, so the two pages read as one stack
+   instead of two unrelated screens. Sizes are set from JS in document px. */
+.pagePeek {
+  position: absolute; left: 0; right: 0; height: 0;
+  overflow: hidden; pointer-events: none;
+}
+.pagePeek.prev { bottom: 100%; }
+.pagePeek.next { top: 100%; }
+.pagePeek .peekSheet {
+  position: absolute; left: 0; right: 0;
+  background: var(--paper-white);
+  border-radius: 2px;
+}
+.pagePeek.prev .peekSheet {
+  top: 0; height: calc(100% - var(--page-seam, 10px));
+  box-shadow: 0 6px 16px rgba(19,28,45,.14);
+}
+.pagePeek.next .peekSheet {
+  top: var(--page-seam, 10px); height: calc(100% - var(--page-seam, 10px));
+  box-shadow: 0 -6px 16px rgba(19,28,45,.14);
+}
+body.dark .pagePeek.prev .peekSheet { box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+body.dark .pagePeek.next .peekSheet { box-shadow: 0 -6px 18px rgba(0,0,0,.45); }
+.pagePeek .peekLabel {
+  position: absolute; left: 12px;
+  font: 600 12px/1 system-ui, sans-serif; letter-spacing: .08em;
+  text-transform: uppercase; opacity: .55; white-space: nowrap;
+}
+.pagePeek.prev .peekLabel { bottom: 8px; }
+.pagePeek.next .peekLabel { top: 8px; }
+/* Only tools that own the stroke should consume the gesture. Pan/View leave
+   native touch scrolling enabled, while pen/eraser/lasso never scroll the page
+   out from under a stroke. */
+#stackInner.inking { touch-action: none; }
+/* Direction-aware page entry: the next sheet rises from below, the previous
+   sheet settles from above. The slide matches the pull direction so a committed
+   page turn keeps the momentum the peek strip set up. */
+#canvasStack.page-enter-next { animation: pageEnterNext .22s cubic-bezier(.2,.8,.2,1); }
+#canvasStack.page-enter-prev { animation: pageEnterPrev .22s cubic-bezier(.2,.8,.2,1); }
+@keyframes pageEnterNext {
+  from { opacity: .96; transform: translateY(26px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pageEnterPrev {
+  from { opacity: .96; transform: translateY(-26px); }
+  to { opacity: 1; transform: none; }
+}
 #canvasStack canvas { position: absolute; top: 0; left: 0; display: block; }
 #paperC { position: relative !important; }
 
@@ -287,6 +411,8 @@ body.dark #titleStrip span { color: rgba(255,255,255,.45); }
 }
 .ps:hover { box-shadow: inset 0 0 0 1px rgba(0,0,0,.16), 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
 .ps.sel { box-shadow: inset 0 0 0 1px rgba(0,0,0,.16), 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+body.dark .ps { box-shadow: inset 0 0 0 1px rgba(255,255,255,.30); }
+body.dark .ps.sel { box-shadow: inset 0 0 0 1px rgba(255,255,255,.30), 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
 .ps.rainbow { background: conic-gradient(#ff3860, #fd0, #26e600, #00aacc, #004de6, #b31564, #ff3860); }
 
 /* pen flyout */
@@ -616,6 +742,7 @@ body.dark #shapeGrid .sh-card canvas { filter: invert(1) brightness(1.05); }
 @media (prefers-reduced-motion: reduce) {
   #paperPanel { animation: none; }
   .pp-pill, .pp-knob { transition: none; }
+  #canvasStack.page-enter-next, #canvasStack.page-enter-prev { animation: none; }
 }
 
 /* replay overlay */
@@ -680,6 +807,11 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
 #pullHint.armed { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 #pullHint.armed .pullFill { display: none; }
 #pullHint .pullText { position: relative; }
+/* upward pulls anchor the pill to the top edge, below the toolbar */
+#pullHint.at-top {
+  top: calc(32px + var(--tb-h) + 10px);
+  bottom: auto;
+}
 
 /* toolbar polish: soft hover, entry animation for all flyouts */
 #topbar .tb-btn, #topbar .tb-toggle, .tb-pen-current, .tb-swatch { transition: background-color .12s ease, border-color .12s ease, box-shadow .12s ease, transform .12s ease; }
@@ -699,7 +831,11 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
   #topbar { gap: 3px; padding: 0 7px; }
   .tb-sep { display: none; }
   #topbar .tb-btn { width: 42px; height: 42px; }
+  .tb-save-split .tb-more { min-height: 42px; }
   .tb-toggle { width: 54px; height: 56px; }
+  .tb-tool-split { width: 54px; height: 56px; }
+  .tb-tool-split .tb-toggle { height: 32px; }
+  .tb-tool-split .tb-toggle svg { width: 20px; height: 20px; }
   .tb-label { font-size: 10px; }
   .tb-pen-current { min-width: 136px; height: 52px; }
   .tp-dot { width: 36px; height: 36px; }
@@ -708,10 +844,11 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
 @media (max-width: 940px) {
   #topbar .tb-btn { width: 40px; height: 40px; }
   #topbar .tb-btn svg { width: 20px; height: 20px; }
+  .tb-save-split .tb-more { min-height: 40px; }
   .tb-toggle { width: 46px; height: 48px; }
   .tb-toggle svg { width: 21px; height: 21px; }
-  .tb-label { display: none; }
-  .tb-caret { right: 5px; top: 7px; }
+  .tb-label, .tb-sub { display: none; }
+  .tb-more { right: 0; top: 2px; }
   .tb-pen-current { min-width: 46px; width: 46px; padding: 3px; }
   .tp-copy, .tp-chevron { display: none; }
   #tbTitle { min-width: 30px; }

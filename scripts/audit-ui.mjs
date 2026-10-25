@@ -130,7 +130,7 @@ await realClick(`document.getElementById('tbEraser')`)
 ok('click tbEraser again -> pen', await state(`__wc.S.tool`) === 'pen')
 
 // ---------- 2. flyouts via their real controls ----------
-const eraserCaret = `document.querySelector('#topbar .tb-caret[data-fly="eraserFlyout"]')`
+const eraserCaret = `document.querySelector('#topbar .tb-modebtn[data-fly="eraserFlyout"]')`
 const shapeButton = `document.getElementById('tbObject')`
 await realClick(eraserCaret)
 ok('eraser caret -> flyout opens', await state(`!document.getElementById('eraserFlyout').classList.contains('hidden')`))
@@ -236,25 +236,29 @@ ok('new page is current', await state(`__wc.S.currentPage`) === pagesBefore)
 await realClick(`document.getElementById('pagesBar').children[0]`)
 ok('page rail switches page', await state(`__wc.S.currentPage`) === 0)
 
-// ---------- 6. save flyout (real save path) ----------
+// ---------- 6. direct save + save/export overflow ----------
 await realClick(`document.getElementById('btnSave')`)
-ok('btnSave -> save flyout opens', await state(`!document.getElementById('saveFlyout').classList.contains('hidden')`))
-ok('save flyout prefills note title', await state(`document.getElementById('saveTitle').value`) === await state(`__wc.S.note.name`), 'title=' + await state(`document.getElementById('saveTitle').value`))
-await realClick(`document.getElementById('btnSaveConfirm')`)
 const saved = await waitFor(`document.getElementById('saveState').textContent === 'saved'`, 6000)
-ok('Save confirm reports saved', saved, 'text=' + await state(`document.getElementById('saveState').textContent`))
-ok('save flyout closes after save', await state(`document.getElementById('saveFlyout').classList.contains('hidden')`))
-ok('page is clean after save', await state(`__wc.S.pages[__wc.S.currentPage].dirty`) === false)
+ok('btnSave saves directly', saved, 'text=' + await state(`document.getElementById('saveState').textContent`))
+ok('direct save never opens note details', await state(`document.getElementById('saveFlyout').classList.contains('hidden')`))
+ok('page is clean after direct save', await state(`__wc.S.pages[__wc.S.currentPage].dirty`) === false)
 
-// export menu opens from the save flyout (native dialog items are not clicked)
-await realClick(`document.getElementById('btnSave')`)
-await realClick(`document.getElementById('btnExport')`)
-ok('btnExport -> export menu opens (5 items)', await state(`!document.getElementById('ctxMenu').classList.contains('hidden') && document.getElementById('ctxMenu').children.length === 5`), 'items=' + await state(`document.getElementById('ctxMenu').children.length`))
+await realClick(`document.getElementById('btnSaveMore')`)
+ok('btnSaveMore -> save/export menu opens', await state(`!document.getElementById('ctxMenu').classList.contains('hidden')`))
+ok('save/export menu offers PDF export', await state(`[...document.querySelectorAll('#ctxMenu button')].some(b => b.textContent.includes('PDF'))`))
+ok('save/export menu offers note details', await state(`[...document.querySelectorAll('#ctxMenu button')].some(b => b.textContent.includes('Note details'))`))
+await realClick(`[...document.querySelectorAll('#ctxMenu button')].find(b => b.textContent.includes('Note details'))`)
+ok('Note details opens its own dialog', await state(`!document.getElementById('saveFlyout').classList.contains('hidden')`))
+ok('note details prefills note title', await state(`document.getElementById('saveTitle').value`) === await state(`__wc.S.note.name`), 'title=' + await state(`document.getElementById('saveTitle').value`))
+await realClick(`document.getElementById('btnSaveConfirm')`)
+const detailsSaved = await waitFor(`document.getElementById('saveState').textContent === 'saved'`, 6000)
+ok('Note details apply reports saved', detailsSaved, 'text=' + await state(`document.getElementById('saveState').textContent`))
+ok('note details closes after apply', await state(`document.getElementById('saveFlyout').classList.contains('hidden')`))
+
+await realClick(`document.getElementById('btnSaveMore')`)
 await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 await sleep(80)
-ok('Escape closes export menu', await state(`document.getElementById('ctxMenu').classList.contains('hidden')`))
-await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
-await sleep(80)
+ok('Escape closes save/export menu', await state(`document.getElementById('ctxMenu').classList.contains('hidden')`))
 
 // ---------- 7. pen flyout: types / palette / width ----------
 const penInfo = () => state(`(() => { const p = __wc.S.penSlots[__wc.S.penIndex]; return { type: p.type, color: p.color, width: p.widthMM } })()`)
@@ -270,8 +274,11 @@ for (const t of types) {
   ok(`pen type "${t}" applies`, pi.type === t, 'type=' + pi.type)
 }
 if (!(await penFlyoutOpen())) await realClick(slotSel)
-const sw = await evalJs(ws, `(() => { const b = document.querySelector('#penPalette .ps[data-color]'); return b ? b.dataset.color : null })()`)
-await realClick(`document.querySelector('#penPalette .ps[data-color]')`)
+// Pick a saturated swatch: near-black ink is intentionally flipped to white
+// on the midnight board, so the first (black) swatch is covered by its own
+// contrast rule rather than being a pure palette-application test.
+const sw = '#FF0000'
+await realClick(`document.querySelector('#penPalette .ps[data-color="${sw}"]')`)
 const pi2 = await penInfo()
 ok('palette color applies to pen', String(pi2.color).toLowerCase() === String(sw).toLowerCase(), `want=${sw} got=${pi2.color}`)
 if (!(await penFlyoutOpen())) await realClick(slotSel)

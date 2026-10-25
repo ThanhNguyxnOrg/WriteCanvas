@@ -148,8 +148,49 @@ function flattenToCanvas(page) {
   return off
 }
 
- async function flattenBytes(page, kind = 'image/png') {
-  const off = flattenToCanvas(page)
+// The visible page is already split into paper/raster/ink layers. Composing
+// those is much cheaper than replaying every stroke and paper pattern at full
+// document resolution, which used to hitch on every autosave and thumbnail.
+function compositeCurrentPage(page) {
+  const { w, h } = docSize(page)
+  const off = document.createElement('canvas')
+  off.width = w; off.height = h
+  const c = off.getContext('2d')
+  for (const id of ['paperC', 'rasterC', 'inkC']) {
+    const layer = $(id)
+    if (layer) c.drawImage(layer, 0, 0)
+  }
+  return off
+}
+
+// Replay frames only need the screen-sized sheet, not a full-page flatten.
+// Drawing the three live layers at replay resolution keeps pointer-up cheap.
+function captureReplay(page) {
+  if (!page || !page.recorder) return
+  const { w, h } = docSize(page)
+  // Replay is a small preview, not a second copy of the page. 720 keeps the
+  // GIF readable while cutting the per-stroke getImageData work by ~3x.
+  const maxDim = 720
+  const scale = Math.min(1, maxDim / Math.max(w, h))
+  const fw = Math.max(1, Math.round(w * scale))
+  const fh = Math.max(1, Math.round(h * scale))
+  const off = document.createElement('canvas')
+  off.width = fw; off.height = fh
+  const c = off.getContext('2d')
+  if (page === current()) {
+    for (const id of ['paperC', 'rasterC', 'inkC']) {
+      const layer = $(id)
+      if (layer) c.drawImage(layer, 0, 0, fw, fh)
+    }
+  } else {
+    const flat = flattenToCanvas(page)
+    c.drawImage(flat, 0, 0, fw, fh)
+  }
+  page.recorder.capture(off)
+}
+
+async function flattenBytes(page, kind = 'image/png') {
+  const off = page === current() ? compositeCurrentPage(page) : flattenToCanvas(page)
   const blob = await new Promise(r => off.toBlob(r, kind, kind === 'image/jpeg' ? 0.92 : undefined))
   return new Uint8Array(await blob.arrayBuffer())
 }
@@ -179,11 +220,16 @@ function pullCommitLimit() {
   return Math.max(96, host.clientHeight * 0.12)
 }
 
-function updatePullHint(over, mode = 'pull') {
+function updatePullHint(over, mode = 'pull', action = 'add') {
   const bar = $('pullHint'); if (!bar) return
   if (!over || over <= 24) { bar.classList.add('hidden'); return }
   const commit = pullCommitLimit()
+  const prev = action === 'prev'
+  const next = action === 'next'
   bar.classList.remove('hidden')
+  // Upward pulls show the hint at the top edge so the copy sits on the side the
+  // page is moving toward; downward pulls keep the bottom pill.
+  bar.classList.toggle('at-top', prev)
   const armed = over >= commit
   bar.classList.toggle('armed', armed)
   const fill = bar.querySelector('.pullFill')
@@ -191,13 +237,51 @@ function updatePullHint(over, mode = 'pull') {
   const text = bar.querySelector('.pullText')
   if (text) {
     text.textContent = armed
-      ? 'Release to add a page'
-      : (mode === 'wheel' ? 'Keep scrolling to add a page' : 'Pull down to add a page')
+      ? (prev ? 'Release for previous page' : next ? 'Release for next page' : 'Release to add a page')
+      : (mode === 'wheel'
+          ? (prev ? 'Keep scrolling for previous page' : next ? 'Keep scrolling for next page' : 'Keep scrolling to add a page')
+          : (prev ? 'Pull up for previous page' : next ? 'Pull down for next page' : 'Pull down to add a page'))
   }
 }
 
 function hidePullHint() {
   const bar = $('pullHint'); if (bar) bar.classList.add('hidden')
+}
+
+// ---------- neighbour peek (continuous-stack illusion) ----------
+// Only one page exists in the DOM, so a boundary pull used to open an empty
+// workspace gap. Painting the adjacent sheet into that gap makes the pull read
+// as sliding one stack rather than swapping screens. Heights are in document px
+// (the strip lives inside the zoomed stackInner), so divide by zoom.
+function showPagePeek(dir, screenPx) {
+  const el = $(dir > 0 ? 'peekNext' : 'peekPrev')
+  if (!el || !S.pages.length) return
+  const zoom = S.zoom || 1
+  const docPx = Math.max(0, screenPx) / zoom
+  if (docPx < 1) { hidePagePeek(); return }
+  const page = current()
+  const neighbour = dir > 0 ? S.pages[S.currentPage + 1] : S.pages[S.currentPage - 1]
+  const paper = (neighbour || page)?.paper || DEFAULT_PAPER()
+  const sheet = el.querySelector('.peekSheet')
+  if (sheet) sheet.style.background = hexToCss(paper.bg, '#FFFFFF')
+  const label = el.querySelector('.peekLabel')
+  if (label) {
+    label.textContent = neighbour
+      ? `Page ${S.currentPage + (dir > 0 ? 2 : 0)}`
+      : 'New page'
+    label.style.color = colorLuma(paper.bg) < .42 ? 'rgba(255,255,255,.6)' : 'rgba(19,28,45,.5)'
+  }
+  el.style.height = Math.round(docPx) + 'px'
+  el.classList.add('on')
+}
+
+function hidePagePeek() {
+  for (const id of ['peekPrev', 'peekNext']) {
+    const el = $(id)
+    if (!el) continue
+    el.classList.remove('on')
+    el.style.height = '0px'
+  }
 }
 
 function pullBounce(from) {
@@ -360,22 +444,60 @@ function sanitizePage() {
   if (out && out.dirty) saveCurrentPage()
 }
 
+function rememberPageScroll(page) {
+  const host = $('canvasHost')
+  if (!page || !host) return
+  page.scrollTop = host.scrollTop
+  page.scrollLeft = host.scrollLeft
+}
+
+function restorePageScroll(page) {
+  const host = $('canvasHost')
+  if (!page || !host) return
+  // New/unvisited pages start at the title. Revisiting a page keeps the reader
+  // where they were, so moving back and forth does not jump to the top.
+  host.scrollTop = page.scrollTop || 0
+  host.scrollLeft = page.scrollLeft || 0
+}
+
+let pageEnterTimer = 0
+function playPageEnter(dir = 1) {
+  const stack = $('canvasStack')
+  if (!stack || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+  stack.classList.remove('page-enter-next', 'page-enter-prev')
+  // Force a reflow so repeated rail clicks restart the short transition.
+  void stack.offsetWidth
+  stack.classList.add(dir < 0 ? 'page-enter-prev' : 'page-enter-next')
+  clearTimeout(pageEnterTimer)
+  pageEnterTimer = setTimeout(() => stack.classList.remove('page-enter-next', 'page-enter-prev'), 240)
+}
+
 function setPage(i) {
   if (i < 0 || i >= S.pages.length) return
-  if (S.currentPage !== i) sanitizePage()
+  const prevPage = S.currentPage
+  const switching = prevPage !== i
+  if (switching) {
+    const oldPage = current()
+    rememberPageScroll(oldPage)
+    // The stroke-end/undo paths already refreshed this thumbnail. Only pay for
+    // a repaint when there is no cached image yet.
+    if (oldPage && !oldPage.thumbUrl) {
+      const oldItem = $('pagesBar')?.children[S.currentPage]
+      if (oldItem) drawThumb(oldItem.querySelector('.pageThumb'), S.currentPage)
+    }
+    sanitizePage()
+  }
   clearSelection()
   S.currentPage = i
   const page = current()
+  hidePagePeek()
   renderPage(page)
   if (!S.hadZoom) fitZoom()
   applyTransform()
-  // A page switch/opening a note starts at the top of the sheet. Without this
-  // the next note inherited the previous scroll offset and could open with its
-  // title above the viewport (or blank space below it).
-  const host = $('canvasHost')
-  if (host) { host.scrollTop = 0; host.scrollLeft = 0 }
+  restorePageScroll(page)
   if (S.rulerOn) { ensureRulerVisible(); drawRulerLayer(current()) }
-  refreshPages()
+  syncPageRail()
+  if (switching) playPageEnter(i > prevPage ? 1 : -1)
   updateTitle()
   syncUndoRedo()
 }
@@ -395,6 +517,10 @@ function refreshPages() {
   S.pages.forEach((_, i) => {
     const item = document.createElement('div')
     item.className = 'pageItem' + (i === S.currentPage ? ' cur' : '')
+    item.tabIndex = 0
+    item.setAttribute('role', 'button')
+    item.setAttribute('aria-label', `Page ${i + 1}`)
+    if (i === S.currentPage) item.setAttribute('aria-current', 'page')
     const num = document.createElement('div')
     num.className = 'num'
     num.textContent = String(i + 1)
@@ -403,25 +529,75 @@ function refreshPages() {
     t.title = 'Page ' + (i + 1)
     item.append(num, t)
     item.onclick = () => setPage(i)
+    item.onkeydown = e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setPage(i) }
+    }
     bar.appendChild(item)
     drawThumb(t, i)
   })
+  syncPageNav()
+}
+
+function syncPageNav() {
+  const prev = $('btnPrevPage'), next = $('btnNextPage')
+  if (prev) prev.disabled = S.currentPage <= 0
+  if (next) next.disabled = S.currentPage < 0 || S.currentPage >= S.pages.length - 1
+}
+
+// Only the selected row changes during a page switch. Rebuilding the whole rail
+// (and re-flattening every page) was the main source of page-switch jank.
+function syncPageRail() {
+  const bar = $('pagesBar')
+  if (!bar || bar.children.length !== S.pages.length) { refreshPages(); return }
+  Array.from(bar.children).forEach((item, i) => {
+    const on = i === S.currentPage
+    item.classList.toggle('cur', on)
+    if (on) item.setAttribute('aria-current', 'page')
+    else item.removeAttribute('aria-current')
+  })
+  // Keep the active row visible when the rail is long and the page was changed
+  // with Ctrl+PageUp/PageDown rather than by clicking it.
+  bar.children[S.currentPage]?.scrollIntoView({ block: 'nearest' })
+  syncPageNav()
 }
 
 function drawThumb(t, i) {
+  if (!t) return
   const page = S.pages[i]
+  const hasContent = page.strokes.length || (page.texts && page.texts.length) || page.rasterBitmap
   // pages with no ink show the light-blue placeholder (06-save, page 2)
-  if (!page.strokes.length) {
+  if (!hasContent) {
     t.style.backgroundImage = ''
     t.classList.add('placeholder')
+    page.thumbUrl = ''
     return
   }
   t.classList.remove('placeholder')
-  const off = flattenToCanvas(page)
+  const { w, h } = docSize(page)
   const small = document.createElement('canvas')
-  small.width = 176; small.height = Math.round(176 * off.height / off.width)
-  small.getContext('2d').drawImage(off, 0, 0, small.width, small.height)
-  t.style.backgroundImage = `url(${small.toDataURL()})`
+  small.width = 176; small.height = Math.round(176 * h / w)
+  const sc = small.getContext('2d')
+  if (i === S.currentPage) {
+    // The active page is already composed into these three layers; drawing them
+    // into the 176px thumbnail is much cheaper than replaying every stroke.
+    for (const id of ['paperC', 'rasterC', 'inkC']) {
+      const layer = $(id)
+      if (layer) sc.drawImage(layer, 0, 0, small.width, small.height)
+    }
+    const url = small.toDataURL()
+    page.thumbUrl = url
+    t.style.backgroundImage = `url(${url})`
+  } else if (page.thumbUrl) {
+    // Reuse the cached thumbnail. It is refreshed whenever the page is edited
+    // or before the page is left.
+    t.style.backgroundImage = `url(${page.thumbUrl})`
+  } else {
+    const off = flattenToCanvas(page)
+    sc.drawImage(off, 0, 0, small.width, small.height)
+    const url = small.toDataURL()
+    page.thumbUrl = url
+    t.style.backgroundImage = `url(${url})`
+  }
 }
 
 function refreshCurrentThumb() {
@@ -589,18 +765,36 @@ function onPointerMove(e) {
     host.scrollLeft = Math.max(0, Math.min(pan.sl - (e.clientX - pan.x), host.scrollWidth - host.clientWidth))
     const maxTop = Math.max(0, host.scrollHeight - host.clientHeight)
     const top = pan.st - (e.clientY - pan.y)
-    if (top > maxTop && S.pages.length && S.currentPage === S.pages.length - 1) {
-      // pull below the last page: rubber-band + hint "drop to add a page"
+    if (top > maxTop && S.pages.length) {
+      // Pulling past the bottom moves to the next sheet when one exists; only
+      // the last sheet grows a new page. This removes the dead end at the end
+      // of page 1 in a two-page note.
       pan.over = top - maxTop
+      pan.under = 0
       S.pullPx = Math.min(230, pan.over * 0.35)
       applyTransform()
-      updatePullHint(pan.over)
+      updatePullHint(pan.over, 'pull', S.currentPage < S.pages.length - 1 ? 'next' : 'add')
+      showPagePeek(1, S.pullPx)
+      return
+    }
+    if (top < 0 && S.currentPage > 0) {
+      // Symmetric boundary: pulling down at the top of a page reveals the
+      // previous sheet instead of dead-ending. The page follows the finger
+      // downward, then lands at the bottom of the previous sheet on release.
+      pan.under = -top
+      pan.over = 0
+      S.pullPx = -Math.min(230, pan.under * 0.35)
+      applyTransform()
+      updatePullHint(pan.under, 'pull', 'prev')
+      showPagePeek(-1, -S.pullPx)
       return
     }
     host.scrollTop = Math.max(0, top)
     pan.over = 0 // pulled past the bottom then back up: releasing must not add a page
+    pan.under = 0
     if (S.pullPx) { S.pullPx = 0; applyTransform() }
     updatePullHint(0)
+    hidePagePeek()
     return
   }
   let { x, y } = pageCoords(e)
@@ -645,7 +839,7 @@ function onPointerMove(e) {
 function firstCommitPreCapture(page) {
   if (page.recorder && page.recorder.frames.length === 0 && !page.recorder.changed) {
     page.recorder.lastCapture = performance.now() - 600
-    page.recorder.capture(flattenToCanvas(page))
+    captureReplay(page)
   }
 }
 
@@ -883,7 +1077,7 @@ function selectionCommitMove(page) {
   redrawInk(page)
   drawSelectionBox(page)
   refreshSelBar()
-  page.recorder.capture(flattenToCanvas(page))
+  captureReplay(page)
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
@@ -929,7 +1123,7 @@ function selectionDelete() {
   page.redo = []
   clearSelection()
   redrawInk(page)
-  page.recorder.capture(flattenToCanvas(page))
+  captureReplay(page)
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
@@ -948,7 +1142,7 @@ function selectionDuplicate() {
   redrawInk(page)
   drawSelectionBox(page)
   refreshSelBar()
-  page.recorder.capture(flattenToCanvas(page))
+  captureReplay(page)
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
@@ -1329,7 +1523,7 @@ function eraseSheet(page) {
   if (removed.length || removedTexts.length) page.undo.push({ t: 'erase', strokes: removed, texts: removedTexts })
   page.redo = []
   redrawInk(page)
-  page.recorder.capture(flattenToCanvas(page))
+  captureReplay(page)
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
@@ -1460,7 +1654,7 @@ function finishText(discard) {
   page.undo.push({ t: 'text', obj })
   page.redo = []
   redrawInk(page)
-  page.recorder.capture(flattenToCanvas(page))
+  captureReplay(page)
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
@@ -1473,18 +1667,28 @@ function onPointerUp(e) {
   const page = current(); if (!page) return
   if (pan) {
     const over = pan.over || 0
+    const under = pan.under || 0
     const pull = S.pullPx || 0
     const host = $('canvasHost')
     const commit = Math.max(96, host.clientHeight * 0.12)
     pan = null
     S.pullPx = 0
     hidePullHint()
-    if (over >= commit) {
-      // release past the threshold: start at the top of the new page
+    hidePagePeek()
+    if (under >= commit && S.currentPage > 0) {
+      // Release at the top: settle into the bottom of the previous sheet so the
+      // two pages share a seam instead of jumping to an unrelated top edge.
       applyTransform()
-      addPage()
+      setPage(S.currentPage - 1)
+      host.scrollTop = host.scrollHeight
+    } else if (over >= commit) {
+      // Release past the threshold: reveal the next sheet, or append one when
+      // this is already the last sheet. Both land at the top of the target.
+      applyTransform()
+      if (S.currentPage < S.pages.length - 1) setPage(S.currentPage + 1)
+      else addPage()
       host.scrollTop = 0
-    } else if (pull > 3) {
+    } else if (Math.abs(pull) > 3) {
       pullBounce(pull)
     } else {
       applyTransform()
@@ -1508,7 +1712,7 @@ function onPointerUp(e) {
     page.undo.push({ t: 'add', strokes })
     page.redo = []
     redrawInk(page)
-    page.recorder.capture(flattenToCanvas(page))
+    captureReplay(page)
     page.dirty = true
     scheduleAutosave()
     refreshCurrentThumb()
@@ -1521,10 +1725,10 @@ function onPointerUp(e) {
     if (!stroke.pts.length) return
     firstCommitPreCapture(page)
     page.strokes.push(stroke)
-    redrawInk(page)
+    drawStrokeItem(ctxOf('inkC'), docSize(page).w, docSize(page).h, stroke)
     page.undo.push({ t: 'add', stroke })
     page.redo = []
-    page.recorder.capture(flattenToCanvas(page))
+    captureReplay(page)
     page.dirty = true
     scheduleAutosave()
     refreshCurrentThumb()
@@ -1535,7 +1739,7 @@ function onPointerUp(e) {
     if (ep.pairs.length) page.undo.push({ t: 'erase-split', pairs: ep.pairs })
     if (ep.whole.length || ep.pairs.length) {
       page.redo = []
-      page.recorder.capture(flattenToCanvas(page))
+      captureReplay(page)
       page.dirty = true
       scheduleAutosave()
       refreshCurrentThumb()
@@ -1592,7 +1796,7 @@ function undo() {
     clearSelection()
   }
   redrawInk(page)
-  page.recorder.capture(flattenToCanvas(page))
+  captureReplay(page)
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
@@ -1626,7 +1830,7 @@ function redo() {
     clearSelection()
   }
   redrawInk(page)
-  page.recorder.capture(flattenToCanvas(page))
+  captureReplay(page)
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
@@ -1645,10 +1849,21 @@ function scheduleAutosave() {
 
 function setSaveState(kind, working) {
   const s = $('saveState')
-  if (working) { s.textContent = 'saving…'; s.style.color = 'var(--dim)'; return }
-  if (kind === 'ok') { s.textContent = 'saved'; s.style.color = '#6fd68f' }
-  else if (kind === 'err') { s.textContent = 'save failed'; s.style.color = 'var(--danger)' }
-  else s.textContent = ''
+  const btn = $('btnSave')
+  const state = working ? 'saving' : (kind === 'ok' ? 'saved' : kind === 'err' ? 'error' : 'idle')
+  if (s) {
+    if (working) { s.textContent = 'saving…'; s.style.color = 'var(--dim)' }
+    else if (kind === 'ok') { s.textContent = 'saved'; s.style.color = '#6fd68f' }
+    else if (kind === 'err') { s.textContent = 'save failed'; s.style.color = 'var(--danger)' }
+    else s.textContent = ''
+  }
+  if (btn) {
+    btn.dataset.saveState = state
+    btn.title = working ? 'Saving note…'
+      : kind === 'ok' ? 'Saved'
+        : kind === 'err' ? 'Save failed - click to retry'
+          : 'Save now (Ctrl+S)'
+  }
 }
 
 // Saves are serialized and captured against the note/page that was current at
@@ -2017,15 +2232,16 @@ function syncFlyoutAria() {
   const pairs = [
     ['penFlyout', $('tbPenCurrent')],
     ['shapeFlyout', $('tbObject')],
-    ['selectFlyout', $('tbLasso')],
-    ['eraserFlyout', $('tbEraser')],
-    ['saveFlyout', $('btnSave')],
+    ['saveFlyout', $('btnSaveMore')],
     ['paperColorFlyout', $('ppBgColor')],
   ]
   for (const [id, btn] of pairs) {
     if (!btn) continue
     btn.setAttribute('aria-expanded', S.flyoutOpenTool === id ? 'true' : 'false')
   }
+  document.querySelectorAll('#topbar .tb-modebtn[data-fly]').forEach(btn => {
+    btn.setAttribute('aria-expanded', S.flyoutOpenTool === btn.dataset.fly ? 'true' : 'false')
+  })
 }
 
 // All toolbar flyouts are anchored to their control, never to a magic offset.
@@ -2309,6 +2525,7 @@ function syncBoardWithTheme(dark, { render = true, save = true } = {}) {
   for (const page of S.pages) {
     if (boardHex(page) !== from) continue
     page.paper.bg = '#FF' + to.slice(1)
+    page.thumbUrl = ''
     page.dirty = true
     changed = true
   }
@@ -2355,7 +2572,7 @@ function setTheme(dark, { persist = true, syncBoard = true } = {}) {
   }
 }
 
-// ---------- save flyout (Title / Project / Options / Save, mirrors 06-save) ----------
+// ---------- note details (rename / project folder; not the normal save path) ----------
 async function fillSaveFlyout() {
   const today = new Date()
   const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
@@ -2402,16 +2619,45 @@ async function saveFromFlyout() {
 }
 
 // ---------- export ----------
-async function exportMenu() {
-  const { pick } = await import('./ctx.js')
-  const items = [
+function exportItems() {
+  return [
     { label: 'Page → PNG', act: () => exportImg('png') },
     { label: 'Page → JPEG', act: () => exportImg('jpg') },
     { label: 'Note → PDF (all pages)', act: () => exportPDF() },
     { label: 'Replay → GIF', act: () => exportGif() },
     { label: 'Note → .wcanvas project (all pages)', act: () => exportProject() },
   ]
-  pick(items, 300, 60)
+}
+
+function menuPoint(anchor) {
+  if (!anchor) return [300, 60]
+  const r = anchor.getBoundingClientRect()
+  return [r.left, r.bottom + 6]
+}
+
+async function exportMenu(anchor = null) {
+  const { pick } = await import('./ctx.js')
+  pick(exportItems(), ...menuPoint(anchor))
+}
+
+// The download half of the Save split button. Save is one click; export and
+// note metadata are one click away here instead of being nested in a dialog.
+async function saveMenu(anchor = null) {
+  const { pick } = await import('./ctx.js')
+  const items = [
+    { label: 'Save now', act: () => saveCurrentPage() },
+    '-',
+    ...exportItems(),
+    '-',
+    {
+      label: 'Note details…',
+      act: async () => {
+        await fillSaveFlyout()
+        openToolFlyout('saveFlyout', $('btnSaveMore'))
+      },
+    },
+  ]
+  pick(items, ...menuPoint(anchor))
 }
 async function exportImg(kind) {
   const page = current(); if (!page || !S.noteId) return
@@ -2577,14 +2823,15 @@ export function init(app) {
   initTheme()
 
   $('btnMenu').onclick = () => toggleLibraryFlyout()
-  $('btnSave').onclick = () => { fillSaveFlyout(); openToolFlyout('saveFlyout', $('btnSave')) }
+  $('btnSave').onclick = () => { closeToolFlyout('saveFlyout'); saveCurrentPage() }
+  $('btnSaveMore').onclick = () => saveMenu($('btnSaveMore'))
   $('btnUndo').onclick = undo
   $('btnRedo').onclick = redo
   $('btnTitle').onclick = renameOpenNote
   $('btnNew').onclick = () => host && host.cmdNewNote && host.cmdNewNote()
   $('btnPaper').onclick = () => togglePaperPanel()
-  $('btnExport').onclick = exportMenu
   $('btnSaveConfirm').onclick = saveFromFlyout
+  $('saveClose').onclick = () => closeToolFlyout('saveFlyout')
   $('saveTitleClear').onclick = () => { $('saveTitle').value = ''; $('saveTitle').focus() }
   $('paperBrl').addEventListener('change', applyBorderLines)
   $('ppPortrait').onclick = () => applyOrientation('portrait')
@@ -2609,7 +2856,11 @@ export function init(app) {
   $('ppPaneOn').onclick = () => setWritingPane(true)
   $('ppPaneOff').onclick = () => setWritingPane(false)
   $('btnAddPage').onclick = addPage
+  $('btnPrevPage').onclick = () => setPage(S.currentPage - 1)
+  $('btnNextPage').onclick = () => setPage(S.currentPage + 1)
+  syncPageNav()
   wireToolbarToggles()
+  stackInnerClass()
 
   // pointer + wheel
   const inner = $('stackInner')
@@ -2627,6 +2878,38 @@ export function init(app) {
     }
     const host = $('canvasHost')
     const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? host.clientHeight : 1)
+    if (!S.pages.length) {
+      wheelOverscroll = 0
+      return
+    }
+    if (performance.now() < wheelAddLock) return
+    const atTop = host.scrollTop <= 2
+    const atBottom = host.scrollHeight - host.clientHeight - host.scrollTop <= 2
+    // Upward wheel at the top of a page reveals the previous sheet. The
+    // scrollport is already at 0, so the delta cannot move anything natively;
+    // accumulating it turns the dead end into a deliberate page turn.
+    if (dy < 0) {
+      if (!atTop || S.currentPage <= 0) {
+        wheelOverscroll = 0
+        hidePullHint()
+        return
+      }
+      wheelOverscroll += -dy
+      const commit = Math.max(250, host.clientHeight * 0.28)
+      if (wheelOverscroll < commit) {
+        const display = wheelOverscroll * (pullCommitLimit() / commit)
+        updatePullHint(display, 'wheel', 'prev')
+        return
+      }
+      wheelOverscroll = 0
+      wheelAddLock = performance.now() + 900
+      hidePullHint()
+      setPage(S.currentPage - 1)
+      // Land at the bottom of the previous sheet; the remaining upward delta
+      // then scrolls up into it natively, keeping the boundary continuous.
+      host.scrollTop = host.scrollHeight
+      return
+    }
     // Normal wheel/trackpad scrolling is left untouched. Once the last page
     // is already at the bottom, continued downward scrolling becomes a clear,
     // deliberate gesture that appends the next page.
@@ -2635,31 +2918,27 @@ export function init(app) {
       hidePullHint()
       return
     }
-    if (!S.pages.length || S.currentPage !== S.pages.length - 1) {
-      wheelOverscroll = 0
-      return
-    }
-    const atBottom = host.scrollHeight - host.clientHeight - host.scrollTop <= 2
     if (!atBottom) {
       wheelOverscroll = 0
       return
     }
-    if (performance.now() < wheelAddLock) return
     wheelOverscroll += dy
     const commit = Math.max(250, host.clientHeight * 0.28)
+    const hasNext = S.currentPage < S.pages.length - 1
     if (wheelOverscroll < commit) {
       const display = wheelOverscroll * (pullCommitLimit() / commit)
-      updatePullHint(display, 'wheel')
+      updatePullHint(display, 'wheel', hasNext ? 'next' : 'add')
       return
     }
     wheelOverscroll = 0
     wheelAddLock = performance.now() + 900
     hidePullHint()
-    addPage()
-    // addPage() re-renders the stack; wait for layout before showing page top.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (S.currentPage === S.pages.length - 1) host.scrollTop = 0
-    }))
+    if (hasNext) setPage(S.currentPage + 1)
+    else addPage()
+    // Start at the top of the target sheet. The rest of this wheel delta then
+    // scrolls into it natively, so the boundary keeps its momentum instead of
+    // snapping back to the top after the event.
+    host.scrollTop = 0
   }, { passive: false })
 
   window.addEventListener('keydown', e => {
@@ -2669,11 +2948,17 @@ export function init(app) {
       stackInnerClass()
     }
     const c = e.ctrlKey || e.metaKey
+    // PageUp/PageDown with Ctrl switches sheets without reaching for the rail.
+    if (c && !typing && (e.key === 'PageDown' || e.key === 'PageUp')) {
+      e.preventDefault()
+      setPage(S.currentPage + (e.key === 'PageDown' ? 1 : -1))
+      return
+    }
     // inside a text box, Ctrl+Z/Y must undo the text, not the canvas ink
     if (c && !typing && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo() }
     if (c && !typing && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo() }
     if (c && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrentPage() }
-    if (c && !typing && e.key.toLowerCase() === 'e') { e.preventDefault(); exportMenu() }
+    if (c && !typing && e.key.toLowerCase() === 'e') { e.preventDefault(); exportMenu($('btnSaveMore')) }
     if (c && e.key.toLowerCase() === 'n' && e.shiftKey) { /* menu: new folder */ }
     // tool shortcuts (factory parity): V laser, E eraser, R ruler,
     // G shapes&text flyout, T text box, Escape dismiss overlays
@@ -2721,7 +3006,7 @@ export function init(app) {
         })
         break
       case 'save': saveCurrentPage(); break
-      case 'export': exportMenu(); break
+      case 'export': exportMenu($('btnSaveMore')); break
       case 'new-note': app.cmdNewNote(); break
       case 'new-folder': app.cmdNewFolder(); break
       case 'import': app.cmdImport(); break
@@ -2737,8 +3022,12 @@ export function init(app) {
 }
 
 function stackInnerClass() {
-  $('stackInner').classList.toggle('panning', S.spaceDown || S.tool === 'view')
-  $('stackInner').classList.toggle('shape-tool', S.tool === 'shape')
+  const inner = $('stackInner')
+  inner.classList.toggle('panning', S.spaceDown || S.tool === 'view')
+  inner.classList.toggle('shape-tool', S.tool === 'shape')
+  // A pen drag must be ink, never a browser scroll gesture. All inking tools
+  // opt out of native touch/pen panning; Pan/View keep native scrolling.
+  inner.classList.toggle('inking', !S.spaceDown && S.tool !== 'pan' && S.tool !== 'view')
 }
 
 function isTextEditing() {
@@ -2748,8 +3037,16 @@ function isTextEditing() {
 }
 
 export function selectColor(c) {
-  const hex = normalizeHexColor(c)
+  let hex = normalizeHexColor(c)
   if (!hex) return
+  // The swatch palette is shared by light and dark boards. Black is a valid
+  // choice on paper, but on the midnight board it is effectively invisible;
+  // keep the action useful by flipping only the neutral near-black colours.
+  const page = current()
+  if (page && colorLuma(boardHex(page)) < .32 && inkTooDarkForDarkBoard(hex)) {
+    hex = '#FFFFFF'
+    showHint('Black is hard to see on this dark page - pen switched to white')
+  }
   curPen().color = hex
   savePens()
   syncPenFlyout()
@@ -2909,18 +3206,16 @@ function wireToolbarToggles() {
   $('tbRuler').onclick = () => toggleRuler()
   $('tbLasso').onclick = () => setTool(S.tool === 'lasso' ? 'pen' : 'lasso')
   $('tbEye').onclick = () => setTool(S.tool === 'view' ? 'pen' : 'view')
-  // caret hot-zones under the toggles open the tool flyouts (MoreArrow parity) —
-  // only stop the event for zones whose flyout exists, so bare toggles keep
-  // receiving their own click: laser/ruler flyouts are not built yet
-  document.querySelectorAll('#topbar .tb-caret[data-fly]').forEach(z => {
+  // The visible mode label under each split tool opens its flyout. The icon
+  // above still toggles the tool itself, so neither action hides the other.
+  document.querySelectorAll('#topbar .tb-modebtn[data-fly]').forEach(z => {
     z.addEventListener('click', ev => {
-      const b = z.closest('button')
       const fly = z.dataset.fly
-      if (!fly || !$(fly) || !b) return
+      if (!fly || !$(fly)) return
       ev.stopPropagation()
       if (fly === 'selectFlyout') syncSelectFlyout()
       if (fly === 'eraserFlyout') syncEraserFlyout()
-      openToolFlyout(fly, b, { ignore: z })
+      openToolFlyout(fly, z, { ignore: z })
     })
   })
   const sll = $('selLasso'), slc = $('selClick')
@@ -2945,6 +3240,14 @@ function syncSelectFlyout() {
     b.classList.toggle('active', S.selectMode === k)
     b.setAttribute('aria-pressed', S.selectMode === k ? 'true' : 'false')
   }
+  const mode = S.selectMode === 'click' ? 'Click' : 'Lasso'
+  const label = $('selModeLabel')
+  if (label) label.textContent = mode
+  const btn = $('tbLasso')
+  if (btn) {
+    btn.setAttribute('aria-label', `Select strokes, ${mode} mode`)
+    btn.title = `Select (${mode}) - open the label for options`
+  }
 }
 
 // the factory eraser modes (SetupFlyout copy: Stroke Eraser / Segment
@@ -2955,6 +3258,14 @@ function syncEraserFlyout() {
   for (const [k, b] of Object.entries(modes)) {
     b.classList.toggle('active', S.eraserMode === k)
     b.setAttribute('aria-pressed', S.eraserMode === k ? 'true' : 'false')
+  }
+  const mode = { stroke: 'Stroke', segment: 'Segment', sheet: 'Sheet', drag: 'Drag' }[S.eraserMode] || 'Stroke'
+  const label = $('erModeLabel')
+  if (label) label.textContent = mode
+  const btn = $('tbEraser')
+  if (btn) {
+    btn.setAttribute('aria-label', `Eraser, ${mode} mode`)
+    btn.title = `Eraser (${mode}) - open the label for options`
   }
   $('erSizeRow').classList.toggle('hidden', S.eraserMode !== 'segment')
   document.querySelectorAll('#erSizes .er-chip').forEach(ch => {

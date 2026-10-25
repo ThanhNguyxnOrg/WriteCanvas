@@ -9,6 +9,12 @@ const { writeNotePng, readNoteMeta, extractInkGif, extractVecJson, pngIsBroken, 
 const { GIFEncoder, quantize, applyPalette } = require('gifenc')
 const { buildNoteZip, readNoteZip } = require('./wcanvas-export')
 
+// Keep the compositor producing frames even when the window is fully covered.
+// Windows occlusion heuristics otherwise stop frame production while the app
+// sits behind other windows; CDP/Playwright screenshots then stall until the
+// window is brought to front again. Pairs with backgroundThrottling: false.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
 let win = null
 let lib = null
 let allowClose = false

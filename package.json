@@ -7,6 +7,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
+    "start:debug": "electron . --remote-debugging-port=9222",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "test": "node --test tests/pen-paper.test.mjs tests/png-toolkit.test.mjs"

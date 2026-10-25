@@ -30,11 +30,18 @@ export class Recorder {
     const scale = Math.min(1, maxDim / Math.max(w, h))
     const fw = Math.max(1, Math.round(w * scale))
     const fh = Math.max(1, Math.round(h * scale))
-    const off = document.createElement('canvas')
-    off.width = fw; off.height = fh
-    const ctx = off.getContext('2d')
-    ctx.drawImage(sourceCanvas, 0, 0, fw, fh)
-    const img = ctx.getImageData(0, 0, fw, fh)
+    let img
+    if (scale === 1) {
+      // Already at replay resolution: read it directly instead of copying the
+      // whole frame through a second canvas first.
+      img = sourceCanvas.getContext('2d').getImageData(0, 0, fw, fh)
+    } else {
+      const off = document.createElement('canvas')
+      off.width = fw; off.height = fh
+      const ctx = off.getContext('2d')
+      ctx.drawImage(sourceCanvas, 0, 0, fw, fh)
+      img = ctx.getImageData(0, 0, fw, fh)
+    }
     if (this.frames.length >= this.max) this.frames.shift()
     this.frames.push({ delay, width: fw, height: fh, data: img.data })
     this.changed = true
