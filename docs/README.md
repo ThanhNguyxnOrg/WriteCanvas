@@ -9,7 +9,7 @@ root [README](../README.md) is only a signpost to this folder.
 |---|---|
 | [PLATFORMS.md](PLATFORMS.md) | What each operating system does differently, what the installers are, and the complete keyboard table. |
 | [FORMAT.md](FORMAT.md) | What a note file actually is, so you can trust your library to another tool or hand-edit a PNG. |
-| [PRIVACY.md](PRIVACY.md) | What the app stores and what it sends — nothing leaves the machine. |
+| [Privacy policy](../PRIVACY.md) | What the app processes and what it sends — nothing leaves the machine. |
 
 ## If you contribute code
 

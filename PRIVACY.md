@@ -12,7 +12,7 @@ WriteCanvas reads and writes note files and folders that the user selects. It al
 
 ## Local storage and transmission
 
-WriteCanvas processes notes, drawings, page data, settings, and exported documents on the user's device or in folders chosen by the user. The application does not operate an account system or a remote service for collecting note content. The project does not include its own advertising, analytics, or telemetry service, and WriteCanvas does not send note content to the developer.
+WriteCanvas processes notes, drawings, page data, settings, and exported documents on the user's device or in folders chosen by the user. The application does not operate an account system or a remote service for collecting note content, and it makes no network requests at runtime. The project does not include its own advertising, analytics, or telemetry service, and WriteCanvas does not send note content to the developer.
 
 If the user chooses a folder managed by a separate synchronization or backup service, that service may process or transmit files under its own terms and privacy policy. The operating system and other software on the device are also governed by their respective providers' policies.
 

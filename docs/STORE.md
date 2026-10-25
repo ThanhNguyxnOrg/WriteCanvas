@@ -81,7 +81,7 @@ submission must use a higher version than the last published one, so bump
      from [Store listing copy](#store-listing-copy) below.
    - **Images**: see [Assets](#assets).
    - **Support**: `https://github.com/ThanhNguyxnOrg/WriteCanvas/issues`
-   - **Privacy policy**: `https://github.com/ThanhNguyxnOrg/WriteCanvas/blob/master/docs/PRIVACY.md`
+   - **Privacy policy**: `https://github.com/ThanhNguyxnOrg/WriteCanvas/blob/master/PRIVACY.md`
      (the app collects nothing; the policy says so in one page).
 4. **Age rating**: complete the questionnaire. The app has no user-generated
    content sharing, no ads, no purchases and no online features, so every answer
