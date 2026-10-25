@@ -1,8 +1,8 @@
-// Paper engine v2 — geometry byte-sampled from the original app's assets
-// (docs/research/scrble-feature-inventory.md §3).
+// Paper engine v2 — geometry byte-sampled from the original app's assets.
 // Proof: the original Letter raster is 2500×3235 px for 8.5×11 in → render
 // scale 294.12 dpi. Pattern templates draw at asset native scale (asset px ==
 // doc px), anchored top-left, and continue across any page size.
+// The document scale is described in docs/FORMAT.md.
 
 export const DOC_DPI = 2500 / 8.5
 
@@ -30,6 +30,28 @@ export const docMM = mm => Math.round(mm * PPM)
 
 export function paperDocSize(size, orientation) {
   const s = SIZES[size] || SIZES.letter
+  return orientation === 'landscape' ? { w: s.h, h: s.w } : { w: s.w, h: s.h }
+}
+
+// Physical page size in millimetres — what a printer/PDF expects. SIZES is in
+// document pixels, which must never be passed to print APIs as mm.
+const MM_SIZES = {
+  letter:  { w: 215.9, h: 279.4 },
+  legal:   { w: 215.9, h: 355.6 },
+  tabloid: { w: 279.4, h: 431.8 },
+  a0: { w: 841, h: 1189 },
+  a1: { w: 594, h: 841 },
+  a2: { w: 420, h: 594 },
+  a3: { w: 297, h: 420 },
+  a4: { w: 210, h: 297 },
+  a5: { w: 148, h: 210 },
+  a6: { w: 105, h: 148 },
+  a7: { w: 74, h: 105 },
+  a8: { w: 52, h: 74 },
+}
+
+export function paperMM(size, orientation) {
+  const s = MM_SIZES[size] || MM_SIZES.letter
   return orientation === 'landscape' ? { w: s.h, h: s.w } : { w: s.w, h: s.h }
 }
 

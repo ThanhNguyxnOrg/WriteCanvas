@@ -10,7 +10,7 @@ import {
   QUICK_PALETTE,
   DEFAULT_PEN_SLOTS,
 } from '../src/js/pen.js'
-import { SIZES, TEMPLATES, paperDocSize } from '../src/js/paper.js'
+import { SIZES, TEMPLATES, paperDocSize, paperMM, DOC_DPI } from '../src/js/paper.js'
 import { clipLineToRect } from '../src/js/ruler.js'
 
 describe('pen and paper pure logic', () => {
@@ -53,6 +53,24 @@ describe('pen and paper pure logic', () => {
     assert.deepEqual(paperDocSize('a4', 'portrait'), { w: SIZES.a4.w, h: SIZES.a4.h })
     assert.deepEqual(paperDocSize('a4', 'landscape'), { w: SIZES.a4.h, h: SIZES.a4.w })
     assert.deepEqual(paperDocSize('unknown', 'portrait'), { w: SIZES.letter.w, h: SIZES.letter.h })
+  })
+
+  it('paperMM reports physical print sizes, not document pixels', () => {
+    assert.deepEqual(paperMM('letter', 'portrait'), { w: 215.9, h: 279.4 })
+    assert.deepEqual(paperMM('letter', 'landscape'), { w: 279.4, h: 215.9 })
+    assert.deepEqual(paperMM('a4', 'portrait'), { w: 210, h: 297 })
+    assert.deepEqual(paperMM('a4', 'landscape'), { w: 297, h: 210 })
+    assert.deepEqual(paperMM('unknown', 'portrait'), { w: 215.9, h: 279.4 })
+    // A Letter PDF must not inherit the 2500×3235 px raster dimensions.
+    assert.ok(paperMM('letter', 'portrait').w < 300)
+    // The physical table and the document-pixel table must describe the same
+    // paper; drift between them would make PDFs the wrong physical size.
+    for (const [size, px] of Object.entries(SIZES)) {
+      const mm = paperMM(size, 'portrait')
+      const fromMM = { w: Math.round(mm.w * DOC_DPI / 25.4), h: Math.round(mm.h * DOC_DPI / 25.4) }
+      assert.ok(Math.abs(fromMM.w - px.w) <= 1, `${size} width: ${fromMM.w}px vs ${px.w}px`)
+      assert.ok(Math.abs(fromMM.h - px.h) <= 1, `${size} height: ${fromMM.h}px vs ${px.h}px`)
+    }
   })
 })
 

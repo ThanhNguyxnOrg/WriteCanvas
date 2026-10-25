@@ -1,6 +1,6 @@
-// Pen engine v2 — 5 pen types emulated after the original InkToolbar setup
-// (docs/research/scrble-feature-inventory.md §1), with the palette and slot
-// model from the real UI evidence (02-pen-flyout.png, panel-check.png).
+// Pen engine v2 — 5 pen types emulated after the original InkToolbar setup,
+// with the palette and slot model from the real UI evidence
+// (02-pen-flyout.png, panel-check.png).
 //
 // Rendering model: every stroke is stamped into an offscreen coverage mask
 // (union — no self-overlap darkening), then composited onto the page exactly

@@ -5,12 +5,12 @@
 // It has no Electron, Buffer or fs dependency; callers deal in whole pages:
 //
 //   const out = writeNotePng(png, meta)
-//   const { meta, inkGif, vecJson } = readNotePng(out)
+//   const { meta, inkGif, vecJson, rasterBase } = readNotePng(out)
 //
 // All chunk framing, CRC32, IDAT placement, length-prefixed strings and the
 // legacy duplicate/interleaved repair stay inside. `readNotePng` accepts
-// options so the main process can read metadata without copying a large sINK
-// or decoding a large sVec on every library row.
+// options so the main process can read metadata without copying a large sINK,
+// decoding a large sVec or copying an imported sRST base on every library row.
 
 import { PLANNERS, SIZES, templatePathFor } from './paper.js'
 
@@ -39,7 +39,7 @@ const KNOWN_SIZES = Object.keys(SIZES)
 
 // Chunk types this writer owns. A repeated one is the signature of the old
 // buggy writer; keep the list in sync with writeNotePng below.
-export const CHUNK_TYPES = ['sVER', 'sINK', 'sLYT', 'sBKG', 'sCRP', 'sSTD', 'sPNA', 'sBKC', 'sBRL', 'sVec']
+export const CHUNK_TYPES = ['sVER', 'sINK', 'sLYT', 'sBKG', 'sCRP', 'sSTD', 'sPNA', 'sBKC', 'sBRL', 'sVec', 'sRST']
 
 function crc32(bytes) {
   let c = 0xffffffff
@@ -203,12 +203,21 @@ export function repairPng(png) {
 
 // meta mirrors the main-process writeNotePng contract:
 // { sizeName, orientation, template, templatePath?, bgColor, borderLines,
-//   fullPage?, inkGif?, vecJson? }
+//   fullPage?, inkGif?, vecJson?, rasterBase? }
+//
+// sRST is WriteCanvas' clean raster base: the imported page image (or the
+// previous sRST) WITHOUT this session's vector ink. The IDAT stays a flattened
+// page for Scrble compatibility; reloading draws sRST + sVec instead, so ink
+// is never baked twice.
 export function writeNotePng(png, meta = {}) {
   const entries = [{ type: 'sVER', data: u32be(3) }]
   if (meta.inkGif != null) {
     const ink = asBytes(meta.inkGif, 'inkGif')
     if (ink.byteLength) entries.push({ type: 'sINK', data: ink })
+  }
+  if (meta.rasterBase != null) {
+    const base = asBytes(meta.rasterBase, 'rasterBase')
+    if (base.byteLength) entries.push({ type: 'sRST', data: base })
   }
 
   const hasTemplate = meta.template && meta.template !== 'blank' && meta.template !== 'custom' ? 1 : 0
@@ -227,11 +236,12 @@ export function writeNotePng(png, meta = {}) {
   return upsertChunks(png, entries)
 }
 
-// One parse returns everything a page loader needs. inkGif is an owned copy,
-// so the caller can retain or mutate it; vecJson is already decoded UTF-8.
-// Set ink/vec to false when only metadata is needed (library scans) so a large
-// sINK is not copied and a large sVec is not decoded.
-export function readNotePng(png, { ink = true, vec = true } = {}) {
+// One parse returns everything a page loader needs. inkGif and rasterBase are
+// owned copies, so the caller can retain or mutate them; vecJson is already
+// decoded UTF-8. Set ink/vec/raster to false when only metadata is needed
+// (library scans) so a large sINK is not copied, a large sVec is not decoded
+// and a large sRST base is not copied.
+export function readNotePng(png, { ink = true, vec = true, raster = true } = {}) {
   const chunks = parseChunks(png)
   const find = type => chunks.find(c => c.type === type)
   const meta = {}
@@ -256,11 +266,14 @@ export function readNotePng(png, { ink = true, vec = true } = {}) {
   meta.size = sizeFromName(meta.sizeName)
   const inkChunk = find('sINK')
   const vecChunk = find('sVec')
+  const rasterChunk = find('sRST')
   meta.hasInkGif = !!inkChunk
+  meta.hasRasterBase = !!rasterChunk && rasterChunk.data.byteLength > 0
 
   return {
     meta,
     inkGif: ink && inkChunk ? new Uint8Array(inkChunk.data) : null,
     vecJson: vec && vecChunk ? decoder.decode(vecChunk.data) : null,
+    rasterBase: raster && rasterChunk && rasterChunk.data.byteLength ? new Uint8Array(rasterChunk.data) : null,
   }
 }

@@ -15,7 +15,7 @@ const PNG = Buffer.from(
 )
 const GIF = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x3b])
 const VEC = JSON.stringify({ v: 1, strokes: [{ pts: [{ x: 1, y: 2, p: 0.5 }] }], texts: [] })
-const SCRBLE_CHUNKS = ['sVER', 'sINK', 'sLYT', 'sBKG', 'sCRP', 'sSTD', 'sPNA', 'sBKC', 'sBRL', 'sVec']
+const SCRBLE_CHUNKS = ['sVER', 'sINK', 'sLYT', 'sBKG', 'sCRP', 'sSTD', 'sPNA', 'sBKC', 'sBRL', 'sVec', 'sRST']
 
 const meta = {
   sizeName: 'A4',
@@ -26,6 +26,7 @@ const meta = {
   fullPage: false,
   inkGif: GIF,
   vecJson: VEC,
+  rasterBase: PNG,
 }
 
 function parse(buffer) {
@@ -62,7 +63,7 @@ function splitIdat(png) {
 
 describe('png-toolkit Scrble chunk round-trip', () => {
   it('writes and reads every metadata field', () => {
-    const { meta: read, inkGif, vecJson } = readNotePng(writeNotePng(PNG, meta))
+    const { meta: read, inkGif, vecJson, rasterBase } = readNotePng(writeNotePng(PNG, meta))
     assert.equal(read.version, 3)
     assert.equal(read.sizeName, 'A4')
     assert.equal(read.size, 'a4')
@@ -75,6 +76,8 @@ describe('png-toolkit Scrble chunk round-trip', () => {
     assert.equal(read.hasInkGif, true)
     assert.deepEqual([...inkGif], [...GIF])
     assert.equal(vecJson, VEC)
+    assert.equal(read.hasRasterBase, true)
+    assert.deepEqual([...rasterBase], [...PNG])
 
     // flag payloads, not just their decoded metadata
     const raw = parse(writeNotePng(PNG, meta))
@@ -112,7 +115,7 @@ describe('png-toolkit Scrble chunk round-trip', () => {
   })
 
   it('defaults to Letter / blank when optional metadata is absent', () => {
-    const { meta: read, inkGif, vecJson } = readNotePng(writeNotePng(PNG, {}))
+    const { meta: read, inkGif, vecJson, rasterBase } = readNotePng(writeNotePng(PNG, {}))
     assert.equal(read.version, 3)
     assert.equal(read.sizeName, 'Letter')
     assert.equal(read.size, 'letter')
@@ -122,8 +125,10 @@ describe('png-toolkit Scrble chunk round-trip', () => {
     assert.equal(read.bgColor, '#FFFFFFFF')
     assert.equal(read.borderLines, true)
     assert.equal(read.hasInkGif, false)
+    assert.equal(read.hasRasterBase, false)
     assert.equal(inkGif, null)
     assert.equal(vecJson, null)
+    assert.equal(rasterBase, null)
   })
 
   it('preserves existing sINK/sVec when a later write omits them', () => {
@@ -136,6 +141,7 @@ describe('png-toolkit Scrble chunk round-trip', () => {
     const read = readNotePng(second)
     assert.deepEqual([...read.inkGif], [...GIF])
     assert.equal(read.vecJson, VEC)
+    assert.deepEqual([...read.rasterBase], [...PNG])
   })
 
   it('treats an unknown template path as blank while preserving the path', () => {
@@ -202,12 +208,29 @@ describe('png-toolkit legacy repair', () => {
   })
 })
 
+describe('legacy page raster fallback', () => {
+  it('keeps the whole PNG as the base only for pre-v2 pages without editable ink', () => {
+    const v1 = (strokes, texts = []) => JSON.stringify({ v: 1, strokes, texts })
+    const stroke = { pts: [{ x: 1, y: 2, p: 0.5 }] }
+    assert.equal(scrble.legacyRasterBase(null), true, 'imported, never saved')
+    assert.equal(scrble.legacyRasterBase(''), true)
+    assert.equal(scrble.legacyRasterBase(v1([])), true, 'legacy empty page has its image only in IDAT')
+    assert.equal(scrble.legacyRasterBase(v1([stroke])), false, 'legacy vectors stay editable')
+    assert.equal(scrble.legacyRasterBase(v1([], [{ txt: 'x', x: 1, y: 2, size: 10 }])), false)
+    assert.equal(scrble.legacyRasterBase(JSON.stringify({ v: 2, strokes: [], texts: [] })), false, 'v2 blank pages are not baked')
+    assert.equal(scrble.legacyRasterBase(JSON.stringify({ v: 2, strokes: [stroke], texts: [] })), false)
+    assert.equal(scrble.legacyRasterBase('{not json'), true, 'unreadable sVec must not risk the image')
+  })
+})
+
 describe('png-toolkit read options', () => {
-  it('can skip the large sINK/sVec payloads while still reporting their presence', () => {
-    const light = readNotePng(writeNotePng(PNG, meta), { ink: false, vec: false })
+  it('can skip the large sINK/sVec/sRST payloads while still reporting their presence', () => {
+    const light = readNotePng(writeNotePng(PNG, meta), { ink: false, vec: false, raster: false })
     assert.equal(light.meta.hasInkGif, true)
+    assert.equal(light.meta.hasRasterBase, true)
     assert.equal(light.inkGif, null)
     assert.equal(light.vecJson, null)
+    assert.equal(light.rasterBase, null)
   })
 })
 
@@ -223,8 +246,13 @@ describe('png-toolkit main-process interop', () => {
     assert.equal(read.bgColor, '#FF102030')
     assert.equal(read.borderLines, false)
     assert.equal(read.hasInkGif, true)
+    assert.equal(read.hasRasterBase, true)
     assert.equal(scrble.extractVecJson(bytes), VEC)
     assert.deepEqual(scrble.extractInkGif(bytes), Buffer.from(GIF))
+    const page = scrble.readNotePage(bytes)
+    assert.equal(page.meta.hasRasterBase, true)
+    assert.deepEqual(page.rasterBase, Buffer.from(PNG))
+    assert.equal(scrble.readNoteMeta(bytes).hasRasterBase, true)
   })
 
   it('main/scrble-format output is readable by the toolkit', () => {

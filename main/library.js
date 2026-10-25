@@ -334,6 +334,123 @@ class Library {
     return file
   }
 
+  async duplicatePage(noteId, pageIndex) {
+    const item = this.get(noteId)
+    if (!item || item.type !== 'note') throw new Error('note not found')
+    if (!item.note) item.note = { pages: [{}], currentPage: 0 }
+    const pages = item.note.pages
+    const index = Number(pageIndex)
+    if (!Number.isInteger(index) || index < 0 || index >= pages.length) throw new Error('bad page index')
+    const source = pages[index]
+    if (!source.file) throw new Error('save the page before duplicating it')
+    const buf = await fs.readFile(this.pagePath(source.file))
+    const newIndex = pages.length
+    let file = pageFileName(item.name, newIndex)
+    // A free canonical name is ideal; a stale orphan must not be overwritten.
+    try {
+      await fs.access(this.pagePath(file))
+      file = `${sanitizeName(item.name)}#copy-${Date.now()}.png`
+    } catch { }
+    const owner = this.index.items.find(i => i.type === 'note' && i.id !== item.id &&
+      (i.note?.pages || []).some(p => p.file && String(p.file).toLowerCase() === file.toLowerCase()))
+    if (owner) throw new Error(`Page file ${file} is already used by note "${owner.name}"`)
+    const target = this.pagePath(file)
+    const tmp = `${target}.${process.pid}.${Date.now()}.tmp.png`
+    try {
+      await fs.writeFile(tmp, buf)
+      await renameRetry(tmp, target)
+    } finally {
+      await fs.unlink(tmp).catch(() => { })
+    }
+    const entry = JSON.parse(JSON.stringify(source))
+    entry.file = file
+    pages.push(entry)
+    item.modified = Date.now()
+    try {
+      await this.persist()
+    } catch (err) {
+      pages.pop()
+      await fs.unlink(target).catch(() => { })
+      throw err
+    }
+    return { index: newIndex, file }
+  }
+
+  async deletePage(noteId, pageIndex) {
+    const item = this.get(noteId)
+    if (!item || item.type !== 'note') throw new Error('note not found')
+    if (!item.note || !Array.isArray(item.note.pages)) throw new Error('note has no pages')
+    const pages = item.note.pages
+    const index = Number(pageIndex)
+    if (!Number.isInteger(index) || index < 0 || index >= pages.length) throw new Error('bad page index')
+    if (pages.length <= 1) throw new Error('a note needs at least one page')
+    const removed = pages[index]
+    const oldModified = item.modified
+    const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const staged = []
+    // Stage every surviving file under a temporary name, then persist an index
+    // that names those temp files. Every intermediate state therefore points at
+    // a file that exists; canonical #NN names are restored afterwards.
+    try {
+      for (let i = 0; i < pages.length; i++) {
+        if (i === index) continue
+        const page = pages[i]
+        if (!page.file) continue
+        const from = this.pagePath(page.file)
+        const tmp = `.wc-page-${item.id}-${i}-${stamp}.png`
+        const to = this.pagePath(tmp)
+        await renameRetry(from, to)
+        staged.push({ page, oldFile: page.file, tmp, from, to })
+        page.file = tmp
+      }
+      pages.splice(index, 1)
+      item.modified = Date.now()
+      await this.persist()
+    } catch (err) {
+      for (const s of staged.reverse()) {
+        s.page.file = s.oldFile
+        try { await renameRetry(s.to, s.from) } catch { }
+      }
+      if (!pages.includes(removed)) pages.splice(index, 0, removed)
+      item.modified = oldModified
+      throw err
+    }
+
+    // The index is valid now. Drop the removed page and promote temp names to
+    // the canonical #NN names; a failure leaves a usable temp name in place.
+    const referenced = new Set(pages.map(p => p.file && String(p.file).toLowerCase()).filter(Boolean))
+    if (removed && removed.file && !referenced.has(String(removed.file).toLowerCase())) {
+      try { await fs.unlink(this.pagePath(removed.file)) } catch { }
+    }
+    const promoted = []
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i]
+      const s = staged.find(x => x.page === page)
+      if (!s || page.file !== s.tmp) continue
+      const finalFile = pageFileName(item.name, i)
+      if (finalFile === s.tmp) continue
+      try {
+        await fs.copyFile(this.pagePath(s.tmp), this.pagePath(finalFile))
+        page.file = finalFile
+        promoted.push({ page, tmp: s.tmp, finalFile })
+      } catch (err) {
+        console.warn('page canonical rename failed:', err.message)
+      }
+    }
+    try {
+      await this.persist()
+    } catch (err) {
+      for (const p of promoted) p.page.file = p.tmp
+      console.warn('page index canonical update failed:', err.message)
+    }
+    const used = new Set(pages.map(p => p.file && String(p.file).toLowerCase()).filter(Boolean))
+    for (const s of staged) if (!used.has(s.tmp.toLowerCase())) { try { await fs.unlink(this.pagePath(s.tmp)) } catch { } }
+    for (const p of promoted) {
+      if (p.page.file !== p.finalFile) { try { await fs.unlink(this.pagePath(p.finalFile)) } catch { } }
+    }
+    return pages.map(p => ({ file: p.file || null, paper: p.paper ? JSON.parse(JSON.stringify(p.paper)) : null }))
+  }
+
   async readPage(file) {
     return fs.readFile(this.pagePath(file))
   }
@@ -360,4 +477,4 @@ class Library {
   }
 }
 
-module.exports = { Library, sanitizeName, pageFileName }
+module.exports = { Library, sanitizeName, pageFileName, renameRetry }

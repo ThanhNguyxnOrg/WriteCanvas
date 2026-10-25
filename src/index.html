@@ -16,7 +16,7 @@
     <symbol id="ic-redo" viewBox="0 0 24 24"><path d="M15.5 6.5 20 11l-4.5 4.5 M20 11H10a6 6 0 0 0-6 6" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="ic-page" viewBox="0 0 24 24"><path d="M6 3.5h9l4 4V20.5H6z M14.5 3.5V8h4.5" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></symbol>
     <symbol id="ic-tune" viewBox="0 0 24 24"><path d="M7 4v6m0 4v6m10-16v10m0 4v2 M4.5 10h5 M14.5 14h5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/></symbol>
-    <symbol id="ic-export" viewBox="0 0 24 24"><path d="M12 3.5v11m0 0 4-4m-4 4-4-4 M4.5 17.5v3h15v-3" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="ic-chevron-down" viewBox="0 0 24 24"><path d="m7 9.5 5 5 5-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="ic-play" viewBox="0 0 24 24"><path d="M8 5.5 18 12 8 18.5z" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round"/></symbol>
     <symbol id="ic-area" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1.5" stroke="currentColor" stroke-width="1.7" fill="none"/></symbol>
     <symbol id="ic-paste" viewBox="0 0 24 24"><path d="M9 4.5h6v2.8H9z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/><path d="M6.6 5.4V6.8H4.9V21h14.2V6.8h-1.7" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></symbol>
@@ -54,13 +54,13 @@
     <div id="capRow"><span id="capTitle">WriteCanvas</span></div>
     <header id="topbar">
       <div class="tb-group tb-file" id="tbLeft">
-        <button id="btnMenu" class="tb-btn" title="Library and menu" aria-label="Library and menu" aria-keyshortcuts="Control+O"><svg><use href="#ic-menu"/></svg></button>
+        <button id="btnMenu" class="tb-btn" title="Library and menu" aria-label="Library and menu"><svg><use href="#ic-menu"/></svg></button>
         <div class="tb-split tb-save-split">
-          <button id="btnSave" class="tb-btn" title="Save now (Ctrl+S)" aria-label="Save now" aria-keyshortcuts="Control+S"><svg><use href="#ic-save"/></svg></button>
-          <button id="btnSaveMore" class="tb-more tb-export" title="Save and export options" aria-label="Save and export options" aria-haspopup="menu" aria-expanded="false"><svg><use href="#ic-export"/></svg></button>
+          <button id="btnSave" class="tb-btn" title="Save all changed pages" aria-label="Save all changed pages"><svg><use href="#ic-save"/></svg></button>
+          <button id="btnSaveMore" class="tb-more tb-save-menu" title="Save options and export" aria-label="Save options and export" aria-haspopup="menu" aria-expanded="false"><svg><use href="#ic-chevron-down"/></svg></button>
         </div>
-        <button id="btnUndo" class="tb-btn" title="Undo (Ctrl+Z)" aria-label="Undo" aria-keyshortcuts="Control+Z" disabled><svg><use href="#ic-undo"/></svg></button>
-        <button id="btnRedo" class="tb-btn" title="Redo (Ctrl+Y)" aria-label="Redo" aria-keyshortcuts="Control+Y" disabled><svg><use href="#ic-redo"/></svg></button>
+        <button id="btnUndo" class="tb-btn" title="Undo" aria-label="Undo" disabled><svg><use href="#ic-undo"/></svg></button>
+        <button id="btnRedo" class="tb-btn" title="Redo" aria-label="Redo" disabled><svg><use href="#ic-redo"/></svg></button>
         <button id="btnNew" class="tb-btn" title="New note" aria-label="New note"><svg><use href="#ic-page"/></svg></button>
         <button id="btnPaper" class="tb-btn" title="Paper and board" aria-label="Paper and board"><svg><use href="#ic-paper"/></svg></button>
       </div>
@@ -75,11 +75,11 @@
         <button class="tb-toggle" id="tbObject" title="Shapes and text (G)" aria-label="Shapes and text" aria-pressed="false" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#ic-shapes"/></svg><span class="tb-label">Shapes</span><span class="tb-caret" aria-hidden="true"></span></button>
         <div class="tb-tool-split">
           <button class="tb-toggle" id="tbEraser" title="Eraser (E)" aria-label="Eraser" aria-pressed="false"><svg><use href="#ic-eraser"/></svg><span class="tb-label">Eraser</span></button>
-          <button class="tb-modebtn" data-fly="eraserFlyout" title="Eraser modes" aria-label="Eraser mode: Stroke. Open options" aria-haspopup="dialog" aria-expanded="false"><span id="erModeLabel">Stroke</span><span class="mode-chevron" aria-hidden="true">▾</span></button>
+          <button class="tb-modebtn" data-fly="eraserFlyout" title="Eraser modes" aria-label="Eraser mode: Stroke. Open options" aria-haspopup="dialog" aria-expanded="false"><span id="erModeLabel">Stroke</span><svg class="mode-chevron" aria-hidden="true"><use href="#ic-chevron-down"/></svg></button>
         </div>
         <div class="tb-tool-split">
           <button class="tb-toggle" id="tbLasso" title="Select strokes - click or lasso" aria-label="Select strokes" aria-pressed="false"><svg><use href="#ic-lasso"/></svg><span class="tb-label">Select</span></button>
-          <button class="tb-modebtn" data-fly="selectFlyout" title="Selection modes" aria-label="Selection mode: Lasso. Open options" aria-haspopup="dialog" aria-expanded="false"><span id="selModeLabel">Lasso</span><span class="mode-chevron" aria-hidden="true">▾</span></button>
+          <button class="tb-modebtn" data-fly="selectFlyout" title="Selection modes" aria-label="Selection mode: Lasso. Open options" aria-haspopup="dialog" aria-expanded="false"><span id="selModeLabel">Lasso</span><svg class="mode-chevron" aria-hidden="true"><use href="#ic-chevron-down"/></svg></button>
         </div>
         <button class="tb-toggle" id="tbEye" title="Pan and view" aria-label="Pan and view" aria-pressed="false"><svg><use href="#ic-hand"/></svg><span class="tb-label">Pan</span></button>
       </div>
@@ -91,9 +91,9 @@
       <aside id="sidebar">
         <div id="pagesBar"></div>
         <div id="pageNav" role="group" aria-label="Page navigation">
-          <button id="btnPrevPage" title="Previous page (Ctrl+PageUp)" aria-label="Previous page">‹</button>
+          <button id="btnPrevPage" title="Previous page" aria-label="Previous page">‹</button>
           <button id="btnAddPage" title="Add page" aria-label="Add page">+</button>
-          <button id="btnNextPage" title="Next page (Ctrl+PageDown)" aria-label="Next page">›</button>
+          <button id="btnNextPage" title="Next page" aria-label="Next page">›</button>
         </div>
       </aside>
 
@@ -140,7 +140,13 @@
             <span class="flyout-title">Note details</span>
             <button id="saveClose" class="flyout-x" title="Close" aria-label="Close note details">&#10005;</button>
           </div>
-          <p class="fs-hint">Saved in your library as an editable note. Reopen it any time to keep writing.</p>
+          <p class="fs-hint">Normal Save writes every changed page here automatically — no file dialog. Use “Save editable copy” in the Save menu for a separate .wcanvas file.</p>
+          <label class="fs-label">Library location</label>
+          <div id="saveLibraryPath" class="fs-loc-path"></div>
+          <div class="fs-loc-actions">
+            <button id="saveChangeLibrary" class="fs-btn" type="button" title="Choose a different library folder">Change…</button>
+            <button id="saveOpenLibrary" class="fs-btn" type="button" title="Open the library folder">Open folder</button>
+          </div>
           <label class="fs-label" for="saveTitle">Title</label>
           <div class="fs-input">
             <input id="saveTitle" type="text" autocomplete="off" spellcheck="false">
@@ -155,6 +161,11 @@
 
         <div id="paperColorFlyout" class="flyout hidden" role="dialog" aria-label="Board color">
           <div class="flyout-head"><span class="flyout-title">Board color</span><button id="paperColorClose" class="flyout-x" title="Close" aria-label="Close board color">&#10005;</button></div>
+          <div class="flyout-label">Apply to</div>
+          <div class="board-scope" role="group" aria-label="Apply board color to">
+            <button id="paperScopePage" class="board-scope-btn" aria-pressed="true">This page</button>
+            <button id="paperScopeAll" class="board-scope-btn" aria-pressed="false" title="Apply to all pages in this note">All pages</button>
+          </div>
           <div class="board-presets">
             <button class="board-preset" data-board="#FFFFFF" aria-pressed="false"><span class="bp-preview bp-light"></span><span>Light</span></button>
             <button class="board-preset" data-board="#15181D" aria-pressed="false"><span class="bp-preview bp-dark"></span><span>Dark</span></button>
@@ -187,6 +198,9 @@
         <div id="libraryFlyout" class="hidden">
           <div id="libHead">Library</div>
           <div id="tree"></div>
+          <div id="libFoot">
+            <button id="btnShortcuts" type="button"><span>Keyboard shortcuts</span><kbd id="libShortcutHint">?</kbd></button>
+          </div>
         </div>
         <div id="shapeFlyout" class="flyout hidden" role="dialog" aria-label="Shapes and text">
           <div class="flyout-head"><span class="flyout-title">Shapes &amp; text</span><button id="shapeClose" class="flyout-x" title="Close" aria-label="Close shapes">&times;</button></div>
@@ -239,7 +253,6 @@
         <button id="ppPortrait" class="pp-btn accent" aria-pressed="true"><svg><use href="#ic-portrait"/></svg>Portrait</button>
         <button id="ppLandscape" class="pp-btn" aria-pressed="false"><svg><use href="#ic-landscape"/></svg>Landscape</button>
         <span class="pp-rule" aria-hidden="true"></span>
-        <button id="ppBoardDark" class="pp-btn" aria-pressed="false" title="Toggle a dark drawing board"><svg><use href="#ic-moon"/></svg>Dark board</button>
         <button id="ppBgColor" class="pp-btn plain"><svg><use href="#ic-palette"/></svg>Board color</button>
         <span class="pp-rule" aria-hidden="true"></span>
         <label class="pp-switch">
@@ -256,6 +269,18 @@
 
   <div id="ctxMenu" class="ctxmenu hidden"></div>
   <div id="dlg" class="hidden"><div id="dlgBox"><div id="dlgText"></div><input id="dlgInput" /><div><button id="dlgOk">OK</button><button id="dlgCancel">Cancel</button></div></div></div>
+  <div id="shortcutSheet" class="hidden" role="dialog" aria-modal="true" aria-labelledby="shortcutTitle">
+    <div id="shortcutBox">
+      <div class="shortcut-head">
+        <div>
+          <div id="shortcutTitle">Keyboard shortcuts</div>
+          <div id="shortcutPlatform" class="shortcut-sub"></div>
+        </div>
+        <button id="shortcutClose" class="flyout-x" title="Close" aria-label="Close keyboard shortcuts">&#10005;</button>
+      </div>
+      <div id="shortcutList"></div>
+    </div>
+  </div>
 
   <script type="module" src="js/app.js"></script>
 </body>

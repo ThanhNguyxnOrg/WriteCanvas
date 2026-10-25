@@ -1,10 +1,11 @@
 // Editor: canvas stack, tools, undo/redo, pages, save/export, replay.
 
 import { bridge } from './bridge.js'
-import { SIZES, paperDocSize, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
+import { SIZES, paperDocSize, paperMM, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
 import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
 import { clipLineToRect } from './ruler.js'
 import { Recorder, playReplay } from './replay.js'
+import { applyShortcutHints, initShortcutSheet, openShortcutSheet, isShortcutSheetOpen, modShortcut } from './shortcuts.js'
 
 const $ = id => document.getElementById(id)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -37,8 +38,6 @@ export const S = {
 const scratch = document.createElement('canvas')
 const scratchCtx = scratch.getContext('2d')
 const DEFAULT_PAPER = () => ({ size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF', borderLines: true })
-const DARK_BOARD = '#15181D'
-const LIGHT_BOARD = '#FFFFFF'
 // Muted board colours: paper-like lights and pad.ws/Excalidraw-like darks.
 const BOARD_PALETTE = [
   '#FFFFFF', '#FBF8F1', '#F3F6FA', '#E8F0F8', '#F7E9E7', '#EAF4EA',
@@ -73,6 +72,11 @@ const validStroke = s => s && Array.isArray(s.pts) && s.pts.length > 0 &&
 const validText = t => t && typeof t.txt === 'string' && t.txt.length > 0 &&
   Number.isFinite(t.x) && Number.isFinite(t.y) && Number.isFinite(t.size)
 let openSeq = 0
+// A note load replaces S.pages asynchronously. Until it finishes there is no
+// valid page to edit/save, so interaction and saving wait for it.
+let noteBusy = false
+let loadPromise = Promise.resolve()
+let noteLoadToken = 0
 
 function disposePages() {
   for (const p of S.pages) {
@@ -360,94 +364,140 @@ function renderPage(page) {
 }
 
 export async function openNote(id) {
+  // Two opens must never interleave page arrays. Wait out the active load,
+  // then re-check whether this note is already on screen.
+  if (noteBusy) await loadPromise.catch(() => { })
   // clicking the already-open note must not reload from disk and throw away
   // the in-memory page that is still inside the autosave debounce window
-  if (S.noteId === id && S.note) return
+  if (S.noteId === id && S.note && !noteBusy) return
   const seq = ++openSeq
+  // an in-progress text box belongs to the outgoing note
+  if (textEdit) finishText(false)
+  // A live gesture must not survive the switch: its page array is about to be
+  // replaced and the stroke would otherwise commit into the incoming note.
+  cancelGesture()
+  activePointer = null
+  noteBusy = true
+  const token = ++noteLoadToken
   if (S.noteId && S.noteId !== id) {
-    const ok = await flushCurrentPage()
-    if (!ok) { setSaveState('err'); showHint('Save failed — note not switched'); return }
+    // noteBusy is already set so no pointer can start a new gesture while the
+    // outgoing note is flushed; skip flush's own wait for loadPromise.
+    const ok = await flushCurrentPage({ internal: true })
     if (seq !== openSeq) return
-  }
-  const res = await bridge.loadNote(id)
-  if (seq !== openSeq) return
-  if (!res || !res.pages || !res.pages.length) return
-  disposePages()
-  S.noteId = id
-  S.note = { ...res.note }
-  S.pages = res.pages.map((p) => {
-    const meta = p.paperMeta
-    const paper = meta
-      ? { size: meta.size, orientation: meta.orientation, template: meta.template, bg: meta.bgColor || '#FFFFFFFF', borderLines: meta.borderLines !== false }
-      : (S.note.paper ? { ...S.note.paper } : DEFAULT_PAPER())
-    const page = newPage(paper)
-    page.file = p.file
-    if (p.paperMeta) page.importedChunks = true
-    // vector restore: a page saved by us reopens fully editable (strokes +
-    // texts); only legacy/imported-only pages fall back to a raster bitmap
-    if (p.vecJson) {
-      try {
-        const v = JSON.parse(p.vecJson)
-        if (v && Array.isArray(v.strokes)) {
-          page.strokes = v.strokes.filter(validStroke)
-          page.texts = Array.isArray(v.texts) ? v.texts.filter(validText) : []
-        }
-      } catch { /* malformed chunk → raster fallback */ }
-    }
-    return page
-  })
-  // Dark mode owns the default sheet colour. Custom board colours are left
-  // alone; only the factory white sheet follows the interface theme.
-  const darkTheme = document.body.classList.contains('dark')
-  if (darkTheme) {
-    for (const page of S.pages) {
-      if (boardHex(page) === LIGHT_BOARD) {
-        page.paper.bg = '#FF' + DARK_BOARD.slice(1)
-        page.dirty = true
-      }
+    if (!ok) {
+      if (token === noteLoadToken) noteBusy = false
+      setSaveState('err'); showHint('Save failed — note not switched'); return
     }
   }
-  localStorage.setItem('wc:lastNote', String(id))
-  if (host && host.selectNote) host.selectNote(id)
-  S.hadZoom = false
-  S.zoom = 1
-  setPage(0)
-  if (darkTheme) {
-    ensureThemePenContrast()
-    scheduleAutosave()
-  }
-  // decode rasters + capture replays (async, per page). Pages that restored
-  // their vectors don't need the raster (and would double-ink under strokes).
-  for (let i = 0; i < res.pages.length; i++) {
-    // another note was opened while we were decoding: never write this note's
-    // bitmap into the new note's page array
-    if (seq !== openSeq || S.noteId !== id) return
-    const p = res.pages[i]
-    if (p.inkGif) S.pages[i].inkGif = p.inkGif
-    if (!p.exists || !p.bytes) continue
-    if (S.pages[i].strokes.length || S.pages[i].texts.length) { p.bytes = null; continue }
+  const run = (async () => {
     try {
-      const blob = new Blob([p.bytes], { type: 'image/png' })
-      const bmp = await createImageBitmap(blob)
-      if (seq !== openSeq || S.noteId !== id) { if (bmp.close) bmp.close(); return }
-      S.pages[i].rasterBitmap = bmp
-      p.bytes = null
-      if (i === S.currentPage) renderPage(S.pages[i])
+      let res = null
+      try { res = await bridge.loadNote(id) } catch (err) { console.error('loadNote failed', err) }
+      if (seq !== openSeq || token !== noteLoadToken) return
+      if (!res || !res.pages || !res.pages.length) { showHint('Could not open note'); return }
+      disposePages()
+      S.noteId = id
+      orphanNoteId = null
+      S.note = { ...res.note }
+      // -1 (not the outgoing note's index) so setPage treats this as a fresh
+      // switch and never saves/scrolls the wrong sheet.
+      S.currentPage = -1
+      S.pages = res.pages.map((p) => {
+        const meta = p.paperMeta
+        const paper = meta
+          ? { size: meta.size, orientation: meta.orientation, template: meta.template, bg: meta.bgColor || '#FFFFFFFF', borderLines: meta.borderLines !== false }
+          : (S.note.paper ? { ...S.note.paper } : DEFAULT_PAPER())
+        const page = newPage(paper)
+        page.file = p.file
+        page.loadError = !!p.loadError
+        if (p.paperMeta) page.importedChunks = true
+        // vector restore: a page saved by us reopens fully editable (strokes +
+        // texts); legacy/imported-only pages fall back to the raster base
+        if (p.vecJson) {
+          try {
+            const v = JSON.parse(p.vecJson)
+            if (v && Array.isArray(v.strokes)) {
+              page.strokes = v.strokes.filter(validStroke)
+              page.texts = Array.isArray(v.texts) ? v.texts.filter(validText) : []
+            }
+          } catch { /* malformed chunk → raster fallback */ }
+        }
+        return page
+      })
+      // Dark mode is chrome-only: a white sheet stays white when the interface
+      // theme changes. Board colour is explicit page data.
+      if (res.pages.some(p => p.loadError)) {
+        showHint('Some pages could not be read — they will not be overwritten')
+      }
+      try { localStorage.setItem('wc:lastNote', String(id)) } catch { /* storage unavailable */ }
+      if (host && host.selectNote) host.selectNote(id)
+      S.hadZoom = false
+      S.zoom = 1
+      S.pullPx = 0
+      wheelOverscroll = 0
+      hidePullHint()
+      hidePagePeek()
+      setPage(0, true)
+      // the rail may still show the previous note when both have the same
+      // page count; force a rebuild with this note's sheets
       refreshPages()
-    } catch (err) { console.error('decode page failed', err) }
-  }
+      // decode the clean raster base per page. Pages that only restored their
+      // vectors have nothing to decode; imported pages keep their image.
+      for (let i = 0; i < res.pages.length; i++) {
+        // another note was opened while we were decoding: never write this
+        // note's bitmap into the new note's page array
+        if (seq !== openSeq || token !== noteLoadToken || S.noteId !== id) return
+        const p = res.pages[i]
+        if (p.inkGif) S.pages[i].inkGif = p.inkGif
+        const rasterBytes = p.rasterBase || p.bytes
+        if (!p.exists || !rasterBytes) continue
+        try {
+          const blob = new Blob([rasterBytes], { type: 'image/png' })
+          const bmp = await createImageBitmap(blob)
+          if (seq !== openSeq || token !== noteLoadToken || S.noteId !== id) {
+            if (bmp.close) bmp.close()
+            return
+          }
+          S.pages[i].rasterBitmap = bmp
+          if (i === S.currentPage) renderPage(S.pages[i])
+          // drop the vector-only thumbnail cached before the base decoded
+          refreshThumbOf(S.pages[i])
+        } catch (err) { console.error('decode page failed', err) }
+      }
+      if (seq !== openSeq || token !== noteLoadToken || S.noteId !== id) return
+    } finally {
+      if (token === noteLoadToken) noteBusy = false
+    }
+  })()
+  loadPromise = run
+  await run
 }
 
 // Clear the editor when the open note is deleted. Leaving S.noteId pointing at
 // a removed note made the next openNote() try to flush a file that no longer
 // exists, so the app refused to switch notes.
 export function closeNote() {
+  // invalidate any in-flight load so it cannot repopulate the cleared editor
+  openSeq++
+  noteLoadToken++
+  noteBusy = false
+  loadPromise = Promise.resolve()
+  cancelTextEdit()
+  activePointer = null
+  cancelGesture()
+  clearTimeout(autosaveTimer)
+  autosaveTimer = null
+  clearTimeout(retryTimer)
+  retryTimer = null
   disposePages()
   clearSelection()
   S.noteId = null
+  orphanNoteId = null
   S.note = null
   S.pages = []
   S.currentPage = -1
+  S.pullPx = 0
+  wheelOverscroll = 0
   hidePullHint()
   hidePagePeek()
   const host = $('canvasHost')
@@ -459,15 +509,17 @@ export function closeNote() {
   }
   const bar = $('pagesBar')
   if (bar) bar.innerHTML = ''
+  setSaveState('idle')
   updateTitle()
   syncPageNav()
   syncUndoRedo()
 }
 
 function sanitizePage() {
-  // persist outgoing page before switching
+  // Persist the outgoing page (and anything else still pending) in the
+  // background; switching sheets must not wait on the disk.
   const out = S.pages[S.currentPage]
-  if (out && out.dirty) saveCurrentPage()
+  if (out && (out.dirty || out.recorder.changed)) saveCurrentPage()
 }
 
 function rememberPageScroll(page) {
@@ -498,8 +550,18 @@ function playPageEnter(dir = 1) {
   pageEnterTimer = setTimeout(() => stack.classList.remove('page-enter-next', 'page-enter-prev'), 240)
 }
 
-function setPage(i) {
+function setPage(i, internal = false) {
   if (!S.noteId || !S.pages.length || i < 0 || i >= S.pages.length) return
+  // A note load owns the page array until it finishes; only the load itself
+  // may select a page. Clicks and shortcuts during that window are dropped.
+  if (noteBusy && !internal) return
+  // Re-selecting the current row must not scroll back to the top of the page.
+  if (i === S.currentPage) return
+  if (!internal && textEdit) finishText(false)
+  cancelGesture()
+  wheelOverscroll = 0
+  hidePullHint()
+  hidePagePeek()
   const prevPage = S.currentPage
   const switching = prevPage !== i
   if (switching) {
@@ -531,11 +593,16 @@ function setPage(i) {
 function addPage() {
   // No note open means there is nothing to add a sheet to. Without this guard
   // the rail "+" created phantom pages under a "No note" title.
-  if (!S.noteId) return
+  if (!S.noteId || noteBusy) return
   const page = current()
   const paper = page ? { ...page.paper } : DEFAULT_PAPER()
-  S.pages.push(newPage(paper))
+  const added = newPage(paper)
+  // A blank page is still a change: it has to reach index.json and get its own
+  // PNG, otherwise reopening the note silently drops the sheet.
+  added.dirty = true
+  S.pages.push(added)
   setPage(S.pages.length - 1)
+  scheduleAutosave()
 }
 
 // ---------- pages rail (left, like the original app) ----------
@@ -558,8 +625,18 @@ function refreshPages() {
     t.title = 'Page ' + (i + 1)
     item.append(num, t)
     item.onclick = () => setPage(i)
+    item.oncontextmenu = e => {
+      e.preventDefault()
+      item.focus()
+      pageMenu(i, e.clientX, e.clientY)
+    }
     item.onkeydown = e => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setPage(i) }
+      else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+        e.preventDefault()
+        const r = item.getBoundingClientRect()
+        pageMenu(i, r.left + 14, r.bottom - 8)
+      }
     }
     bar.appendChild(item)
     drawThumb(t, i)
@@ -572,6 +649,125 @@ function syncPageNav() {
   if (prev) prev.disabled = S.currentPage <= 0
   if (next) next.disabled = S.currentPage < 0 || S.currentPage >= S.pages.length - 1
   if (add) add.disabled = !S.noteId
+}
+
+async function pageFromPayload(p) {
+  const meta = p.paperMeta
+  const paper = meta
+    ? { size: meta.size, orientation: meta.orientation, template: meta.template, bg: meta.bgColor || '#FFFFFFFF', borderLines: meta.borderLines !== false }
+    : (S.note && S.note.paper ? { ...S.note.paper } : DEFAULT_PAPER())
+  const page = newPage(paper)
+  page.file = p.file || null
+  page.loadError = !!p.loadError
+  if (p.paperMeta) page.importedChunks = true
+  if (p.inkGif) page.inkGif = p.inkGif
+  if (p.vecJson) {
+    try {
+      const v = JSON.parse(p.vecJson)
+      if (v && Array.isArray(v.strokes)) {
+        page.strokes = v.strokes.filter(validStroke)
+        page.texts = Array.isArray(v.texts) ? v.texts.filter(validText) : []
+      }
+    } catch { /* raster fallback */ }
+  }
+  const rasterBytes = p.rasterBase || p.bytes
+  if (rasterBytes) {
+    try {
+      page.rasterBitmap = await createImageBitmap(new Blob([rasterBytes], { type: 'image/png' }))
+    } catch (err) {
+      console.error('decode duplicated page failed', err)
+    }
+  }
+  return page
+}
+
+async function duplicatePage(index) {
+  const noteId = S.noteId
+  const source = S.pages[index]
+  if (!noteId || !source) return
+  if (source.loadError) { showHint('Cannot duplicate an unreadable page'); return }
+  // A pristine blank page has no file yet; make it pending so flushCurrentPage
+  // gives main something to copy.
+  if (!source.file) source.dirty = true
+  const saved = await flushCurrentPage()
+  if (!saved) { showHint('Duplicate cancelled — save failed'); return }
+  if (S.noteId !== noteId) return
+  try {
+    const res = await bridge.duplicatePage(noteId, index)
+    if (S.noteId !== noteId) return
+    const payload = await bridge.loadPage(noteId, res.index)
+    if (!payload || !payload.file) { showHint('Page copied to disk, but could not be opened'); return }
+    const page = await pageFromPayload(payload)
+    if (S.noteId !== noteId) {
+      if (page.rasterBitmap && typeof page.rasterBitmap.close === 'function') page.rasterBitmap.close()
+      return
+    }
+    S.pages.push(page)
+    setPage(S.pages.length - 1, true)
+    showHint(`Page ${index + 1} duplicated`)
+  } catch (err) {
+    console.error('duplicate page failed', err)
+    showHint(`Duplicate failed — ${err && err.message ? err.message : 'unknown error'}`)
+  }
+}
+
+async function deletePageAt(index) {
+  const noteId = S.noteId
+  const page = S.pages[index]
+  if (!noteId || !page) return
+  if (S.pages.length <= 1) { showHint('A note needs at least one page'); return }
+  const { askConfirm } = await import('./ctx.js')
+  const confirmed = await askConfirm(`Delete page ${index + 1}? This cannot be undone.`)
+  if (!confirmed) return
+  const saved = await flushCurrentPage()
+  if (!saved) { showHint('Delete cancelled — save failed'); return }
+  if (S.noteId !== noteId) return
+  try {
+    const res = await bridge.deletePage(noteId, index)
+    if (S.noteId !== noteId) return
+    const currentIndex = S.currentPage
+    if (page.rasterBitmap && typeof page.rasterBitmap.close === 'function') page.rasterBitmap.close()
+    S.pages.splice(index, 1)
+    if (res && Array.isArray(res.pages)) {
+      for (let i = 0; i < S.pages.length; i++) {
+        if (res.pages[i]) S.pages[i].file = res.pages[i].file || S.pages[i].file
+      }
+    }
+    const removedCurrent = index === currentIndex
+    if (index < currentIndex) S.currentPage = currentIndex - 1
+    else if (removedCurrent) S.currentPage = Math.min(index, S.pages.length - 1)
+    if (removedCurrent) {
+      clearSelection()
+      const nextPage = current()
+      if (nextPage) {
+        renderPage(nextPage)
+        applyTransform()
+        restorePageScroll(nextPage)
+      }
+    }
+    refreshPages()
+    updateTitle()
+    syncPageNav()
+    syncUndoRedo()
+    showHint(`Page ${index + 1} deleted`)
+  } catch (err) {
+    console.error('delete page failed', err)
+    showHint(`Delete failed — ${err && err.message ? err.message : 'unknown error'}`)
+  }
+}
+
+async function pageMenu(index, x, y) {
+  const page = S.pages[index]
+  if (!page || !S.noteId) return
+  const { pick } = await import('./ctx.js')
+  const total = S.pages.length
+  pick([
+    { header: `Page ${index + 1}${index === S.currentPage ? ' · current' : ''}` },
+    { label: 'Duplicate page', act: () => duplicatePage(index) },
+    { label: `Export page ${index + 1} as PNG…`, act: () => exportImg('png', index) },
+    '-',
+    { label: 'Delete page…', danger: true, disabled: total <= 1, act: () => deletePageAt(index) },
+  ], x, y)
 }
 
 // Only the selected row changes during a page switch. Rebuilding the whole rail
@@ -594,16 +790,11 @@ function syncPageRail() {
 function drawThumb(t, i) {
   if (!t) return
   const page = S.pages[i]
-  const hasContent = page.strokes.length || (page.texts && page.texts.length) || page.rasterBitmap
-  // pages with no ink show the light-blue placeholder (06-save, page 2)
-  if (!hasContent) {
-    t.style.backgroundImage = ''
-    t.classList.add('placeholder')
-    page.thumbUrl = ''
-    return
-  }
-  t.classList.remove('placeholder')
+  if (!page) return
   const { w, h } = docSize(page)
+  // The tile follows the sheet's real aspect ratio; a fixed 140×186 box both
+  // cropped landscape pages and left the empty page invisible in dark mode.
+  t.style.aspectRatio = `${w} / ${h}`
   const small = document.createElement('canvas')
   small.width = 176; small.height = Math.round(176 * h / w)
   const sc = small.getContext('2d')
@@ -614,20 +805,33 @@ function drawThumb(t, i) {
       const layer = $(id)
       if (layer) sc.drawImage(layer, 0, 0, small.width, small.height)
     }
-    const url = small.toDataURL()
-    page.thumbUrl = url
-    t.style.backgroundImage = `url(${url})`
   } else if (page.thumbUrl) {
     // Reuse the cached thumbnail. It is refreshed whenever the page is edited
     // or before the page is left.
     t.style.backgroundImage = `url(${page.thumbUrl})`
+    return
+  } else if (!page.strokes.length && !(page.texts && page.texts.length) && !page.rasterBitmap) {
+    // Blank sheet: paint the paper directly at tile resolution instead of
+    // flattening a full 2500×3235 document for an empty page.
+    sc.save()
+    sc.scale(small.width / w, small.height / h)
+    renderPaper(sc, page.paper)
+    sc.restore()
   } else {
     const off = flattenToCanvas(page)
     sc.drawImage(off, 0, 0, small.width, small.height)
-    const url = small.toDataURL()
-    page.thumbUrl = url
-    t.style.backgroundImage = `url(${url})`
   }
+  const url = small.toDataURL()
+  page.thumbUrl = url
+  t.style.backgroundImage = `url(${url})`
+}
+
+function refreshThumbOf(page) {
+  const i = S.pages.indexOf(page)
+  if (i < 0) return
+  page.thumbUrl = ''
+  const item = $('pagesBar')?.children[i]
+  if (item) drawThumb(item.querySelector('.pageThumb'), i)
 }
 
 function refreshCurrentThumb() {
@@ -649,14 +853,22 @@ function syncUndoRedo() {
 let live = null // {stroke, drawnIdx}
 let pan = null
 let erasePending = null
+// Only one pointer may drive a gesture. A second finger used to clear the
+// live layer and restart the stroke mid-draw (palm rejection parity).
+let activePointer = null
 
 let shapeDraft = null // {kind, fill, page, ax, ay, bx, by} while dragging a shape
 
 function onPointerDown(e) {
+  // While a note loads, S.pages still belongs to the outgoing note. Inking
+  // then would edit pages that are discarded the moment the load completes.
+  if (noteBusy) return
   const page = current(); if (!page) return
   // HUD chrome lives inside the canvas stack: clicking Duplicate/Delete/rotate
   // or the ruler controls must never start an ink stroke underneath it
   if (e.target.closest('button, input, textarea, select, a, [contenteditable="true"], #selBar, #rulerCtl, #textEditBar, #titleStrip')) return
+  if (activePointer !== null) return
+  activePointer = e.pointerId
   const stack = $('stackInner')
   try { stack.setPointerCapture(e.pointerId) } catch { /* synthetic/test pointers */ }
   if (bounceRAF) { cancelAnimationFrame(bounceRAF); bounceRAF = 0; S.pullPx = 0; applyTransform(); hidePullHint() }
@@ -789,6 +1001,8 @@ function eraseAt(page, x, y) {
 }
 
 function onPointerMove(e) {
+  if (noteBusy) return
+  if (activePointer !== null && e.pointerId !== activePointer) return
   const page = current(); if (!page) return
   if (pan) {
     const host = $('canvasHost')
@@ -873,78 +1087,165 @@ function firstCommitPreCapture(page) {
   }
 }
 
-// ---------- laser pointer (temporary trail, never saved) (QA counters removed at ship) ----------
-let laserLive = null // {pts, w, color}
-let laserTrail = []  // {pts, w, color, born}
+// ---------- laser pointer (temporary trail, never saved) ----------
+// Marks accumulate for the whole annotation burst and stay put until the
+// pointer rests. Then the group fades as one, so lifting the pen never erases
+// the line you were just drawing. Timings follow tldraw's laser session model.
+const LASER_IDLE_MS = 1200
+const LASER_FADE_MS = 500
+let laserLive = null // { pts, w } while the pointer is down
+let laserSession = null // { strokes, lastAt, page }
 let laserRAF = 0
+// Finished strokes are rasterized once here; the visible layer then composites
+// this single image plus the live beam instead of replaying every glow layer.
+const laserBase = document.createElement('canvas')
+const laserBaseCtx = laserBase.getContext('2d')
 
-// one paint call per frame: live stroke paints fully, trails fade and drop out
+function laserClearBase() {
+  laserBaseCtx.clearRect(0, 0, laserBase.width, laserBase.height)
+}
+
+function laserRenderBase() {
+  const c = $('laserC'); if (!c) return
+  if (laserBase.width !== c.width || laserBase.height !== c.height) {
+    laserBase.width = c.width
+    laserBase.height = c.height
+  }
+  laserClearBase()
+  if (!laserSession) return
+  for (const stroke of laserSession.strokes) {
+    paintLaserStroke(laserBaseCtx, stroke.pts, stroke.w, 1)
+  }
+}
+
 function laserAddPoint(page, x, y, first) {
-  if (first) laserLive = { pts: [{ x, y }], w: docMM(1.2), color: '#ff2b2b' }
-  else if (laserLive) {
+  const now = performance.now()
+  if (first) {
+    // A session that has started fading is spent; a new stroke starts clean.
+    if (laserSession && now - laserSession.lastAt >= LASER_IDLE_MS) laserSession = null
+    if (!laserSession) {
+      laserSession = { strokes: [], lastAt: now, page }
+      laserClearBase()
+    }
+    laserLive = { pts: [{ x, y }], w: docMM(0.7) }
+  } else if (laserLive) {
     const last = laserLive.pts[laserLive.pts.length - 1]
     if ((last.x - x) ** 2 + (last.y - y) ** 2 < 9) return
     laserLive.pts.push({ x, y })
   } else return
+  laserSession.lastAt = now
   laserTick()
 }
 
 function laserEnd() {
-  if (laserLive && laserLive.pts.length) laserTrail.push({ ...laserLive, born: performance.now() })
+  if (laserLive && laserLive.pts.length) {
+    if (!laserSession) laserSession = { strokes: [], lastAt: 0, page: current() }
+    laserSession.strokes.push(laserLive)
+    laserSession.lastAt = performance.now()
+    laserRenderBase()
+  }
   laserLive = null
+  laserTick()
 }
 
 function laserStop() {
   if (laserRAF) { cancelAnimationFrame(laserRAF); laserRAF = 0 }
   laserLive = null
-  laserTrail = []
+  laserSession = null
+  laserClearBase()
   const c = $('laserC'); if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height)
 }
 
 function laserTick() {
-  paintLaser()
-  if (!laserLive && !laserTrail.length) return
+  if (!paintLaser()) return
   if (!laserRAF) laserRAF = requestAnimationFrame(() => { laserRAF = 0; laserTick() })
 }
 
-function paintLaser() {
-  const c = $('laserC'); if (!c) return
-  const ctx = c.getContext('2d')
-  ctx.clearRect(0, 0, c.width, c.height)
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round'
-  const now = performance.now()
-  laserTrail = laserTrail.filter(t => now - t.born < 1300)
-  const paint = (pts, w, color, alpha) => {
-    if (!pts.length) return
-    if (pts.length === 1) {
-      ctx.globalAlpha = alpha; ctx.fillStyle = color
-      ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, w / 2, 0, Math.PI * 2); ctx.fill()
-      ctx.globalAlpha = 1
-      return
-    }
-    ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = w
-    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y)
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
-    ctx.stroke(); ctx.globalAlpha = 1
+function laserStrokePath(ctx, pts) {
+  ctx.beginPath()
+  ctx.moveTo(pts[0].x, pts[0].y)
+  if (pts.length === 2) {
+    ctx.lineTo(pts[1].x, pts[1].y)
+    return
   }
-  // fresh trail portions glow, old ones fade like the laser dot light
-  for (const t of laserTrail) {
-    const age = now - t.born
-    paint(t.pts, t.w, t.color, age < 700 ? 1 : 1 - (age - 700) / 600)
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p = pts[i], n = pts[i + 1]
+    ctx.quadraticCurveTo(p.x, p.y, (p.x + n.x) / 2, (p.y + n.y) / 2)
+  }
+  const last = pts[pts.length - 1]
+  ctx.lineTo(last.x, last.y)
+}
+
+// A real beam has a hot core inside saturated red and a soft halo. Layered
+// strokes are cheaper than canvas shadowBlur and keep the glow even at zoom.
+const LASER_LAYERS = [
+  { scale: 4.2, color: '#ff1c22', alpha: .09 },
+  { scale: 2.3, color: '#ff1c22', alpha: .18 },
+  { scale: 1, color: '#ff2024', alpha: .96 },
+  { scale: .36, color: '#fff2ee', alpha: .92 },
+]
+
+function paintLaserStroke(ctx, pts, w, alpha) {
+  if (!pts.length) return
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  for (const layer of LASER_LAYERS) {
+    ctx.globalAlpha = alpha * layer.alpha
+    ctx.fillStyle = layer.color
+    ctx.strokeStyle = layer.color
+    const lw = w * layer.scale
+    if (pts.length === 1) {
+      ctx.beginPath(); ctx.arc(pts[0].x, pts[0].y, lw / 2, 0, Math.PI * 2); ctx.fill()
+    } else {
+      ctx.lineWidth = lw
+      laserStrokePath(ctx, pts)
+      ctx.stroke()
+    }
+  }
+  ctx.globalAlpha = 1
+}
+
+function paintLaser() {
+  const c = $('laserC'); if (!c) return false
+  const ctx = c.getContext('2d')
+  // A page/note switch owns a different sheet; never paint the old trail on it.
+  if (laserSession && laserSession.page !== current()) { laserStop(); return false }
+  ctx.clearRect(0, 0, c.width, c.height)
+  const now = performance.now()
+  let alpha = 1
+  if (!laserLive && laserSession) {
+    const idle = now - laserSession.lastAt
+    if (idle >= LASER_IDLE_MS) {
+      const p = (idle - LASER_IDLE_MS) / LASER_FADE_MS
+      if (p >= 1) {
+        laserSession = null
+        laserClearBase()
+        return false
+      }
+      alpha = 1 - p * p
+    }
+  }
+  if (laserSession) {
+    if (laserBase.width !== c.width || laserBase.height !== c.height) laserRenderBase()
+    ctx.globalAlpha = alpha
+    ctx.drawImage(laserBase, 0, 0)
+    ctx.globalAlpha = 1
   }
   if (laserLive && laserLive.pts.length) {
-    paint(laserLive.pts, laserLive.w, laserLive.color, 1)
-    // A glowing pointer dot at the tip distinguishes the laser from a red pen.
+    paintLaserStroke(ctx, laserLive.pts, laserLive.w, 1)
+    // Hot pointer dot: white centre, red bloom, fading to nothing.
     const p = laserLive.pts[laserLive.pts.length - 1]
-    const r = docMM(3.2)
+    const r = docMM(2.4)
     const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r)
-    glow.addColorStop(0, 'rgba(255,70,70,.95)')
-    glow.addColorStop(0.35, 'rgba(255,30,30,.55)')
-    glow.addColorStop(1, 'rgba(255,0,0,0)')
+    glow.addColorStop(0, 'rgba(255,255,255,1)')
+    glow.addColorStop(.22, 'rgba(255,238,232,.95)')
+    glow.addColorStop(.5, 'rgba(255,45,48,.55)')
+    glow.addColorStop(1, 'rgba(255,20,24,0)')
     ctx.globalAlpha = 1
     ctx.fillStyle = glow
     ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill()
   }
+  return !!(laserLive || laserSession)
 }
 
 // ---------- lasso selection (move / duplicate / delete) ----------
@@ -1579,7 +1880,7 @@ function wireTextTool() {
 let textEdit = null
 let hintTimer = null
 
-function showHint(msg) {
+export function showHint(msg) {
   const h = $('shapeTextHint')
   if (!h) return
   h.textContent = msg
@@ -1639,9 +1940,14 @@ function placeTextBox(page, x, y) {
     if (ev.key === 'Escape') { ev.preventDefault(); finishText(true) }
     else if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); finishText(false) }
   })
-  el.addEventListener('blur', () => { if (textEdit) finishText(false) })
+  // Focus leaves for formatting buttons too: commit, but keep the Text tool
+  // active so the next tap can place another box.
+  el.addEventListener('blur', () => { if (textEdit) finishText(false, { keepTool: true }) })
   textEdit = { el, bar, page, obj }
-  el.focus()
+  // The pointerdown that placed the box was aimed at the canvas, so the
+  // browser's mousedown default would move focus there and blur (and thus
+  // discard) the brand-new box. Focus once that default has run.
+  setTimeout(() => { if (textEdit && textEdit.el === el) el.focus({ preventScroll: true }) }, 0)
 }
 
 function buildTextEditBar(page, obj, el) {
@@ -1671,7 +1977,10 @@ function buildTextEditBar(page, obj, el) {
   return bar
 }
 
-function finishText(discard) {
+// The editor is bound to the page it was placed on, not to "whatever page is
+// current when it closes": switching sheets used to commit the text into the
+// new page and composite the old page's ink into the new page's PNG.
+function finishText(discard, { keepTool = false } = {}) {
   if (!textEdit) return
   const { el, bar, page, obj } = textEdit
   textEdit = null
@@ -1683,17 +1992,34 @@ function finishText(discard) {
   page.texts.push(obj)
   page.undo.push({ t: 'text', obj })
   page.redo = []
-  redrawInk(page)
+  if (page === current()) redrawInk(page)
   captureReplay(page)
   page.dirty = true
   scheduleAutosave()
-  refreshCurrentThumb()
-  setTool('pen')
+  refreshThumbOf(page)
+  if (!keepTool) setTool('pen')
+}
+
+// Remove the floating editor without touching its page. Used when the note it
+// belongs to is being closed/deleted rather than navigated away from.
+function cancelTextEdit() {
+  if (!textEdit) return
+  const { el, bar } = textEdit
+  textEdit = null
+  el.remove(); bar.remove()
 }
 
 // ---------- eraser flyout modes ----------
 
 function onPointerUp(e) {
+  // A pointerup for an untracked pointer (its down was ignored, or the gesture
+  // was cancelled) must not commit anything.
+  if (activePointer === null || e.pointerId !== activePointer) return
+  activePointer = null
+  // The load replaced the pages, so any gesture that began on the outgoing
+  // note must not be committed into the incoming note's current sheet.
+  // (openNote already cancelled the gesture when it took over.)
+  if (noteBusy) return
   const page = current(); if (!page) return
   if (pan) {
     const over = pan.over || 0
@@ -1791,8 +2117,80 @@ function onPointerUp(e) {
   }
 }
 
+function clearLive(page) {
+  if (!page) return
+  ctxOf('liveC').clearRect(0, 0, docSize(page).w, docSize(page).h)
+}
+
+// Abandon the gesture in flight without committing it. pointercancel (OS
+// gesture takeover, pen leaving range) used to call the pointerup path, which
+// turned a cancelled drag into ink, an erase, or even a page turn.
+function cancelGesture() {
+  const page = current()
+  if (pan) {
+    pan = null
+    S.pullPx = 0
+    if (bounceRAF) { cancelAnimationFrame(bounceRAF); bounceRAF = 0 }
+    hidePullHint()
+    hidePagePeek()
+    applyTransform()
+    return
+  }
+  rulerGrip = null
+  if (shapeDraft) {
+    shapeDraft = null
+    clearLive(page)
+    return
+  }
+  if (live) {
+    live = null
+    clearLive(page)
+    return
+  }
+  if (erasePending) {
+    const ep = erasePending
+    erasePending = null
+    if (page) {
+      // eraseAt already cut ink out of the page while the pointer was down;
+      // put every removed stroke/fragment back untouched
+      for (const st of ep.whole) if (!page.strokes.includes(st)) page.strokes.push(st)
+      for (const [orig, pieces] of [...ep.pairs].reverse()) {
+        page.strokes = page.strokes.filter(st => !pieces.includes(st))
+        if (!page.strokes.includes(orig)) page.strokes.push(orig)
+      }
+      if (ep.whole.length || ep.pairs.length) {
+        // eraseAt mutates strokes while the pointer is down, and an autosave
+        // can snapshot that half-erased state. Reverting must therefore dirty
+        // the page and refresh the replay, or disk keeps the cancelled cuts.
+        redrawInk(page)
+        captureReplay(page)
+        page.dirty = true
+        scheduleAutosave()
+        refreshThumbOf(page)
+      }
+      clearLive(page)
+    }
+    return
+  }
+  if (lasso) { lasso = null; clearLive(page); return }
+  if (dragSel) {
+    dragSel = null
+    if (page && S.selection && S.selection.page === page) drawSelectionBox(page)
+    else clearLive(page)
+    return
+  }
+  if (laserLive) laserEnd()
+}
+
+function onPointerCancel(e) {
+  if (activePointer !== null && e.pointerId !== activePointer) return
+  activePointer = null
+  cancelGesture()
+}
+
 // ---------- undo / redo ----------
 function undo() {
+  if (noteBusy) return
   const page = current(); if (!page) return
   const a = page.undo.pop()
   if (!a) return
@@ -1812,7 +2210,10 @@ function undo() {
     if (i >= 0) page.texts.splice(i, 1)
     page.redo.push(a)
   } else if (a.t === 'erase-split') {
-    for (const [orig, pieces] of a.pairs) {
+    // Splits within one gesture can nest (a fragment is split again), so undo
+    // must restore newest-first; forward order left the intermediate fragment
+    // behind and duplicated the original stroke.
+    for (const [orig, pieces] of [...a.pairs].reverse()) {
       for (const pc of pieces) {
         const i = page.strokes.lastIndexOf(pc)
         if (i >= 0) page.strokes.splice(i, 1)
@@ -1833,6 +2234,7 @@ function undo() {
 }
 
 function redo() {
+  if (noteBusy) return
   const page = current(); if (!page) return
   const a = page.redo.pop()
   if (!a) return
@@ -1849,10 +2251,12 @@ function redo() {
     page.texts.push(a.obj)
     page.undo.push(a)
   } else if (a.t === 'erase-split') {
-    page.strokes = page.strokes.filter(st => !a.pairs.some(([o]) => st === o))
-    // redo must put the surviving fragments back, mirroring undo (which
-    // removes them and restores the original stroke)
+    // Rebuild forward, then drop every superseded original in one pass. With
+    // nested splits the intermediate fragment is both a piece and an original,
+    // so filtering before pushing it would leave that duplicate behind.
     for (const [, pieces] of a.pairs) page.strokes.push(...pieces)
+    const superseded = new Set(a.pairs.map(([o]) => o))
+    page.strokes = page.strokes.filter(st => !superseded.has(st))
     page.undo.push(a)
   } else if (a.t === 'move') {
     for (const st of a.strokes) for (const p of st.pts) { p.x += a.dx; p.y += a.dy }
@@ -1868,8 +2272,16 @@ function redo() {
 
 // ---------- save / autosave ----------
 let autosaveTimer = null
+let retryTimer = null
 let saveChain = Promise.resolve()
-const failedPages = new Set()
+// Set when the open note vanished from the library index. There is no disk
+// target to retry into, so sticking the note forever would wedge every switch.
+let orphanNoteId = null
+// True when the most recent save pass hit an actual write error. A pass that
+// merely found new edits made while it was in flight is not an error.
+let saveHadError = false
+let lastSavedAt = null
+let lastSaveError = ''
 function scheduleAutosave() {
   S.editSeq++
   setSaveState('pending', true)
@@ -1881,94 +2293,171 @@ function setSaveState(kind, working) {
   const s = $('saveState')
   const btn = $('btnSave')
   const state = working ? 'saving' : (kind === 'ok' ? 'saved' : kind === 'err' ? 'error' : 'idle')
+  if (kind === 'ok') {
+    lastSavedAt = new Date()
+    lastSaveError = ''
+  }
   if (s) {
     if (working) { s.textContent = 'saving…'; s.style.color = 'var(--dim)' }
-    else if (kind === 'ok') { s.textContent = 'saved'; s.style.color = '#6fd68f' }
-    else if (kind === 'err') { s.textContent = 'save failed'; s.style.color = 'var(--danger)' }
+    else if (kind === 'ok') {
+      s.textContent = lastSavedAt
+        ? `saved ${lastSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+        : 'saved'
+      s.style.color = '#6fd68f'
+    } else if (kind === 'err') { s.textContent = 'save failed — click Save to retry'; s.style.color = 'var(--danger)' }
     else s.textContent = ''
   }
   if (btn) {
     btn.dataset.saveState = state
-    btn.title = working ? 'Saving note…'
-      : kind === 'ok' ? 'Saved'
-        : kind === 'err' ? 'Save failed - click to retry'
-          : 'Save now (Ctrl+S)'
+    btn.title = working ? 'Saving all changed pages…'
+      : kind === 'ok' ? 'All changes saved'
+        : kind === 'err' ? `Save failed${lastSaveError ? ': ' + lastSaveError : ''} — click to retry`
+          : 'Save all changed pages (' + modShortcut('S') + ')'
   }
 }
 
-// Saves are serialized and captured against the note/page that was current at
-// call time. `noteId` and `idx` must never be read after an await: switching
-// notes mid-save used to write note A's bitmap into note B's page slot.
+// Only pages that actually changed are written, and every one of them is:
+// switching pages used to leave the previous sheet dirty forever (the old
+// autosave only ever saved the current page).
+function pendingPages() {
+  const out = []
+  S.pages.forEach((page, idx) => {
+    if (page.dirty || page.recorder.changed) out.push({ page, idx })
+  })
+  return out
+}
+
+// Everything the save needs is captured synchronously: the page can be edited
+// again (or switched away) while the encode/IPC write is still in flight.
+function snapshotPage(page) {
+  const off = page === current() ? compositeCurrentPage(page) : flattenToCanvas(page)
+  const paper = page.paper
+  const rgb = hexToCss(paper.bg, '#FFFFFF').slice(1).toUpperCase()
+  return {
+    off,
+    seq: S.editSeq,
+    frames: page.recorder.changed ? page.recorder.frames.slice() : [],
+    // v2: raster imports travel in sRST, so an empty v2 page must never be
+    // mistaken for a legacy flattened image when it is reopened.
+    vec: JSON.stringify({ v: 2, strokes: page.strokes, texts: page.texts || [] }),
+    paper,
+    meta: {
+      sizeName: (SIZES[paper.size] || SIZES.letter).name,
+      orientation: paper.orientation,
+      template: paper.template,
+      templatePath: templatePathFor(paper.template, paper.orientation),
+      bgColor: '#FF' + rgb,
+      borderLines: paper.borderLines !== false,
+      tool: (() => { const p = curPen(); return { type: p.type, color: p.color, widthMM: p.widthMM, opacity: p.opacity } })(),
+      paper: { ...paper },
+    },
+  }
+}
+
+// `noteId` and `idx` are captured before any await: switching notes mid-save
+// must never write note A's bitmap into note B's page slot.
+async function writePage(page, noteId, idx) {
+  const snap = snapshotPage(page)
+  const png = await new Promise(r => snap.off.toBlob(r, 'image/png'))
+  if (!png) throw new Error('page encode failed')
+  const bytes = new Uint8Array(await png.arrayBuffer())
+  const res = await bridge.savePage({
+    noteId, pageIndex: idx, png: bytes,
+    frames: snap.frames, vec: snap.vec, meta: snap.meta,
+  })
+  if (S.pages[idx] === page && res && res.file) page.file = res.file
+  // an edit made while the write was in flight keeps the page dirty; the next
+  // autosave captures it instead of losing it
+  if (S.editSeq === snap.seq) {
+    page.dirty = false
+    page.recorder.changed = false
+  }
+  if (S.noteId === noteId && S.currentPage === idx && S.note) {
+    S.note.paper = { ...snap.paper }
+    S.note.tool = { ...snap.meta.tool }
+  }
+}
+
+function scheduleRetry(noteId) {
+  clearTimeout(retryTimer)
+  retryTimer = setTimeout(() => {
+    retryTimer = null
+    if (S.noteId !== noteId || orphanNoteId === noteId) return
+    if (pendingPages().length) saveCurrentPage()
+  }, 5000)
+}
+
 export function saveCurrentPage() {
   const noteId = S.noteId
-  const idx = S.currentPage
-  const page = current()
-  if (!page || !noteId) return Promise.resolve(false)
+  if (!noteId) return Promise.resolve(false)
+  if (orphanNoteId === noteId) return Promise.resolve(true)
   clearTimeout(autosaveTimer)
+  autosaveTimer = null
+  if (!pendingPages().length) {
+    setSaveState('ok')
+    return Promise.resolve(true)
+  }
   setSaveState('saving', true)
+  let ok = true
   const run = async () => {
-    // snapshot the edit counter at the moment flattening starts; edits made
-    // during the async encode/save must keep the page dirty
-    const seq = S.editSeq
-    try {
-      const png = await flattenBytes(page, 'image/png')
-      const paper = page.paper
-      const rgb = hexToCss(paper.bg, '#FFFFFF').slice(1).toUpperCase()
-      const meta = {
-        sizeName: (SIZES[paper.size] || SIZES.letter).name,
-        orientation: paper.orientation,
-        template: paper.template,
-        templatePath: templatePathFor(paper.template, paper.orientation),
-        bgColor: '#FF' + rgb,
-        borderLines: paper.borderLines !== false,
-        tool: (() => { const p = curPen(); return { type: p.type, color: p.color, widthMM: p.widthMM, opacity: p.opacity } })(),
-        paper: { ...paper },
+    saveHadError = false
+    // Collect at execution time so edits made while this save waited in the
+    // chain are included as well.
+    for (const { page, idx } of pendingPages()) {
+      if (S.noteId !== noteId) return ok
+      try {
+        await writePage(page, noteId, idx)
+      } catch (err) {
+        ok = false
+        saveHadError = true
+        lastSaveError = err && err.message ? err.message : 'unknown error'
+        console.error(err)
+        if (/note not found/i.test(err && err.message)) {
+          orphanNoteId = noteId
+          if (S.noteId === noteId) showHint('This note is no longer in the library — changes cannot be saved')
+          break
+        }
       }
-      const frames = page.recorder.changed ? page.recorder.frames : []
-      // vector snapshot so the page reopens as editable ink (sVec chunk)
-      const vec = JSON.stringify({ v: 1, strokes: page.strokes, texts: page.texts || [] })
-      const res = await bridge.savePage({ noteId, pageIndex: idx, png, frames, vec, meta })
-      if (res && res.file) page.file = res.file
-      failedPages.delete(page)
-      if (S.editSeq === seq) {
-        page.dirty = false
-        page.recorder.changed = false
+    }
+    if (S.noteId !== noteId) return ok
+    if (orphanNoteId === noteId) { setSaveState('err'); return true }
+    if (pendingPages().length) {
+      // New edits landed while the writes were in flight: that is not a
+      // failure, their own autosave is already queued. Only actual errors
+      // warrant the error state and a retry.
+      if (!ok) {
+        setSaveState('err')
+        scheduleRetry(noteId)
       }
-      if (S.noteId === noteId && S.currentPage === idx) {
-        if (S.note) { S.note.paper = { ...paper }; S.note.tool = { ...meta.tool } }
-        refreshCurrentThumb()
-        setSaveState('ok')
-      }
-      return true
-    } catch (err) {
-      failedPages.add(page)
-      console.error(err)
-      if (S.noteId === noteId && S.currentPage === idx) setSaveState('err')
-      // the note was deleted from under us: there is nothing to retry into
-      if (/note not found/i.test(err && err.message)) return false
-      // transient OneDrive/AV lock: retry while the page is still dirty
-      clearTimeout(autosaveTimer)
-      autosaveTimer = setTimeout(() => { if (page.dirty) saveCurrentPage() }, 5000)
       return false
     }
+    setSaveState('ok')
+    refreshCurrentThumb()
+    return ok
   }
   const next = saveChain.then(run, run)
   saveChain = next.then(() => { }, () => { })
   return next
 }
 
-// Flush the current page and wait for every queued page write. Used before a
-// note switch and by the main-process close handshake.
-export async function flushCurrentPage() {
-  const page = current()
-  if (page && S.noteId && (page.dirty || page.recorder.changed)) {
-    const ok = await saveCurrentPage()
-    if (!ok) return false
-  }
+// Flush every dirty page and wait for queued writes. Used before a note
+// switch, project export and by the main-process close handshake.
+export async function flushCurrentPage({ internal = false } = {}) {
+  if (noteBusy && !internal) await loadPromise.catch(() => { })
+  if (textEdit) finishText(false)
+  const noteId = S.noteId
+  if (!noteId) { await saveChain; return true }
   await saveChain
-  // a page switched away from earlier may still have a failed queued write
-  for (const p of failedPages) if (p.dirty) return false
-  return true
+  if (orphanNoteId === noteId) return true
+  // New edits raced with the first pass: save again instead of reporting a
+  // bogus failure. Real write errors still abort the caller.
+  for (let i = 0; i < 3 && pendingPages().length; i++) {
+    await saveCurrentPage()
+    if (orphanNoteId === noteId) return true
+    if (saveHadError) return false
+    await saveChain
+  }
+  return pendingPages().length === 0
 }
 
 // ---------- flyouts ----------
@@ -2370,13 +2859,6 @@ function syncPaperPanel() {
   $('ppLandscape').classList.toggle('accent', orient !== 'portrait')
   $('ppLandscape').setAttribute('aria-pressed', orient === 'portrait' ? 'false' : 'true')
   $('paperBrl').checked = page.paper.borderLines !== false
-  const dark = colorLuma(page.paper.bg) < .42
-  const darkBtn = $('ppBoardDark')
-  if (darkBtn) {
-    darkBtn.classList.toggle('accent', dark)
-    darkBtn.setAttribute('aria-pressed', dark ? 'true' : 'false')
-    darkBtn.title = dark ? 'Dark board is on — click for a light board' : 'Use a dark drawing board'
-  }
   syncWritingPaneButtons()
   syncPaperColorFlyout()
 }
@@ -2475,16 +2957,29 @@ function applyPaperBg(hex) {
   const page = current(); if (!page) return
   const rgb = normalizeHexColor(hex)
   if (!rgb) return
-  page.paper.bg = '#FF' + rgb.slice(1)
+  const bg = '#FF' + rgb.slice(1)
+  // Board colour is page data, not chrome: default to the current sheet and
+  // let the flyout opt into the whole note explicitly.
+  const targets = boardScope === 'all' ? S.pages.slice() : [page]
+  for (const p of targets) {
+    p.paper.bg = bg
+    p.thumbUrl = ''
+    p.dirty = true
+  }
   const dark = colorLuma(rgb) < .42
-  // New ink must be legible on a midnight board. Only near-black/neutral ink
-  // is flipped; saturated red/blue/green stays readable and stays selected.
+  // New ink must be legible on the chosen board. Only near-neutral ink is
+  // flipped; saturated red/blue/green stays readable and stays selected.
   if (dark && inkTooDarkForDarkBoard(curPen().color)) {
     curPen().color = '#FFFFFF'
     savePens()
     showHint('Dark board on - pen switched to white for contrast')
+  } else if (!dark && inkTooLightForLightBoard(curPen().color)) {
+    curPen().color = '#15181D'
+    savePens()
+    showHint('Light board on - pen switched to dark for contrast')
   }
   markPaperChanged(page)
+  if (targets.length > 1) refreshPages()
   syncPaperPanel()
   syncPaperColorFlyout()
   syncPenFlyout()
@@ -2504,6 +2999,12 @@ function applyPaperHex({ quiet = false } = {}) {
   applyPaperBg(hex)
 }
 
+let boardScope = 'page'
+function setBoardScope(scope) {
+  boardScope = scope === 'all' ? 'all' : 'page'
+  syncPaperColorFlyout()
+}
+
 function syncPaperColorFlyout() {
   const page = current()
   const input = $('paperHex')
@@ -2513,6 +3014,12 @@ function syncPaperColorFlyout() {
   input.setAttribute('aria-invalid', 'false')
   const err = $('paperHexError')
   if (err) err.textContent = ''
+  const pageScope = $('paperScopePage'), allScope = $('paperScopeAll')
+  if (pageScope) pageScope.setAttribute('aria-pressed', boardScope === 'page' ? 'true' : 'false')
+  if (allScope) {
+    allScope.setAttribute('aria-pressed', boardScope === 'all' ? 'true' : 'false')
+    allScope.title = `Apply to all ${S.pages.length} page${S.pages.length === 1 ? '' : 's'} in this note`
+  }
   document.querySelectorAll('#paperPalette .ps').forEach(s => {
     s.classList.toggle('sel', s.dataset.color.toUpperCase() === rgb)
   })
@@ -2527,16 +3034,7 @@ function syncPaperColorFlyout() {
   }
 }
 
-function toggleDarkBoard() {
-  const page = current(); if (!page) return
-  const isDark = colorLuma(page.paper.bg) < .42
-  applyPaperBg(isDark ? LIGHT_BOARD : DARK_BOARD)
-  // The board and surrounding chrome change together; setTheme also migrates
-  // the other factory-white pages so a multi-page note does not look striped.
-  setTheme(!isDark)
-}
-
-// ---------- interface theme (chrome only; the board has its own colour) ----------
+// ---------- interface theme (chrome only; board colour is page data) ----------
 function initTheme() {
   let saved = null
   try { saved = localStorage.getItem('wc:theme') } catch { /* ignore */ }
@@ -2545,43 +3043,7 @@ function initTheme() {
 
 const boardHex = page => '#' + String(page?.paper?.bg || '#FFFFFFFF').slice(-6).toUpperCase()
 
-// The interface theme and the factory sheet move together. Board colours the
-// user picked explicitly are preserved; only #FFFFFF <-> the app's #15181D
-// dark sheet are theme-managed.
-function syncBoardWithTheme(dark, { render = true, save = true } = {}) {
-  const from = dark ? LIGHT_BOARD : DARK_BOARD
-  const to = dark ? DARK_BOARD : LIGHT_BOARD
-  let changed = false
-  for (const page of S.pages) {
-    if (boardHex(page) !== from) continue
-    page.paper.bg = '#FF' + to.slice(1)
-    page.thumbUrl = ''
-    page.dirty = true
-    changed = true
-  }
-  if (!changed) return false
-  if (render) {
-    const page = current()
-    if (page) { renderPage(page); applyTransform() }
-    refreshPages()
-    syncPaperPanel()
-    syncPaperColorFlyout()
-    syncPenFlyout()
-  }
-  if (save) scheduleAutosave()
-  return true
-}
-
-function ensureThemePenContrast() {
-  if (!document.body.classList.contains('dark')) return
-  if (!inkTooDarkForDarkBoard(curPen().color)) return
-  curPen().color = '#FFFFFF'
-  savePens()
-  syncPenFlyout()
-  showHint('Dark mode on - pen switched to white for contrast')
-}
-
-function setTheme(dark, { persist = true, syncBoard = true } = {}) {
+function setTheme(dark, { persist = true } = {}) {
   document.body.classList.toggle('dark', !!dark)
   const b = $('btnTheme')
   if (b) {
@@ -2596,19 +3058,27 @@ function setTheme(dark, { persist = true, syncBoard = true } = {}) {
   // The native Windows caption overlay sits above the page and has its own
   // colour; without this the dark theme leaves a white rectangle in the corner.
   try { window.WriteCanvasHost?.setTitleBarTheme?.(!!dark) } catch { /* ignore */ }
-  if (syncBoard) {
-    syncBoardWithTheme(!!dark)
-    if (dark) ensureThemePenContrast()
-  }
 }
 
 // ---------- note details (rename / project folder; not the normal save path) ----------
+let saveFlyoutNoteId = 0
 async function fillSaveFlyout() {
+  saveFlyoutNoteId = S.noteId || 0
   const today = new Date()
   const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
   // automatic note naming: an unnamed note suggests today's date
   $('saveTitle').value = (S.note && S.note.name && S.note.name !== 'Untitled') ? S.note.name : iso
-  $('saveProject').value = await currentProjectName()
+  let lib = null
+  try { lib = await bridge.library() } catch { /* location is informational */ }
+  const pathEl = $('saveLibraryPath')
+  if (pathEl) {
+    pathEl.textContent = lib && lib.root ? lib.root : 'Library location unavailable'
+    pathEl.title = lib && lib.root ? lib.root : ''
+  }
+  const folder = lib && lib.items && S.note
+    ? lib.items.find(i => i.id === S.note.parent && i.type === 'folder')
+    : null
+  $('saveProject').value = folder ? folder.name : ''
 }
 
 async function currentProjectName() {
@@ -2621,41 +3091,93 @@ async function currentProjectName() {
 }
 
 async function saveFromFlyout() {
-  if (!S.noteId) return
+  // the fields belong to the note that was open when the flyout was filled
+  if (!S.noteId || saveFlyoutNoteId !== S.noteId) {
+    closeToolFlyout('saveFlyout')
+    return
+  }
+  const noteId = S.noteId
   const title = $('saveTitle').value.trim()
   const project = $('saveProject').value.trim()
   if (title && S.note && title !== S.note.name) {
-    const updated = await bridge.renameItem(S.noteId, title)
+    const updated = await bridge.renameItem(noteId, title)
+    // the flyout can outlive the note it was opened for
+    if (S.noteId !== noteId || !S.note) return
     S.note.name = updated && updated.name ? updated.name : title
     updateTitle()
   }
   const cur = await currentProjectName()
+  if (S.noteId !== noteId || !S.note) return
   if (project !== cur) {
     if (!project) {
-      await bridge.moveItem(S.noteId, 1)
-      if (S.note) S.note.parent = 1
+      await bridge.moveItem(noteId, 1)
+      if (S.noteId === noteId && S.note) S.note.parent = 1
     } else {
       const lib = await bridge.library()
       const f = (lib.items || []).find(i => i.type === 'folder' && i.parent === 1 && i.name.toLowerCase() === project.toLowerCase())
       const folder = f || await bridge.createFolder(project, 1)
-      await bridge.moveItem(S.noteId, folder.id)
-      if (S.note) S.note.parent = folder.id
+      await bridge.moveItem(noteId, folder.id)
+      if (S.noteId === noteId && S.note) S.note.parent = folder.id
     }
   }
   // hide the dialog before the async save reports "saved": the status text and
   // the flyout close otherwise race in UI tests and in real perceived latency
   closeToolFlyout('saveFlyout')
+  if (S.noteId !== noteId) return
   await saveCurrentPage()
+}
+
+async function changeLibraryFolder() {
+  const btn = $('saveChangeLibrary')
+  const noteId = S.noteId
+  if (btn) btn.disabled = true
+  try {
+    // the open note belongs to the old library: persist it before the switch
+    if (S.noteId) {
+      const ok = await flushCurrentPage()
+      if (!ok) { showHint('Library not changed — save failed'); return }
+      if (S.noteId !== noteId) return
+    }
+    const res = await bridge.pickLibraryFolder()
+    if (!res || res.canceled) return
+    if (res.error) { showHint(`Library not changed — ${res.error}`); return }
+    if (res.unchanged) { showHint('That folder is already your library'); return }
+    closeToolFlyout('saveFlyout')
+    closeNote()
+    if (host && host.selectNote) host.selectNote(0)
+    try { localStorage.removeItem('wc:lastNote') } catch { }
+    showHint(`Library changed — new saves go to ${res.root}`)
+  } catch (err) {
+    showHint(`Library not changed — ${err && err.message ? err.message : 'unknown error'}`)
+  } finally {
+    if (btn) btn.disabled = false
+  }
 }
 
 // ---------- export ----------
 function exportItems() {
+  const total = S.pages.length || 1
+  const page = total > 1 ? `This page (${S.currentPage + 1}/${total})` : 'This page'
   return [
-    { label: 'Page as PNG…', act: () => exportImg('png') },
-    { label: 'Page as JPEG…', act: () => exportImg('jpg') },
-    { label: 'Note as PDF (all pages)…', act: () => exportPDF() },
+    { label: `${page} as PNG…`, act: () => exportImg('png') },
+    { label: `${page} as JPEG…`, act: () => exportImg('jpg') },
+    { label: `Entire note as PDF (all ${total} page${total === 1 ? '' : 's'})…`, act: () => exportPDF() },
     { label: 'Replay as GIF…', act: () => exportGif() },
   ]
+}
+
+function exportName(filePath) {
+  return String(filePath || '').split(/[\\/]/).pop() || String(filePath || '')
+}
+
+function exportDone(label, filePath) {
+  if (filePath) showHint(`${label} saved: ${exportName(filePath)}`)
+}
+
+function exportFailed(label, err) {
+  console.error(label, err)
+  const msg = err && err.message ? err.message : 'unknown error'
+  showHint(`${label} failed — ${msg}`)
 }
 
 function menuPoint(anchor) {
@@ -2676,13 +3198,14 @@ async function exportMenu(anchor = null) {
 async function saveMenu(anchor = null) {
   const { pick } = await import('./ctx.js')
   const items = [
-    { label: 'Save now', act: () => saveCurrentPage() },
+    { label: `Save all changes (${modShortcut('S')})`, act: () => saveCurrentPage() },
+    { label: 'Save editable copy (.wcanvas)…', act: () => exportProject() },
     '-',
     { header: 'Export' },
     ...exportItems(),
     '-',
     {
-      label: 'Note details…',
+      label: 'Note details & library location…',
       act: async () => {
         await fillSaveFlyout()
         openToolFlyout('saveFlyout', $('btnSaveMore'))
@@ -2691,39 +3214,73 @@ async function saveMenu(anchor = null) {
   ]
   pick(items, ...menuPoint(anchor))
 }
-async function exportImg(kind) {
-  const page = current(); if (!page || !S.noteId) return
-  const bytes = await flattenBytes(page, kind === 'png' ? 'image/png' : 'image/jpeg')
-  const name = `${S.note.name}#${String(S.currentPage + 1).padStart(2, '0')}`
-  await bridge.exportAs(bytes, name, kind)
+async function exportImg(kind, idx = S.currentPage) {
+  const page = S.pages[idx]
+  const note = S.note
+  if (!page || !S.noteId || !note) return
+  if (textEdit && idx === S.currentPage) finishText(false)
+  try {
+    const bytes = await flattenBytes(page, kind === 'png' ? 'image/png' : 'image/jpeg')
+    const name = `${note.name}#${String(idx + 1).padStart(2, '0')}`
+    exportDone(kind === 'png' ? 'PNG' : 'JPEG', await bridge.exportAs(bytes, name, kind))
+  } catch (err) {
+    exportFailed(kind === 'png' ? 'PNG export' : 'JPEG export', err)
+  }
 }
 async function exportPDF() {
-  const bytes = []
-  for (const page of S.pages) bytes.push(await flattenBytes(page, 'image/png'))
-  const paper = current()?.paper || DEFAULT_PAPER()
-  const sz = SIZES[paper.size] || SIZES.letter
-  await bridge.exportPDF(bytes, { widthMM: paper.orientation === 'landscape' ? sz.h : sz.w, heightMM: paper.orientation === 'landscape' ? sz.w : sz.h, landscape: paper.orientation === 'landscape' })
+  if (!S.noteId || !S.pages.length) return
+  if (textEdit) finishText(false)
+  const pages = S.pages.slice()
+  const paper = (current()?.paper) || pages[0].paper || DEFAULT_PAPER()
+  try {
+    const bytes = []
+    for (const page of pages) bytes.push(await flattenBytes(page, 'image/png'))
+    const mm = paperMM(paper.size, paper.orientation)
+    const file = await bridge.exportPDF(bytes, { widthMM: mm.w, heightMM: mm.h })
+    exportDone(`PDF (${pages.length} page${pages.length === 1 ? '' : 's'})`, file)
+  } catch (err) {
+    exportFailed('PDF export', err)
+  }
 }
 async function exportGif() {
   const page = current(); if (!page || !S.noteId) return
+  const noteId = S.noteId
+  const idx = S.currentPage
+  const noteName = S.note ? S.note.name : 'replay'
   // sINK is encoded during save; persist first, then read the GIF back.
   let gifBytes = null
   if (page.recorder.frames.length) {
-    await saveCurrentPage()
-    const res = await bridge.loadNote(S.noteId)
-    const p = res?.pages?.[S.currentPage]
+    const ok = await saveCurrentPage()
+    if (!ok) { showHint('Replay export cancelled — save failed'); return }
+    if (S.noteId !== noteId) return
+    const res = await bridge.loadNote(noteId)
+    const p = res?.pages?.[idx]
     if (p?.inkGif) gifBytes = new Uint8Array(p.inkGif)
   } else if (page.inkGif) gifBytes = page.inkGif
-  if (gifBytes) await bridge.exportAs(gifBytes, `${S.note.name}-replay`, 'gif')
+  if (!gifBytes) { showHint('Replay export — no frames recorded for this page yet'); return }
+  try {
+    exportDone('Replay GIF', await bridge.exportAs(gifBytes, `${noteName}-replay`, 'gif'))
+  } catch (err) {
+    exportFailed('Replay export', err)
+  }
 }
 // Portable .wcanvas project: a snapshot of every saved page (vector strokes +
 // replay + paper), separate from image/PDF export. Flush the open page first
 // so the file is current; main builds the zip from disk pages.
 async function exportProject() {
   if (!S.noteId) return
-  await saveCurrentPage()
-  const r = await bridge.exportProject(S.noteId)
-  if (r && r.path) showHint(`Project saved: ${r.pages} page(s)`)
+  const noteId = S.noteId
+  // main builds the zip from disk, so every dirty page (not just the visible
+  // one) must be flushed first — otherwise the project misses recent sheets
+  const ok = await flushCurrentPage()
+  if (!ok) { showHint('Editable copy cancelled — save failed'); return }
+  if (S.noteId !== noteId) return
+  try {
+    const r = await bridge.exportProject(noteId)
+    if (r && r.path) showHint(`Editable copy saved: ${exportName(r.path)} (${r.pages} page${r.pages === 1 ? '' : 's'})`)
+  } catch (err) {
+    exportFailed('Editable copy export', err)
+  }
 }
 
 // ---------- replay ----------
@@ -2749,11 +3306,20 @@ function updateTitle() {
 
 async function renameOpenNote() {
   if (!S.note) return
+  const noteId = S.noteId
+  const oldName = S.note.name
   const { promptText } = await import('./ctx.js')
-  const name = await promptText('Note title', S.note.name)
-  if (!name || name === S.note.name) return
+  const name = await promptText('Note title', oldName)
+  if (!name || name === oldName || S.noteId !== noteId) return
+  // Renaming moves the page files; let queued writes land first so the save
+  // path and the rename cannot target different names.
+  const saved = await flushCurrentPage()
+  if (!saved) { showHint('Save failed — rename cancelled'); return }
+  if (S.noteId !== noteId) return
   try {
-    const updated = await bridge.renameItem(S.noteId, name)
+    const updated = await bridge.renameItem(noteId, name)
+    // the prompt can outlive a note switch; never rename A's title on B
+    if (S.noteId !== noteId || !S.note) return
     // library may append " 2" when the sanitized title is already in use
     S.note.name = updated && updated.name ? updated.name : name
     updateTitle()
@@ -2770,6 +3336,8 @@ export function init(app) {
   el = {
     canvasHost: $('canvasHost'), stack: $('canvasStack'), inner: $('stackInner'),
   }
+  applyShortcutHints()
+  initShortcutSheet()
 
   // pen flyout: labelled type cards, large palette, hex input, saved pens, size
   const typeRow = $('penTypeRow')
@@ -2864,15 +3432,24 @@ export function init(app) {
   $('btnPaper').onclick = () => togglePaperPanel()
   $('btnSaveConfirm').onclick = saveFromFlyout
   $('saveClose').onclick = () => closeToolFlyout('saveFlyout')
+  $('saveOpenLibrary').onclick = () => bridge.revealLibraryFolder()
+  $('saveChangeLibrary').onclick = () => changeLibraryFolder()
+  $('btnShortcuts').onclick = () => {
+    if (libCloser) toggleLibraryFlyout()
+    $('btnMenu').focus()
+    openShortcutSheet()
+  }
   $('saveTitleClear').onclick = () => { $('saveTitle').value = ''; $('saveTitle').focus() }
   $('paperBrl').addEventListener('change', applyBorderLines)
   $('ppPortrait').onclick = () => applyOrientation('portrait')
   $('ppLandscape').onclick = () => applyOrientation('landscape')
   $('ppBgColor').onclick = () => {
+    boardScope = 'page'
     syncPaperColorFlyout()
     openToolFlyout('paperColorFlyout', $('ppBgColor'))
   }
-  $('ppBoardDark').onclick = toggleDarkBoard
+  $('paperScopePage').onclick = () => setBoardScope('page')
+  $('paperScopeAll').onclick = () => setBoardScope('all')
   $('paperColorClose').onclick = () => closeToolFlyout('paperColorFlyout')
   $('paperCustomBtn').onclick = () => openColorPopover('paper', $('paperCustomBtn'))
   $('paperCustomBtn').setAttribute('aria-haspopup', 'dialog')
@@ -2899,7 +3476,7 @@ export function init(app) {
   inner.addEventListener('pointerdown', onPointerDown)
   inner.addEventListener('pointermove', onPointerMove)
   inner.addEventListener('pointerup', onPointerUp)
-  inner.addEventListener('pointercancel', onPointerUp)
+  inner.addEventListener('pointercancel', onPointerCancel)
   inner.addEventListener('contextmenu', e => e.preventDefault())
   $('canvasHost').addEventListener('wheel', e => {
     if (e.ctrlKey || e.metaKey) {
@@ -2974,12 +3551,24 @@ export function init(app) {
   }, { passive: false })
 
   window.addEventListener('keydown', e => {
+    if (isShortcutSheetOpen()) return
     const typing = isTextEditing()
     if (e.code === 'Space' && !e.repeat && !typing) {
       S.spaceDown = true
       stackInnerClass()
     }
     const c = e.ctrlKey || e.metaKey
+    // Help is deliberately discoverable: ? for everyone, Mod+/ for muscle memory.
+    if ((e.key === '?' || (c && e.code === 'Slash')) && !typing && !promptOpen()) {
+      e.preventDefault()
+      openShortcutSheet()
+      return
+    }
+    if (c && !typing && !promptOpen() && !e.shiftKey && e.key.toLowerCase() === 'o') {
+      e.preventDefault()
+      toggleLibraryFlyout()
+      return
+    }
     // PageUp/PageDown with Ctrl switches sheets without reaching for the rail.
     if (c && !typing && (e.key === 'PageDown' || e.key === 'PageUp')) {
       e.preventDefault()
@@ -2990,8 +3579,7 @@ export function init(app) {
     if (c && !typing && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo() }
     if (c && !typing && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo() }
     if (c && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrentPage() }
-    if (c && !typing && e.key.toLowerCase() === 'e') { e.preventDefault(); exportMenu($('btnSaveMore')) }
-    if (c && e.key.toLowerCase() === 'n' && e.shiftKey) { /* menu: new folder */ }
+    if (c && !typing && !promptOpen() && e.key.toLowerCase() === 'e') { e.preventDefault(); exportMenu($('btnSaveMore')) }
     // tool shortcuts (factory parity): V laser, E eraser, R ruler,
     // G shapes&text flyout, T text box, Escape dismiss overlays
     if (!c && !e.repeat && !typing) {
@@ -3022,12 +3610,22 @@ export function init(app) {
     if (e.code === 'Space') { S.spaceDown = false; stackInnerClass() }
   })
   window.addEventListener('blur', () => {
+    // Losing the window ends the in-flight gesture (the pointerup may never
+    // arrive) and clears a held Space so the next click is not a pan.
+    activePointer = null
+    cancelGesture()
+    S.spaceDown = false
+    stackInnerClass()
     const page = current()
-    if (page && page.dirty) saveCurrentPage()
+    if (page && (page.dirty || page.recorder.changed)) saveCurrentPage()
   })
 
   // host menu commands
   bridge && bridge.on && bridge.on('cmd', (cmd, arg) => {
+    // Native accelerators bypass DOM focus; navigation/export commands must
+    // not fire over a text box or the rename/delete prompt.
+    const fieldBusy = isTextEditing() || promptOpen()
+    if (fieldBusy && ['new-note', 'new-folder', 'import', 'import-project', 'export', 'export-project', 'reveal-library'].includes(cmd)) return
     switch (cmd) {
       case 'flush-close':
         // main intercepts window close and waits for this handshake; an async
@@ -3039,6 +3637,7 @@ export function init(app) {
         break
       case 'save': saveCurrentPage(); break
       case 'export': exportMenu($('btnSaveMore')); break
+      case 'shortcuts': if (!promptOpen()) openShortcutSheet(); break
       case 'new-note': app.cmdNewNote(); break
       case 'new-folder': app.cmdNewFolder(); break
       case 'import': app.cmdImport(); break
@@ -3067,6 +3666,11 @@ function isTextEditing() {
   const a = document.activeElement
   if (!a) return false
   return a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable
+}
+
+function promptOpen() {
+  const d = $('dlg')
+  return !!d && !d.classList.contains('hidden')
 }
 
 export function selectColor(c) {
@@ -3211,6 +3815,19 @@ function inkTooDarkForDarkBoard(hex) {
   return luma < .30 && chroma < .16
 }
 
+// The inverse: a white pen left over from a dark board vanishes on paper.
+// Only near-white neutrals are swapped, so pale colours the user chose stay.
+function inkTooLightForLightBoard(hex) {
+  const h = String(hex || '#FFFFFF').replace('#', '')
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h.padEnd(6, 'f')
+  const r = parseInt(full.slice(0, 2), 16) || 0
+  const g = parseInt(full.slice(2, 4), 16) || 0
+  const b = parseInt(full.slice(4, 6), 16) || 0
+  const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+  const chroma = (Math.max(r, g, b) - Math.min(r, g, b)) / 255
+  return luma > .88 && chroma < .08
+}
+
 function syncToolButtons() {
   const map = { erase: 'tbEraser', laser: 'tbLaser', lasso: 'tbLasso', view: 'tbEye', shape: 'tbObject' }
   for (const [tool, id] of Object.entries(map)) {
@@ -3220,6 +3837,11 @@ function syncToolButtons() {
     b.classList.toggle('active', on)
     b.setAttribute('aria-pressed', on ? 'true' : 'false')
   }
+  // The tool + its mode row share one card; the card owns the accent fill so
+  // the mode row never looks like a second selected button.
+  document.querySelectorAll('.tb-tool-split').forEach(split => {
+    split.classList.toggle('active', !!split.querySelector('.tb-toggle.active'))
+  })
   const rulerBtn = $('tbRuler')
   if (rulerBtn) {
     const on = !!S.rulerOn
@@ -3279,7 +3901,12 @@ function syncSelectFlyout() {
   const btn = $('tbLasso')
   if (btn) {
     btn.setAttribute('aria-label', `Select strokes, ${mode} mode`)
-    btn.title = `Select (${mode}) - open the label for options`
+    btn.title = `Select (${mode} mode)`
+  }
+  const modeBtn = document.querySelector('.tb-modebtn[data-fly="selectFlyout"]')
+  if (modeBtn) {
+    modeBtn.title = `Select mode: ${mode} — open options`
+    modeBtn.setAttribute('aria-label', `Select mode: ${mode}. Open options`)
   }
 }
 
@@ -3298,7 +3925,12 @@ function syncEraserFlyout() {
   const btn = $('tbEraser')
   if (btn) {
     btn.setAttribute('aria-label', `Eraser, ${mode} mode`)
-    btn.title = `Eraser (${mode}) - open the label for options`
+    btn.title = `Eraser (${mode} mode)`
+  }
+  const modeBtn = document.querySelector('.tb-modebtn[data-fly="eraserFlyout"]')
+  if (modeBtn) {
+    modeBtn.title = `Eraser mode: ${mode} — open options`
+    modeBtn.setAttribute('aria-label', `Eraser mode: ${mode}. Open options`)
   }
   $('erSizeRow').classList.toggle('hidden', S.eraserMode !== 'segment')
   document.querySelectorAll('#erSizes .er-chip').forEach(ch => {

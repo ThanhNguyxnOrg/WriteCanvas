@@ -5,7 +5,7 @@ const fs = require('node:fs/promises')
 const fss = require('node:fs')
 const os = require('node:os')
 const { Library, sanitizeName, pageFileName } = require('./library')
-const { writeNotePng, readNoteMeta, extractInkGif, extractVecJson, pngIsBroken, repairPNG } = require('./scrble-format')
+const { writeNotePng, readNoteMeta, readNotePage, pngIsBroken, repairPNG, legacyRasterBase } = require('./scrble-format')
 const { GIFEncoder, quantize, applyPalette } = require('gifenc')
 const { buildNoteZip, readNoteZip } = require('./wcanvas-export')
 
@@ -107,7 +107,7 @@ function menu() {
         { label: 'Export .wcanvas Project…', click: send('export-project') },
         { label: 'Open Library Folder', click: send('reveal-library') },
         { type: 'separator' },
-        { label: 'Save Page', accelerator: 'CmdOrCtrl+S', click: send('save') },
+        { label: 'Save Note', accelerator: 'CmdOrCtrl+S', click: send('save') },
         { label: 'Export…', accelerator: 'CmdOrCtrl+E', click: send('export') },
         { type: 'separator' },
         { role: 'quit' },
@@ -123,6 +123,12 @@ function menu() {
         { type: 'separator' },
         { role: 'reload' },
         { role: 'toggleDevTools' },
+      ],
+    },
+    {
+      role: 'help',
+      submenu: [
+        { label: 'Keyboard Shortcuts', accelerator: 'CmdOrCtrl+/', click: send('shortcuts') },
       ],
     },
   ]
@@ -144,6 +150,35 @@ async function encodeGif(frames) {
 }
 
 // ---------- IPC ----------
+async function loadPageEntry(p) {
+  if (!p.file) return { file: null, exists: false }
+  try {
+    let buf = await fs.readFile(lib.pagePath(p.file))
+    if (pngIsBroken(buf)) buf = repairPNG(buf) // heal the pre-fix bloated/interleaved layout in memory
+    const page = readNotePage(buf)
+    // Prefer the clean sRST base so vector ink is drawn exactly once.
+    // Older pages without sRST have the imported image only in IDAT; that
+    // fallback applies when their sVec has no editable content (and always
+    // for pages that were imported but never saved by us).
+    const rasterBase = page.rasterBase || (legacyRasterBase(page.vecJson) ? buf : null)
+    return {
+      file: p.file, exists: true,
+      // only shipped when it is the page image; avoid copying a flattened
+      // page alongside its sRST base
+      bytes: rasterBase === buf ? new Uint8Array(buf) : null,
+      paperMeta: page.meta,
+      inkGif: page.inkGif, // replay GIF from sINK
+      vecJson: page.vecJson, // vector strokes (sVec) when present
+      rasterBase: page.rasterBase ? new Uint8Array(page.rasterBase) : null,
+    }
+  } catch (err) {
+    // Never present an unreadable page as a blank sheet that can then be
+    // saved over the original: load it empty but flag it.
+    console.error('note:load page failed', p.file, err)
+    return { file: p.file, exists: false, loadError: true }
+  }
+}
+
 function registerIpc() {
   // Windows draws the caption buttons in a native overlay above the page; the
   // overlay has its own colour and does not inherit body.dark. Keep it in step
@@ -178,14 +213,16 @@ function registerIpc() {
   })
 
   ipcMain.handle('lib:pickRoot', async () => {
-    const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Choose library folder' })
-    if (res.canceled || !res.filePaths[0]) return null
+    const res = process.env.WC_QA_LIBRARY
+      ? { canceled: false, filePaths: [path.resolve(process.env.WC_QA_LIBRARY)] }
+      : await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Choose library folder' })
+    if (res.canceled || !res.filePaths[0]) return { canceled: true }
     try {
-      await chooseRoot(res.filePaths[0])
+      return { canceled: false, ...await chooseRoot(res.filePaths[0]) }
     } catch (err) {
-      dialog.showErrorBox('WriteCanvas — cannot use that library folder', err.message)
+      if (!process.env.WC_QA_LIBRARY) dialog.showErrorBox('WriteCanvas — cannot use that library folder', err.message)
+      return { canceled: false, error: err.message }
     }
-    return null
   })
 
   ipcMain.handle('config:reveal', async () => shell.openPath(lib.root))
@@ -254,25 +291,30 @@ function registerIpc() {
     if (!item.note) item.note = { pages: [{}], currentPage: 0 }
     // first blank page has no file yet
     const pages = []
-    for (const p of item.note.pages) {
-      if (!p.file) { pages.push({ file: null, exists: false }); continue }
-      const full = lib.pagePath(p.file)
-      try {
-        let buf = await fs.readFile(full)
-        if (pngIsBroken(buf)) buf = repairPNG(buf) // heal the pre-fix bloated/interleaved layout in memory
-        pages.push({
-          file: p.file, exists: true, bytes: new Uint8Array(buf),
-          paperMeta: readNoteMeta(buf),
-          inkGif: extractInkGif(buf) || null, // replay GIF from sINK
-          vecJson: extractVecJson(buf), // vector strokes (sVec) when present
-        })
-      } catch {
-        pages.push({ file: p.file, exists: false })
-      }
-    }
+    for (const p of item.note.pages) pages.push(await loadPageEntry(p))
     const note = JSON.parse(JSON.stringify(item))
     delete note.note // pages replaced below with bytes
     return { note, pages }
+  })
+
+  ipcMain.handle('note:loadPage', async (_e, { noteId, pageIndex }) => {
+    const item = lib.get(Number(noteId))
+    const index = Number(pageIndex)
+    const p = item && item.type === 'note' && item.note && item.note.pages ? item.note.pages[index] : null
+    if (!p) return null
+    return await loadPageEntry(p)
+  })
+
+  ipcMain.handle('note:duplicatePage', async (_e, { noteId, pageIndex }) => {
+    const res = await lib.duplicatePage(Number(noteId), Number(pageIndex))
+    pushLibrary()
+    return res
+  })
+
+  ipcMain.handle('note:deletePage', async (_e, { noteId, pageIndex }) => {
+    const pages = await lib.deletePage(Number(noteId), Number(pageIndex))
+    pushLibrary()
+    return { pages }
   })
 
   ipcMain.handle('note:savePage', async (_e, payload) => {
@@ -291,17 +333,46 @@ function registerIpc() {
     const meta = payload.meta && typeof payload.meta === 'object' ? { ...payload.meta } : {}
     delete meta.inkGif
     delete meta.vecJson
-    // New frames → encode a fresh sINK replay GIF. No frames → leave the
-    // original sINK untouched (upsertChunks only replaces provided types).
+    delete meta.rasterBase
+    // Read the previous page because the renderer only sends the flattened
+    // composite. Its sRST base (or an untouched import) must survive the save,
+    // otherwise the imported image is lost the next time the page is opened.
+    let old = null
+    const oldFile = item.note?.pages?.[pageIndex]?.file
+    if (oldFile) {
+      try {
+        let oldBuf = await fs.readFile(lib.pagePath(oldFile))
+        if (pngIsBroken(oldBuf)) oldBuf = repairPNG(oldBuf)
+        old = readNotePage(oldBuf)
+        old.buf = oldBuf
+      } catch (err) {
+        // A vanished old file is just the first save. Any other read/parse
+        // failure (transient lock, rename in flight, damaged file) must not be
+        // treated as "no base": writing now would drop the only copy of the
+        // imported image. Fail and let the autosave retry with fresh state.
+        if (!err || err.code !== 'ENOENT') throw err
+      }
+    }
+    // New frames → encode a fresh sINK replay GIF. No frames → keep the old
+    // replay (the incoming flattened PNG has no sINK chunk of its own).
     if (Array.isArray(payload.frames) && payload.frames.length) {
       if (payload.frames.length > 5000) throw new Error('too many replay frames')
       const gif = await encodeGif(payload.frames)
       if (gif && gif.length) meta.inkGif = Buffer.from(gif)
+    } else if (old && old.inkGif) {
+      meta.inkGif = old.inkGif
     }
     if (payload.vec != null) {
       const vec = String(payload.vec)
       if (vec.length > 64 * 1024 * 1024) throw new Error('vector snapshot too large')
       meta.vecJson = vec // vector strokes → sVec chunk
+    }
+    if (old) {
+      // A page written by us already carries the clean base. Older pages
+      // without an editable vector payload carry their whole flattened image
+      // as the base, so keep it instead of writing a paper-only page.
+      if (old.rasterBase) meta.rasterBase = old.rasterBase
+      else if (legacyRasterBase(old.vecJson)) meta.rasterBase = old.buf
     }
     const out = writeNotePng(png, meta)
     const file = await lib.savePage(noteId, pageIndex, out)
@@ -341,7 +412,9 @@ function registerIpc() {
   })
 
   ipcMain.handle('export:pdf', async (_e, { pages, paper }) => {
-    const res = await dialog.showSaveDialog(win, { defaultPath: `export.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] })
+    const res = process.env.WC_QA_PDF
+      ? { canceled: false, filePath: path.resolve(process.env.WC_QA_PDF) }
+      : await dialog.showSaveDialog(win, { defaultPath: `export.pdf`, filters: [{ name: 'PDF', extensions: ['pdf'] }] })
     if (res.canceled || !res.filePath) return null
     // write page PNGs + an HTML wrapper to a temp dir, then print that to one
     // PDF in the paper's physical size (loadFile, not data: — a data: page
@@ -353,25 +426,28 @@ function registerIpc() {
       await fs.writeFile(f, Buffer.from(pages[i]))
       files.push(f)
     }
-    const wIn = Math.round((paper.widthMM / 25.4) * 100) / 100
-    const hIn = Math.round((paper.heightMM / 25.4) * 100) / 100
+    const wMM = Math.round(paper.widthMM * 100) / 100
+    const hMM = Math.round(paper.heightMM * 100) / 100
+    const wIn = Math.round((wMM / 25.4) * 100) / 100
+    const hIn = Math.round((hMM / 25.4) * 100) / 100
     const htmlFile = path.join(tmp, 'pages.html')
     await fs.writeFile(htmlFile, `<!doctype html><html><head><style>
-      @page { margin: 0 } html,body{margin:0;padding:0}
-      img{display:block;width:${wIn}in;height:${hIn}in;page-break-after:always}
+      @page { size: ${wMM}mm ${hMM}mm; margin: 0 }
+      html,body{margin:0;padding:0}
+      img{display:block;width:${wMM}mm;height:${hMM}mm;object-fit:contain;page-break-after:always}
       img:last-child{page-break-after:auto}
     </style></head><body>${files.map(f => `<img src="file:///${f.replace(/\\/g, '/')}">`).join('')}</body></html>`, 'utf8')
     const pdfWin = new BrowserWindow({ show: false, width: 1000, height: 900, webPreferences: { offscreen: true } })
     try {
       await pdfWin.loadFile(htmlFile)
-      const buf = await pdfWin.printToPDF({
+      const buf = await pdfWin.webContents.printToPDF({
         printBackground: true,
         pageSize: { width: wIn, height: hIn },
+        preferCSSPageSize: true,
         margins: { marginType: 'none' },
-        landscape: !!paper.landscape,
       })
       await fs.writeFile(res.filePath, buf)
-      shell.showItemInFolder(res.filePath)
+      if (!process.env.WC_QA_PDF) shell.showItemInFolder(res.filePath)
     } finally {
       pdfWin.destroy()
       for (const f of files) { try { await fs.unlink(f) } catch { } }
@@ -402,8 +478,13 @@ function registerIpc() {
           // under a stable page-NN.png name, not the library's per-note file
           entry.file = `page-${String(i + 1).padStart(2, '0')}.png`
           entry.data = buf
-        } catch {
-          // page image missing on disk: keep the page in the manifest as blank
+        } catch (err) {
+          // Only a genuinely absent page may become a blank manifest entry.
+          // A locked/unreadable/damaged page must abort the export instead of
+          // silently producing an editable copy that lost that page's ink.
+          if (!err || err.code !== 'ENOENT') {
+            throw new Error(`Cannot export page ${i + 1} (${p.file}): ${err.message}`)
+          }
           entry.file = null
         }
       }
@@ -487,12 +568,14 @@ function registerIpc() {
     while (lib.siblingNameTaken(folder, 'note', finalName, 0) || !pagesFree(finalName)) finalName = `${base} ${++probe}`
     const note = lib.create('note', finalName, folder)
     const pages = []
+    const written = []
     try {
       for (let i = 0; i < manifest.pages.length; i++) {
         const want = manifest.pages[i]
         const page = {}
         if (want.file) {
           const file = pageFileName(note.name, i)
+          written.push(file)
           await fs.writeFile(lib.pagePath(file), byName.get(want.file))
           page.file = file
         }
@@ -500,8 +583,11 @@ function registerIpc() {
         pages.push(page)
       }
     } catch (err) {
-      // never leave a half-imported note in the working index
+      // never leave a half-imported note (or its page files) behind
       lib.index.items = lib.index.items.filter(i => i !== note)
+      for (const file of written) {
+        try { await fs.unlink(lib.pagePath(file)) } catch { }
+      }
       throw err
     }
     note.note = { pages, currentPage: 0 }
@@ -515,15 +601,32 @@ function registerIpc() {
 }
 
 async function chooseRoot(dir) {
+  const resolved = path.resolve(dir)
+  if (resolved === path.resolve(lib.root)) return { unchanged: true, root: lib.root }
   // validate the new root before replacing the working library: a bad folder
   // must leave the current library usable
-  const next = new Library(dir)
+  const next = new Library(resolved)
+  let hasIndex = true
+  try { await fs.access(next.indexFile) } catch {
+    try { await fs.access(next.indexFile + '.bak') } catch { hasIndex = false }
+  }
+  if (!hasIndex) {
+    // ensure() would create a fresh empty index here. If the folder already
+    // holds Scrble note images, switching would make them disappear from the
+    // library (and future saves could overwrite same-named pages).
+    let pages = []
+    try { pages = (await fs.readdir(next.scribbleDir)).filter(f => /\.png$/i.test(f)) } catch { }
+    if (pages.length) {
+      throw new Error(`That folder contains ${pages.length} note image(s) in Scribble/ but no index.json. Choose the folder that holds your WriteCanvas library, or an empty folder.`)
+    }
+  }
   await next.ensure()
   const cfg = await loadConfig()
-  cfg.root = dir
+  cfg.root = resolved
   await saveConfig(cfg)
   lib = next
   pushLibrary()
+  return { unchanged: false, root: lib.root }
 }
 
 app.whenReady().then(async () => {

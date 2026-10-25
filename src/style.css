@@ -17,7 +17,6 @@
   --on-accent: #ffffff;
   --danger: #c62828;
   --paper-white: #ffffff;
-  --placeholder: #eef4fb;
   --field: #ffffff;
   --hover: #eceff4;
   --active: #e1e6ee;
@@ -33,7 +32,6 @@ body.dark {
   --surface: #222831;
   --surface-2: #171b21;
   --workspace: #0b0d10;
-  --placeholder: #1a1f26;
   --navy: #8ab4f8;
   --ink: #e6e9ef;
   --dim: #99a4b3;
@@ -94,18 +92,17 @@ body.native-frame #capRow { display: none; }
   padding-top: 2px; flex: 0 0 auto; min-height: 1.2em;
 }
 .pageThumb {
-  width: 140px; height: 186px; background: #fff center/cover no-repeat;
+  /* height follows the sheet's aspect ratio (set inline per page) so landscape
+     pages are not cropped and empty pages stay visible in dark mode */
+  width: 140px; aspect-ratio: 3 / 4; background: #fff center/cover no-repeat;
   border-radius: 3px; box-shadow: 0 1px 4px rgba(0,0,0,.22); flex: 0 0 auto;
 }
 .pageItem:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.pageItem.cur { background: var(--accent); color: var(--on-accent); }
-.pageItem.cur .num { color: var(--on-accent); }
-.pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--surface), 0 2px 8px rgba(0,0,0,.25); }
-/* A full accent-blue slab is too loud against the midnight chrome. Keep the
-   selected page obvious with a quiet tint + accent edge instead. */
-body.dark .pageItem.cur { background: var(--accent-soft); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
-body.dark .pageItem.cur .num { color: var(--accent-strong); }
-body.dark .pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgba(0,0,0,.45); }
+/* Selected page: a quiet tint + accent edge reads as a rail selection in both
+   themes; a full accent slab made the page look like a different component. */
+.pageItem.cur { background: var(--accent-soft); color: var(--ink); box-shadow: inset 3px 0 0 var(--accent); }
+.pageItem.cur .num { color: var(--accent-strong); font-weight: 650; }
+.pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgba(0,0,0,.25); }
 #pageNav { display: flex; gap: 6px; margin: 0 16px 12px; }
 #btnAddPage {
   flex: 1; min-width: 0; height: 38px; border: 1px solid var(--line);
@@ -230,28 +227,53 @@ body.dark .tb-swatch.sel { box-shadow: inset 0 0 0 1px rgba(255,255,255,.30), 0 
 #topbar button.tb-toggle.active:hover { background: var(--accent); filter: brightness(1.04); }
 
 /* Split tool + always-visible mode label. The mode half is a real 24px
-   target, so "Stroke" / "Click" is one click away instead of a tiny caret. */
-.tb-tool-split { display: flex; flex-direction: column; width: 62px; height: 62px; flex: none; }
+   target, so "Stroke" / "Click" is one click away instead of a tiny caret.
+   Both halves share one rounded card: selecting the tool must not look like a
+   second button appeared underneath it. */
+.tb-tool-split {
+  position: relative; display: flex; flex-direction: column; width: 62px; height: 62px;
+  flex: none; border-radius: 10px;
+  transition: background-color .12s ease, box-shadow .12s ease;
+}
 .tb-tool-split .tb-toggle {
   width: 100%; height: 38px; padding: 2px 2px 0; gap: 1px;
   border-radius: 10px 10px 0 0;
 }
 .tb-tool-split .tb-toggle svg { width: 22px; height: 22px; }
 .tb-tool-split .tb-label { font-size: 10.5px; }
-.tb-tool-split .tb-toggle.active { border-radius: 10px 10px 0 0; }
+.tb-tool-split.active {
+  background: var(--accent);
+  box-shadow: 0 3px 10px rgba(11, 99, 197, .25);
+}
+.tb-tool-split.active .tb-toggle,
+#topbar .tb-tool-split .tb-toggle.active {
+  background: transparent; border-radius: 10px 10px 0 0;
+  box-shadow: none; color: var(--on-accent);
+}
+.tb-tool-split.active .tb-toggle:hover,
+#topbar .tb-tool-split .tb-toggle.active:hover { background: transparent; filter: none; }
 .tb-modebtn {
   width: 100%; height: 24px; padding: 0 1px; border: 0; background: transparent;
   color: var(--dim); font-size: 9.5px; font-weight: 600; line-height: 1;
   cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
   gap: 3px; border-radius: 0 0 10px 10px; white-space: nowrap;
+  box-shadow: inset 0 1px 0 var(--line);
 }
 .tb-modebtn:hover { background: var(--hover); color: var(--ink); }
-.tb-tool-split .tb-toggle.active + .tb-modebtn {
-  background: var(--accent); color: var(--on-accent);
-  box-shadow: 0 3px 10px rgba(11, 99, 197, .25);
+.tb-tool-split.active .tb-modebtn {
+  color: var(--on-accent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
 }
-.tb-tool-split .tb-toggle.active + .tb-modebtn:hover { background: var(--accent); filter: brightness(1.04); }
-.mode-chevron { font-size: 8px; opacity: .75; }
+.tb-tool-split.active .tb-modebtn:hover {
+  background: rgba(255,255,255,.12); color: var(--on-accent);
+}
+.mode-chevron { width: 10px; height: 10px; flex: none; opacity: .65; }
+.tb-tool-split.active .mode-chevron { opacity: .9; }
+.tb-tool-split.active button:focus-visible {
+  outline-color: var(--on-accent); outline-offset: -3px;
+}
+body.dark .tb-tool-split.active .tb-modebtn { box-shadow: inset 0 1px 0 rgba(0,0,0,.18); }
+body.dark .tb-tool-split.active .tb-modebtn:hover { background: rgba(0,0,0,.08); }
 /* The laser is a presentation pointer, not another ink pen. A red active
    state plus the beam/dot icon keeps it from reading as a red marker. */
 #topbar button#tbLaser.active { background: #c62828; box-shadow: 0 3px 10px rgba(198, 40, 40, .28); }
@@ -268,17 +290,18 @@ body.dark .tb-swatch.sel { box-shadow: inset 0 0 0 1px rgba(255,255,255,.30), 0 
 .tb-split .tb-toggle.active + .tb-more { color: var(--on-accent); }
 .tb-split .tb-toggle.active + .tb-more:hover { background: rgba(255,255,255,.16); color: var(--on-accent); }
 
-/* Save is a split command: the floppy saves immediately; the download half
-   opens the export/note menu directly, with no second "Options" dialog. */
+/* Save is a split command: the floppy saves immediately; the chevron opens
+   the export/note menu. Keep the chevron narrow so it reads as one control,
+   not a second save button. */
 .tb-save-split { display: inline-flex; align-items: stretch; position: relative; }
 .tb-save-split #btnSave { border-radius: 10px 0 0 10px; }
 .tb-save-split .tb-more {
-  position: static; width: 30px; height: auto; min-height: 48px;
+  position: static; width: 24px; height: auto; min-height: 48px;
   border-left: 1px solid var(--line); border-radius: 0 10px 10px 0;
   font-size: 0; color: var(--dim);
 }
 .tb-save-split .tb-more:hover { background: var(--hover); color: var(--ink); }
-.tb-save-split .tb-export svg { width: 18px; height: 18px; display: block; }
+.tb-save-split .tb-save-menu svg { width: 13px; height: 13px; display: block; }
 
 /* Keep the live-region in the a11y tree without spending toolbar width. The
    save button itself carries the visible saving/saved/error dot. */
@@ -517,6 +540,13 @@ body.dark #penTypeRow .pt-sample { filter: invert(1); }
   color: var(--ink); outline: none;
 }
 .fs-input input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.fs-loc-path {
+  padding: 8px 10px; font-size: 12px; line-height: 1.35;
+  color: var(--ink); background: var(--field); border: 1px solid var(--line);
+  border-radius: 8px; overflow-wrap: anywhere;
+}
+.fs-loc-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.fs-loc-actions .fs-btn { height: 32px; padding: 0 10px; font-size: 12px; }
 .fs-clear {
   position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
   width: 26px; height: 26px; border: none; background: transparent; color: var(--dim);
@@ -534,6 +564,17 @@ body.dark #penTypeRow .pt-sample { filter: invert(1); }
 
 /* board-color flyout */
 #paperColorFlyout { width: 388px; }
+.board-scope { display: flex; gap: 6px; margin: 2px 0 10px; }
+.board-scope-btn {
+  flex: 1; height: 32px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface-2); color: var(--dim); font-size: 12px; font-weight: 600;
+  cursor: pointer;
+}
+.board-scope-btn:hover { background: var(--hover); color: var(--ink); }
+.board-scope-btn[aria-pressed="true"] {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong);
+}
+.board-scope-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .board-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 2px 0 4px; }
 .board-preset {
   height: 64px; display: flex; align-items: center; gap: 10px; padding: 8px;
@@ -620,6 +661,20 @@ body.dark #penTypeRow .pt-sample { filter: invert(1); }
 #tree .icon { width: 18px; height: 18px; flex: none; display: inline-flex; align-items: center; justify-content: center; opacity: .8; }
 #tree .icon svg { width: 18px; height: 18px; display: block; }
 #tree .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#libFoot { padding: 7px 8px; border-top: 1px solid var(--line); }
+#btnShortcuts {
+  width: 100%; height: 36px; display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 0 9px; border: 1px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--dim); font-size: 12.5px; cursor: pointer;
+}
+#btnShortcuts:hover { background: var(--hover); color: var(--ink); }
+#btnShortcuts kbd, .shortcut-row kbd {
+  flex: none; min-width: 30px; padding: 3px 7px; text-align: center;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2);
+  color: var(--ink); font: 600 11.5px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  box-shadow: 0 1px 0 var(--line);
+}
+body.dark #btnShortcuts kbd, body.dark .shortcut-row kbd { background: var(--field); }
 
 .ctxmenu {
   position: absolute; z-index: 60; background: var(--surface);
@@ -659,8 +714,31 @@ body.dark #penTypeRow .pt-sample { filter: invert(1); }
 #dlgOk.danger { background: var(--danger); color: var(--on-accent); }
 #dlgOk { font-weight: 650; }
 
-/* empty page thumbs use the app surface until inked */
-.pageThumb.placeholder { background: var(--placeholder) !important; box-shadow: inset 0 0 3px rgba(0,0,0,.08); }
+#shortcutSheet {
+  position: fixed; inset: 0; z-index: 110; background: rgba(8,12,20,.48);
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(2px);
+}
+#shortcutBox {
+  width: min(720px, calc(100vw - 48px)); max-height: min(690px, calc(100vh - 48px));
+  overflow: auto; padding: 20px 22px 18px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.shortcut-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+#shortcutTitle { font-size: 17px; font-weight: 700; color: var(--ink); }
+.shortcut-sub { margin-top: 3px; font-size: 12px; color: var(--dim); }
+#shortcutList { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 26px; }
+.shortcut-group h3 {
+  margin: 0 0 7px; font-size: 10.5px; font-weight: 700; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--dim);
+}
+.shortcut-row {
+  min-height: 30px; display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; font-size: 13px; color: var(--ink);
+}
+.shortcut-row span { min-width: 0; }
+@media (max-width: 620px) { #shortcutList { grid-template-columns: 1fr; } }
 
 /* caret hot-zone: only tools that own a secondary flyout get one */
 .tb-toggle { position: relative; }

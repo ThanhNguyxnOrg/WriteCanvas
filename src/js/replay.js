@@ -1,5 +1,5 @@
 // Ink replay recorder — mirrors the original app's behavior of embedding an
-// animated GIF of the drawing (the sINK chunk, docs/ANALYSIS.md §3).
+// animated GIF of the drawing (the sINK chunk; see docs/FORMAT.md).
 // Frames are captured after every committed visual change; the main process
 // encodes them into a GIF with gifenc at save time.
 

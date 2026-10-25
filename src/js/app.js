@@ -2,7 +2,7 @@
 // library tree in sync with main-process pushes; exposes a small test hook.
 
 import { bridge } from './bridge.js'
-import { init as initEditor, S, openNote, closeNote, saveCurrentPage, ruler } from './editor.js'
+import { init as initEditor, S, openNote, closeNote, saveCurrentPage, flushCurrentPage, showHint, ruler } from './editor.js'
 import { init as initLib, update as libUpdate, selectNote, selectedFolder } from './library.js'
 import { promptText } from './ctx.js'
 
@@ -19,6 +19,13 @@ const App = {
     closeNote()
     bridge.library().then(libUpdate)
   },
+
+  // Persist the open note before a destructive library action; the caller
+  // aborts when this returns false instead of deleting unsaved work.
+  async flushNote() {
+    try { return await flushCurrentPage() } catch (err) { console.error(err); return false }
+  },
+  notify(msg) { showHint(msg) },
 
   // menu / shortcut command handlers
   async cmdNewNote() {

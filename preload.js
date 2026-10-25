@@ -1,8 +1,9 @@
 'use strict'
 const { contextBridge, ipcRenderer } = require('electron')
 
-// Bridge adapter for the Electron host. Mirrors the contract in the spec:
-// docs/specs/2026-10-19-writecanvas-design.md
+// Bridge adapter for the Electron host. This is the whole trust boundary between
+// the renderer and Node; the contract and the invariants behind it are described
+// in docs/ARCHITECTURE.md.
 contextBridge.exposeInMainWorld('WriteCanvasHost', {
   platform: process.platform,
   async library() { return ipcRenderer.invoke('lib:get') },
@@ -15,6 +16,9 @@ contextBridge.exposeInMainWorld('WriteCanvasHost', {
   async moveItem(id, parentId) { return ipcRenderer.invoke('item:move', { id, parentId }) },
   async destroyItem(id) { return ipcRenderer.invoke('item:destroy', { id }) },
   async loadNote(id) { return ipcRenderer.invoke('note:load', { id }) },
+  async loadPage(noteId, pageIndex) { return ipcRenderer.invoke('note:loadPage', { noteId, pageIndex }) },
+  async duplicatePage(noteId, pageIndex) { return ipcRenderer.invoke('note:duplicatePage', { noteId, pageIndex }) },
+  async deletePage(noteId, pageIndex) { return ipcRenderer.invoke('note:deletePage', { noteId, pageIndex }) },
   // payload: {noteId,pageIndex,png:Uint8Array,frames:[{delay,width,height,data}],meta}
   // Typed arrays cross contextBridge via structured clone — pass through as-is.
   async savePage(payload) { return ipcRenderer.invoke('note:savePage', payload) },

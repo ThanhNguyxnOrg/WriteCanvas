@@ -150,6 +150,11 @@ async function newFolder(parentId) {
 async function rename(item) {
   const name = await promptText(`Rename "${item.name}"`, item.name)
   if (!name || name === item.name) return
+  // The note's page files move with its title; save them first.
+  if (item.id === currentNote && item.type === 'note' && !(await app.flushNote())) {
+    app.notify('Save failed — rename cancelled')
+    return
+  }
   await app.bridge.renameItem(item.id, name)
   if (item.id === currentNote && app.reloadTitle) app.reloadTitle()
 }
@@ -188,13 +193,23 @@ async function destroy(item) {
     }
   }
   const wasOpen = gone.has(currentNote)
+  // Save the open note BEFORE deleting anything. Closing first discarded the
+  // note's unsaved pages, and a failed flush had already removed its rows.
+  if (wasOpen) {
+    const saved = await app.flushNote()
+    if (!saved) { app.notify('Save failed — delete cancelled'); return }
+  }
+  try {
+    await app.bridge.destroyItem(item.id)
+  } catch (err) {
+    console.error(err)
+    app.notify('Delete failed — nothing was removed')
+    return
+  }
   if (item.id === currentNote) currentNote = 0
   if (item.id === selected) selected = 0
-  // Close before destroying: openNote() flushes the current page first, and a
-  // flush against a deleted file used to block every later note switch.
-  if (wasOpen) app.closeNote()
-  await app.bridge.destroyItem(item.id)
   if (wasOpen) {
+    app.closeNote()
     const next = items.find(i => i.type === 'note' && !gone.has(i.id))
     if (next) await app.openNote(next.id)
     else await app.cmdNewNote()
