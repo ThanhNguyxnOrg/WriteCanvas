@@ -134,6 +134,12 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run dist -- --publish never
 
+      # Reads the app.asar that is about to be packaged and refuses to continue
+      # if the bridge or the renderer is missing. This is the check that would
+      # have caught the 0.1.0 installer opening to "No host bridge found".
+      - name: Verify the packaged bundle
+        run: node .github/scripts/verify-package.mjs
+
       - name: Collect the installer
         uses: actions/upload-artifact@v7
         with:
