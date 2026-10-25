@@ -62,8 +62,18 @@ touched.
 
 - A tag on the release commit, and a GitHub Release whose notes are written by a
   person in `CHANGELOG.md`.
-- Four installers: `WriteCanvas Setup <version>.exe`, `WriteCanvas-<version>.dmg`,
-  `WriteCanvas-<version>.AppImage` and `writecanvas_<version>_amd64.deb`.
+- Four installers, named by electron-builder:
+
+| Asset | Platform |
+|---|---|
+| `WriteCanvas.Setup.<version>.exe` | Windows x64, NSIS |
+| `WriteCanvas-<version>-arm64.dmg` | macOS Apple silicon |
+| `WriteCanvas-<version>.AppImage` | Linux x64 |
+| `writecanvas_<version>_amd64.deb` | Linux x64, Debian/Ubuntu |
+
+The macOS runner is Apple silicon, so the DMG is arm64. Intel Macs are not built
+yet: adding an x64 leg (or a universal binary) is a matrix change in
+`release.yml` and a deliberate follow-up, not something to assume.
 
 **The builds are unsigned.** There is no code-signing certificate configured, so
 Windows SmartScreen and macOS Gatekeeper will warn the first time the installer
