@@ -121,6 +121,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The deb target shells out to fakeroot; the runner image does usually have
+      # it, and this makes the job independent of that.
+      - name: Install packaging tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fakeroot
+
       - name: Build the installer
         env:
           # No code signing: the builds are unsigned, so electron-builder must not
