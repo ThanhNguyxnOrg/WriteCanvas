@@ -38,7 +38,7 @@ That push does the rest:
 |---|---|
 | Resolve | The subject is parsed. A push whose subject is not `release: vX.Y.Z` ends here with a notice and changes nothing. |
 | Guard | If `vX.Y.Z` is already published, the run stops — unless it was asked to replace that version's files (see below). |
-| Build | Four packaging jobs, one per installer: NSIS on Windows, DMG on macOS, AppImage and deb on Linux. **This is the only place a build happens**; an ordinary push never triggers one, because each job downloads Electron and packages the app. |
+| Build | Five packaging jobs, one per operating system and architecture: NSIS x64 on Windows, DMG for Intel and Apple silicon, AppImage and deb for x64 and arm64 Linux. **This is the only place a build happens**; an ordinary push never triggers one, because each job downloads Electron and packages the app. |
 | Verify | Each build job reads its own `app.asar` and fails if the bridge (`preload.js`), the renderer entry point or the runtime dependency is missing. This is what the 0.1.0 installer needed. |
 | Launch | Each build job then starts the packaged app on its own operating system — with a throwaway profile and library, under a virtual display on Linux — and fails unless the bridge exists and the editor renders. A complete bundle can still be unable to start on one platform. |
 | Publish | The notes come from the `## [X.Y.Z]` section of `CHANGELOG.md`, and the installers built above are attached to the release. Created with a ThanhNguyxnAgent token, so the Release page names the Agent. |
@@ -69,13 +69,16 @@ touched.
 | Asset | Platform |
 |---|---|
 | `WriteCanvas.Setup.<version>.exe` | Windows x64, NSIS assisted setup — it asks where to install |
-| `WriteCanvas-<version>-arm64.dmg` | macOS Apple silicon |
-| `WriteCanvas-<version>.AppImage` | Linux x64 |
+| `WriteCanvas-<version>-mac-x64.dmg` | macOS Intel |
+| `WriteCanvas-<version>-mac-arm64.dmg` | macOS Apple silicon |
+| `WriteCanvas-<version>-linux-x64.AppImage` | Linux x64 |
 | `writecanvas_<version>_amd64.deb` | Linux x64, Debian/Ubuntu |
+| `WriteCanvas-<version>-linux-arm64.AppImage` | Linux arm64 |
+| `writecanvas_<version>_arm64.deb` | Linux arm64, Debian/Ubuntu |
 
-The macOS runner is Apple silicon, so the DMG is arm64. Intel Macs are not built
-yet: adding an x64 leg (or a universal binary) is a matrix change in
-`release.yml` and a deliberate follow-up, not something to assume.
+Each architecture is built on a runner of that architecture, so the launch check
+below runs the real binary rather than an emulation. Windows is x64 only; a
+32-bit or Windows-on-ARM build is not produced.
 
 **The builds are unsigned.** There is no code-signing certificate configured, so
 Windows SmartScreen and macOS Gatekeeper will warn the first time the installer

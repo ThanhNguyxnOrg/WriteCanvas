@@ -45,7 +45,11 @@
     },
     "mac": {
       "target": "dmg",
-      "icon": "src/img/writecanvas.png"
+      "icon": "src/img/writecanvas.png",
+      "artifactName": "WriteCanvas-${version}-mac-${arch}.${ext}"
+    },
+    "appImage": {
+      "artifactName": "WriteCanvas-${version}-linux-${arch}.${ext}"
     },
     "linux": {
       "category": "Utility",

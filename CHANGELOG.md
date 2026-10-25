@@ -19,10 +19,10 @@ whose installers were the first ones that ran; those builds have been withdrawn.
 ### Added
 
 - **Installer** — a build for every desktop target is attached to the release: an
-  assisted NSIS setup on Windows that asks where to install, a DMG on macOS, and
-  an AppImage plus a deb on Linux. They are built only when a release is
-  published, so an ordinary commit never spends three operating systems' worth of
-  packaging time.
+  assisted NSIS setup on Windows that asks where to install, a DMG for Intel and
+  Apple silicon, and an AppImage plus a deb for x64 and arm64 Linux. They are
+  built only when a release is published, so an ordinary commit never spends
+  three operating systems' worth of packaging time.
 - **Library** — folders and notes in a chosen folder, stored as
   `Scribble/<Name>#<NN>.png` beside an `index.json`, mirroring the Scrble Ink
   layout so a library can be shared between the two apps. Create, rename, move,

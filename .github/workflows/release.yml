@@ -91,7 +91,7 @@ jobs:
           fi
 
   build:
-    name: build / ${{ matrix.os }}
+    name: build / ${{ matrix.os }} / ${{ matrix.arch }}
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.skip == 'false'
     runs-on: ${{ matrix.os }}
@@ -99,15 +99,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # One job per architecture, on a runner of that architecture, so the
+        # launch check below runs the real binary rather than an emulation.
         include:
           - os: windows-latest
-            glob: dist/*.exe
+            arch: x64
+          - os: macos-15-intel
+            arch: x64
           - os: macos-latest
-            glob: dist/*.dmg
+            arch: arm64
           - os: ubuntu-latest
-            glob: dist/*.AppImage
-          - os: ubuntu-latest
-            glob: dist/*.deb
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@v7
 
@@ -133,25 +137,33 @@ jobs:
           # No code signing: the builds are unsigned, so electron-builder must not
           # go looking for a certificate.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist -- --publish never
+        run: npm run dist -- --publish never --${{ matrix.arch }}
 
       # Reads the app.asar that is about to be packaged and refuses to continue
       # if the bridge or the renderer is missing. This is the check that would
       # have caught the 0.1.0 installer opening to "No host bridge found".
       - name: Verify the packaged bundle
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
         run: node .github/scripts/verify-package.mjs
 
       # Starts the packaged app on this runner and asks the page whether the
       # bridge and the editor came up. A bundle can be complete and still fail to
       # launch on one platform, which is exactly what this catches.
       - name: Launch the packaged app
+        env:
+          PACKAGE_ARCH: ${{ matrix.arch }}
         run: node .github/scripts/smoke-package.mjs
 
       - name: Collect the installer
         uses: actions/upload-artifact@v7
         with:
-          name: installer-${{ matrix.os }}-${{ strategy.job-index }}
-          path: ${{ matrix.glob }}
+          name: installer-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
+            dist/*.deb
           if-no-files-found: error
           retention-days: 3
 
