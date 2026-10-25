@@ -67,7 +67,7 @@ touched.
 
 | Asset | Platform |
 |---|---|
-| `WriteCanvas.Setup.<version>.exe` | Windows x64, NSIS |
+| `WriteCanvas.Setup.<version>.exe` | Windows x64, NSIS assisted setup — it asks where to install |
 | `WriteCanvas-<version>-arm64.dmg` | macOS Apple silicon |
 | `WriteCanvas-<version>.AppImage` | Linux x64 |
 | `writecanvas_<version>_amd64.deb` | Linux x64, Debian/Ubuntu |

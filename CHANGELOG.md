@@ -11,19 +11,18 @@ written before the release commit — see
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-10-25
+## [1.0.0] - 2026-10-25
 
-The first release with installers that run. The 0.1.0 and 0.1.1 packages shipped
-without `preload.js`, so the installed app opened to "No host bridge found" while
-running from source worked; those releases are withdrawn and this one replaces
-them.
+First stable release. It replaces the 0.1.x development builds, including 0.1.2,
+whose installers were the first ones that ran; those builds have been withdrawn.
 
 ### Added
 
-- **Installers with every release** — NSIS on Windows, DMG on macOS, AppImage and
-  deb on Linux are built and attached to the release. They are built only when a
-  release is published, so an ordinary commit never spends three operating
-  systems' worth of packaging time.
+- **Installer** — a build for every desktop target is attached to the release: an
+  assisted NSIS setup on Windows that asks where to install, a DMG on macOS, and
+  an AppImage plus a deb on Linux. They are built only when a release is
+  published, so an ordinary commit never spends three operating systems' worth of
+  packaging time.
 - **Library** — folders and notes in a chosen folder, stored as
   `Scribble/<Name>#<NN>.png` beside an `index.json`, mirroring the Scrble Ink
   layout so a library can be shared between the two apps. Create, rename, move,
@@ -61,8 +60,9 @@ them.
 
 - **Packaged app had no bridge** — `preload.js` was missing from `build.files`, so
   the renderer could not reach the main process and the window showed "No host
-  bridge found". The file is now shipped, and a test fails if a root-level file
-  the main process opens is left out of the bundle.
+  bridge found". The file is now shipped, a test fails if a root-level file the
+  main process opens is left out of the bundle, and every release build verifies
+  its own `app.asar` before uploading.
 - **App icon** — the installers and the window now carry the WriteCanvas icon
   instead of Electron's default.
 - **Linux packaging** — the deb target failed with "Please specify author
@@ -79,5 +79,5 @@ them.
   `WriteCanvasHost` bridge in `preload.js`; every library path from the renderer
   is resolved and validated in the main process before it is used.
 
-[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v0.1.2...HEAD
-[0.1.2]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v0.1.2
+[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.0.0
