@@ -2,7 +2,7 @@
 // library tree in sync with main-process pushes; exposes a small test hook.
 
 import { bridge } from './bridge.js'
-import { init as initEditor, S, openNote, saveCurrentPage, ruler } from './editor.js'
+import { init as initEditor, S, openNote, closeNote, saveCurrentPage, ruler } from './editor.js'
 import { init as initLib, update as libUpdate, selectNote, selectedFolder } from './library.js'
 import { promptText } from './ctx.js'
 
@@ -13,6 +13,11 @@ const App = {
 
   async openNote(id) {
     try { await openNote(id) } catch (err) { console.error('openNote failed', err) }
+  },
+
+  closeNote() {
+    closeNote()
+    bridge.library().then(libUpdate)
   },
 
   // menu / shortcut command handlers
@@ -69,12 +74,16 @@ async function main() {
   libUpdate(lib)
   wirePushes()
 
-  // reopen the last note
+  // Reopen the last note. A fresh install, or a library whose last note was
+  // deleted, must still land on a writable page instead of an empty editor.
   const last = Number(localStorage.getItem('wc:lastNote'))
-  if (last && lib.items.some(i => i.id === last)) await App.openNote(last)
+  const notes = (lib.items || []).filter(i => i.type === 'note')
+  if (last && notes.some(i => i.id === last)) await App.openNote(last)
+  else if (notes.length) await App.openNote(notes[0].id)
+  else await App.cmdNewNote()
 }
 
 // deterministic test hooks for the Playwright/CDP flows
-window.__wc = { App, S, saveCurrentPage, openNote, ruler }
+window.__wc = { App, S, saveCurrentPage, openNote, closeNote, ruler }
 
 main()

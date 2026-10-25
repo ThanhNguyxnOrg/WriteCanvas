@@ -104,6 +104,7 @@ function menu() {
         { type: 'separator' },
         { label: 'Import PNG…', click: send('import') },
         { label: 'Import .wcanvas Project…', click: send('import-project') },
+        { label: 'Export .wcanvas Project…', click: send('export-project') },
         { label: 'Open Library Folder', click: send('reveal-library') },
         { type: 'separator' },
         { label: 'Save Page', accelerator: 'CmdOrCtrl+S', click: send('save') },

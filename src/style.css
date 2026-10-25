@@ -112,7 +112,8 @@ body.dark .pageItem.cur .pageThumb { box-shadow: 0 0 0 2px var(--accent), 0 2px 
   background: var(--surface); color: var(--ink); font-size: 20px; border-radius: 9px;
   cursor: pointer;
 }
-#btnAddPage:hover { background: var(--hover); border-color: var(--accent); }
+#btnAddPage:hover:not(:disabled) { background: var(--hover); border-color: var(--accent); }
+#btnAddPage:disabled { opacity: .32; cursor: default; }
 #btnPrevPage, #btnNextPage {
   width: 38px; min-width: 38px; height: 38px; border: 1px solid var(--line);
   background: var(--surface); color: var(--ink); font-size: 22px; line-height: 1;
@@ -507,6 +508,7 @@ body.dark #penTypeRow .pt-sample { filter: invert(1); }
 
 /* save flyout */
 #saveFlyout { width: 300px; }
+.fs-hint { margin: 0 0 2px; font-size: 12px; line-height: 1.45; color: var(--dim); text-align: left; }
 .fs-label { display: block; font-size: 12px; font-weight: 650; color: var(--dim); margin: 10px 0 5px; text-align: left; }
 .fs-input { position: relative; }
 .fs-input input {
@@ -630,6 +632,11 @@ body.dark #penTypeRow .pt-sample { filter: invert(1); }
 }
 .ctxmenu button:hover { background: var(--hover); }
 .ctxmenu button.danger { color: var(--danger); }
+.ctxmenu button:disabled { opacity: .4; cursor: default; background: none; }
+.ctxmenu .ctx-head {
+  padding: 7px 12px 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .09em;
+  text-transform: uppercase; color: var(--dim);
+}
 
 #dlg {
   position: fixed; inset: 0; background: rgba(8,12,20,.48); z-index: 100;

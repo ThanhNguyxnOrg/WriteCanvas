@@ -177,7 +177,26 @@ function moveTo(item) {
 async function destroy(item) {
   const ok = await askConfirm(`Delete "${item.name}"${item.type === 'folder' ? ' and everything inside' : ''}?`)
   if (!ok) return
+  const gone = new Set([item.id])
+  if (item.type === 'folder') {
+    let grew = true
+    while (grew) {
+      grew = false
+      for (const it of items) {
+        if (it.parent && gone.has(it.parent) && !gone.has(it.id)) { gone.add(it.id); grew = true }
+      }
+    }
+  }
+  const wasOpen = gone.has(currentNote)
   if (item.id === currentNote) currentNote = 0
-  await app.bridge.destroyItem(item.id)
   if (item.id === selected) selected = 0
+  // Close before destroying: openNote() flushes the current page first, and a
+  // flush against a deleted file used to block every later note switch.
+  if (wasOpen) app.closeNote()
+  await app.bridge.destroyItem(item.id)
+  if (wasOpen) {
+    const next = items.find(i => i.type === 'note' && !gone.has(i.id))
+    if (next) await app.openNote(next.id)
+    else await app.cmdNewNote()
+  }
 }

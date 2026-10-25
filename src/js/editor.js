@@ -438,6 +438,32 @@ export async function openNote(id) {
   }
 }
 
+// Clear the editor when the open note is deleted. Leaving S.noteId pointing at
+// a removed note made the next openNote() try to flush a file that no longer
+// exists, so the app refused to switch notes.
+export function closeNote() {
+  disposePages()
+  clearSelection()
+  S.noteId = null
+  S.note = null
+  S.pages = []
+  S.currentPage = -1
+  hidePullHint()
+  hidePagePeek()
+  const host = $('canvasHost')
+  if (host) { host.scrollTop = 0; host.scrollLeft = 0 }
+  for (const id of ['paperC', 'rasterC', 'inkC', 'liveC', 'laserC', 'rulerC']) {
+    const c = $(id)
+    const ctx = c && c.getContext('2d')
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height)
+  }
+  const bar = $('pagesBar')
+  if (bar) bar.innerHTML = ''
+  updateTitle()
+  syncPageNav()
+  syncUndoRedo()
+}
+
 function sanitizePage() {
   // persist outgoing page before switching
   const out = S.pages[S.currentPage]
@@ -473,7 +499,7 @@ function playPageEnter(dir = 1) {
 }
 
 function setPage(i) {
-  if (i < 0 || i >= S.pages.length) return
+  if (!S.noteId || !S.pages.length || i < 0 || i >= S.pages.length) return
   const prevPage = S.currentPage
   const switching = prevPage !== i
   if (switching) {
@@ -503,6 +529,9 @@ function setPage(i) {
 }
 
 function addPage() {
+  // No note open means there is nothing to add a sheet to. Without this guard
+  // the rail "+" created phantom pages under a "No note" title.
+  if (!S.noteId) return
   const page = current()
   const paper = page ? { ...page.paper } : DEFAULT_PAPER()
   S.pages.push(newPage(paper))
@@ -539,9 +568,10 @@ function refreshPages() {
 }
 
 function syncPageNav() {
-  const prev = $('btnPrevPage'), next = $('btnNextPage')
+  const prev = $('btnPrevPage'), next = $('btnNextPage'), add = $('btnAddPage')
   if (prev) prev.disabled = S.currentPage <= 0
   if (next) next.disabled = S.currentPage < 0 || S.currentPage >= S.pages.length - 1
+  if (add) add.disabled = !S.noteId
 }
 
 // Only the selected row changes during a page switch. Rebuilding the whole rail
@@ -2621,11 +2651,10 @@ async function saveFromFlyout() {
 // ---------- export ----------
 function exportItems() {
   return [
-    { label: 'Page → PNG', act: () => exportImg('png') },
-    { label: 'Page → JPEG', act: () => exportImg('jpg') },
-    { label: 'Note → PDF (all pages)', act: () => exportPDF() },
-    { label: 'Replay → GIF', act: () => exportGif() },
-    { label: 'Note → .wcanvas project (all pages)', act: () => exportProject() },
+    { label: 'Page as PNG…', act: () => exportImg('png') },
+    { label: 'Page as JPEG…', act: () => exportImg('jpg') },
+    { label: 'Note as PDF (all pages)…', act: () => exportPDF() },
+    { label: 'Replay as GIF…', act: () => exportGif() },
   ]
 }
 
@@ -2640,13 +2669,16 @@ async function exportMenu(anchor = null) {
   pick(exportItems(), ...menuPoint(anchor))
 }
 
-// The download half of the Save split button. Save is one click; export and
-// note metadata are one click away here instead of being nested in a dialog.
+// The download half of the Save split button. The working save is the library
+// note itself (a PNG per page with editable stroke data), so there is exactly
+// one Save here. Exports live below it; the portable .wcanvas project file is
+// in the File menu with Import, not presented as a second way to save.
 async function saveMenu(anchor = null) {
   const { pick } = await import('./ctx.js')
   const items = [
     { label: 'Save now', act: () => saveCurrentPage() },
     '-',
+    { header: 'Export' },
     ...exportItems(),
     '-',
     {
@@ -2706,10 +2738,10 @@ function toggleReplay() {
 // ---------- title / rename ----------
 function updateTitle() {
   const name = S.note ? S.note.name : 'No note'
-  const pages = `(${S.currentPage + 1}/${S.pages.length})`
+  const pages = S.note && S.pages.length ? `(${S.currentPage + 1}/${S.pages.length})` : ''
   $('btnTitle').textContent = name
   const pagesEl = document.getElementById('tbPages')
-  if (pagesEl) pagesEl.textContent = pages
+  if (pagesEl) { pagesEl.textContent = pages; pagesEl.classList.toggle('hidden', !pages) }
   document.title = `${name} ${pages} ‎- WriteCanvas`
   const cap = document.getElementById('capTitle')
   if (cap) cap.textContent = document.title
@@ -3011,6 +3043,7 @@ export function init(app) {
       case 'new-folder': app.cmdNewFolder(); break
       case 'import': app.cmdImport(); break
       case 'import-project': app.cmdImportProject(); break
+      case 'export-project': exportProject(); break
       case 'reveal-library': bridge.revealLibraryFolder(); break
       case 'zoom': app.cmdZoom(arg); break
     }

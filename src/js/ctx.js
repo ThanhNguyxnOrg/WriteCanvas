@@ -15,9 +15,17 @@ export function pick(items, x, y) {
       m.appendChild(hr)
       continue
     }
+    if (it.header) {
+      const h = document.createElement('div')
+      h.className = 'ctx-head'
+      h.textContent = it.header
+      m.appendChild(h)
+      continue
+    }
     const b = document.createElement('button')
     b.textContent = it.label
     if (it.danger) b.className = 'danger'
+    if (it.disabled) b.disabled = true
     b.onclick = () => { closeMenu(); it.act && it.act() }
     m.appendChild(b)
   }
