@@ -13,7 +13,9 @@
 // identity is passed as CLI overrides and only this script sees it.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 
+const require = createRequire(import.meta.url)
 const identity = JSON.parse(readFileSync(new URL('../store/identity.json', import.meta.url), 'utf8'))
 
 const overrides = Object.entries(identity).map(([key, value]) => `-c.appx.${key}=${value}`)
@@ -27,10 +29,11 @@ const args = [
   ...overrides,
 ]
 
-const bin = process.platform === 'win32'
-  ? 'node_modules/.bin/electron-builder.cmd'
-  : 'node_modules/.bin/electron-builder'
+// Run the CLI with node rather than the .cmd shim: on Windows a shell-launched
+// "node_modules/.bin/electron-builder.cmd" is split at the slash and cmd.exe
+// reports "'node_modules' is not recognized".
+const cli = require.resolve('electron-builder/cli.js')
 
-console.log(`${bin} ${args.join(' ')}`)
-const result = spawnSync(bin, args, { stdio: 'inherit', shell: process.platform === 'win32' })
+console.log(`electron-builder ${args.join(' ')}`)
+const result = spawnSync(process.execPath, [cli, ...args], { stdio: 'inherit' })
 process.exit(result.status ?? 1)

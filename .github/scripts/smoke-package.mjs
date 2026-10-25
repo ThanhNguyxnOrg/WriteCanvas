@@ -18,6 +18,19 @@ const PORT = 9433
 const TIMEOUT_MS = 60_000
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+// fetch() has no timeout of its own. On Linux the DevTools port can accept a
+// connection and then never answer, which used to leave the CI step hanging
+// until the job timed out.
+async function fetchJson(url, timeoutMs = 2_000) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await (await fetch(url, { signal: controller.signal })).json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 const fail = message => {
   console.error(`::error::${message}`)
   process.exit(1)
@@ -57,7 +70,7 @@ async function readState(expression) {
   while (Date.now() < deadline) {
     let targets = []
     try {
-      targets = await (await fetch(`http://127.0.0.1:${PORT}/json`)).json()
+      targets = await fetchJson(`http://127.0.0.1:${PORT}/json`)
     } catch {
       await wait(500)
       continue
@@ -126,6 +139,15 @@ const stop = () => {
   } catch { /* already gone */ }
 }
 
+// A hard stop, so a wedged child or a hung socket can never leave the CI step
+// running until the job's own timeout.
+const watchdog = setTimeout(() => {
+  console.error('::error::the packaged app did not become ready in time')
+  stop()
+  process.exit(1)
+}, TIMEOUT_MS + 30_000)
+watchdog.unref?.()
+
 try {
   const state = await readState(`JSON.stringify({
     bridge: typeof window.WriteCanvasHost,
@@ -144,6 +166,7 @@ try {
   console.error(output.split('\n').slice(-20).join('\n'))
   fail(error.message)
 } finally {
+  clearTimeout(watchdog)
   stop()
   try { rmSync(sandbox, { recursive: true, force: true }) } catch { /* a locked temp dir is harmless */ }
 }
