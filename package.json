@@ -1,7 +1,7 @@
 {
   "name": "writecanvas",
   "productName": "WriteCanvas",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cross-platform note-taking & inking app. Reads and writes Scrble-Ink-compatible PNG notes (sINK replay + paper chunks).",
   "license": "Apache-2.0",
   "author": {

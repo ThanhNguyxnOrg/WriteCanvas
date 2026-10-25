@@ -11,6 +11,26 @@ written before the release commit — see
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-25
+
+### Added
+
+- **Installers with every release** — NSIS on Windows, DMG on macOS, AppImage and
+  deb on Linux are built and attached to the release. They are built only when a
+  release is published, so an ordinary commit never spends three operating
+  systems' worth of packaging time.
+
+### Fixed
+
+- **Linux packaging** — the deb target failed with "Please specify author
+  'email' in the application package.json", so the Linux installers were missing
+  from the first release. The package now declares an author.
+
+### Changed
+
+- Re-publishing a version replaces only that version's installer files; earlier
+  releases keep theirs.
+
 ## [0.1.0] - 2026-10-25
 
 First tagged release. WriteCanvas opens an existing Scrble Ink library, adds the
@@ -60,5 +80,6 @@ Scrble Ink still reads.
   `WriteCanvasHost` bridge in `preload.js`; every library path from the renderer
   is resolved and validated in the main process before it is used.
 
-[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v0.1.0
