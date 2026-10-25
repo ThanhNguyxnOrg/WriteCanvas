@@ -14,7 +14,7 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196)](https://www.conventionalcommits.org/)
 
-<img src="src/img/writecanvas.png" alt="A WriteCanvas note with a ruled page and handwriting" width="720">
+<img src="src/img/writecanvas.png" alt="WriteCanvas logo" width="160">
 
 </div>
 
