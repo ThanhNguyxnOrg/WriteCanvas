@@ -54,9 +54,9 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -109,9 +109,9 @@ jobs:
           - os: ubuntu-latest
             glob: dist/*.deb
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -129,7 +129,7 @@ jobs:
         run: npm run dist -- --publish never
 
       - name: Collect the installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: installer-${{ matrix.os }}-${{ strategy.job-index }}
           path: ${{ matrix.glob }}
@@ -165,7 +165,7 @@ jobs:
         run: node .github/scripts/release-notes.mjs notes
 
       - name: Collect the installers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
