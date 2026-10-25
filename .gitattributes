@@ -1,0 +1,21 @@
+# Normalise text to LF in the repository and in diffs, whatever the platform
+# uses on disk. The app itself reads and writes binary note files, so only the
+# source and documentation are normalised.
+* text=auto eol=lf
+
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+
+# Note files and images are binary: never touch their bytes.
+*.png   binary
+*.wcanvas binary
+*.gif   binary
+*.ico   binary
+
+# Keep the lockfile out of diffs and language stats.
+package-lock.json -diff linguist-generated
