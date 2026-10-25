@@ -94,12 +94,18 @@ submission must use a higher version than the last published one, so bump
 
 ## Assets
 
-| What Partner Center asks for | File | Notes |
+| Partner Center field | File | Size |
 |---|---|---|
-| 1:1 app tile icon, 300×300 | `store/AppTileIcon-300.png` | Recommended; the Store prefers it over the package logo. |
-| Desktop screenshots (1–10, 1366×768+) | `store/screenshot-1-ink.png` … `screenshot-5-shortcuts.png` | All 1920×1080 PNG. Order as numbered. |
-| 16:9 Super hero art, 1920×1080 | `store/hero-1920x1080.png` | Optional. No text, no UI, by Microsoft's rules. |
-| Package tile logos | `build/appx/*.png` | Already inside the MSIX; upload nothing. |
+| Screenshots (desktop) | `store/screenshot-1-ink.png` … `screenshot-5-shortcuts.png` | 1920×1080 each |
+| 9:16 Poster art | `store/PosterArt-1440x2160.png` (or `PosterArt-720x1080.png`) | 1440×2160 / 720×1080 |
+| 1:1 Box art | `store/BoxArt-1080x1080.png` | 1080×1080 |
+| 1:1 App tile icon | `store/AppTileIcon-300.png` | 300×300 |
+| 1:1 display tile | `store/StoreTile-150.png` | 150×150 |
+| 1:1 display tile | `store/StoreTile-71.png` | 71×71 |
+| Package tile logos | `build/appx/*.png` | inside the AppX; upload nothing |
+
+The 16:9 hero (`store/hero-1920x1080.png`) is not requested by this listing form;
+it is kept for promotional use and trailers.
 
 Screenshots come from a throwaway demo library, not from personal notes, and are
 regenerated with:
@@ -109,7 +115,27 @@ npx electron . --user-data-dir=<temp profile> --remote-debugging-port=9444
 node scripts/store-shots.mjs
 ```
 
-The tile assets are regenerated with `scripts/make-store-assets.ps1`.
+The logos, poster art and box art are regenerated with
+`scripts/make-store-assets.ps1`.
+
+## Product features
+
+Partner Center shows these as a bulleted list (up to 20). Paste:
+
+- Five pen types: smooth pen, pencil, calligraphy, highlighter and solid marker
+- The full colour palette, a custom hex field and a colour picker
+- Ruled and math paper from Letter to A6, portrait or landscape
+- A ruler that snaps and rotates, plus shapes and text boxes next to your ink
+- Eraser by stroke, by segment or across a whole sheet
+- A laser pointer for walking someone through a page without leaving a mark
+- Pages with thumbnails and continuous page turns
+- Board colour for one page or for the whole note
+- Export to PDF, PNG, or a portable `.wcanvas` file
+- Opens an existing Scrble Ink library; notes stay ordinary PNG files
+- Works offline: no account, no telemetry, no network calls
+
+Leave **What's new in this version** blank — this is the first submission for the
+product.
 
 ## Store listing copy
 
