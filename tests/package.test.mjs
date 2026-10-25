@@ -68,7 +68,7 @@ test('the Store identity is complete and shaped like the Partner Center values',
   assert.match(identity.publisher, /^CN=/)
 })
 
-test('the MSIX config is not left in package.json where electron-builder 25 would reject it', () => {
+test('Store-only config is not left in package.json where electron-builder 25 would reject it', () => {
   assert.equal(manifest.build.msix, undefined)
   assert.equal(manifest.build.toolsets, undefined)
   assert.equal(manifest.scripts['dist:store'], 'node scripts/build-store.mjs')

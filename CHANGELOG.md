@@ -15,7 +15,7 @@ written before the release commit — see
 
 ### Added
 
-- **Microsoft Store package** — WriteCanvas is listed for Windows as an MSIX
+- **Microsoft Store package** — WriteCanvas is listed for Windows as an AppX
   package built from the same source as the installer. Store submissions need no
   purchased certificate: Microsoft re-signs the package during publishing. The
   package identity is reserved in Partner Center and recorded in

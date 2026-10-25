@@ -1,34 +1,36 @@
-// Builds the Microsoft Store package with electron-builder 26, without touching
-// the electron-builder 25 that the release pipeline uses.
+// Builds the Windows Store package (AppX) with the electron-builder already
+// pinned by the release pipeline.
 //
-// The identity lives in store/identity.json rather than in package.json because
-// electron-builder 25 validates its config schema strictly: an unknown `msix` or
-// `toolsets` key makes it refuse to build at all, which is exactly what happened
-// to every release job. Version 26 accepts those keys, so they are passed here as
-// CLI overrides and only this script ever sees them.
+// Why AppX and not MSIX: the MSIX target is documented in electron-builder's
+// master branch, but the newest published version (26.18.0 at the time of
+// writing) still rejects `msix` as an unknown config property. AppX uses the same
+// manifest and the same Store submission flow, and Microsoft's Store accepts
+// .appx/.appxbundle for new submissions and re-signs them itself, so no
+// certificate is needed either way.
+//
+// The identity lives in store/identity.json (values from Partner Center), not in
+// package.json: electron-builder 25 validates its config schema strictly, so the
+// identity is passed as CLI overrides and only this script sees it.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 const identity = JSON.parse(readFileSync(new URL('../store/identity.json', import.meta.url), 'utf8'))
 
-// values from Partner Center → -c.msix.* overrides
-const overrides = Object.entries(identity).map(([key, value]) => `-c.msix.${key}=${value}`)
+const overrides = Object.entries(identity).map(([key, value]) => `-c.appx.${key}=${value}`)
 
 const args = [
-  '--yes',
-  'electron-builder@26.18.0',
   '--win',
-  'msix',
+  'appx',
   '--x64',
   '--publish',
   'never',
   ...overrides,
-  '-c.msix.createMsixupload=true',
-  // MSIX needs the modern winCodeSign toolset; electron-builder downloads it.
-  '-c.toolsets.winCodeSign=1.1.0',
 ]
 
-console.log(`npx ${args.join(' ')}`)
-const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-const result = spawnSync(npx, args, { stdio: 'inherit' })
+const bin = process.platform === 'win32'
+  ? 'node_modules/.bin/electron-builder.cmd'
+  : 'node_modules/.bin/electron-builder'
+
+console.log(`${bin} ${args.join(' ')}`)
+const result = spawnSync(bin, args, { stdio: 'inherit', shell: process.platform === 'win32' })
 process.exit(result.status ?? 1)

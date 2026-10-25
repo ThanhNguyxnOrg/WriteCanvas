@@ -24,16 +24,23 @@ config schema strictly and refuses to build at all when it meets an unknown
 attempt. Keeping the Store config on the Store path leaves the pinned release
 toolchain untouched.
 
-## Why MSIX, and why a separate toolchain
+## Why AppX, and why a separate script
 
-- **MSIX is the Store's recommended package format**, and Store submissions do
-  **not** need a purchased certificate: Microsoft re-signs the package during
-  publishing. A certificate is only needed to sideload outside the Store.
-- **The MSIX target is newer than the electron-builder version the release
-  pipeline uses.** `npm run dist` stays on the pinned 25.x so Windows NSIS, macOS
-  DMG and Linux AppImage/deb keep building the way they are tested; the Store
-  package is built by `npm run dist:store`, which runs electron-builder 26.18.0
-  through `npx` without touching the installed toolchain.
+- **The Store accepts AppX.** Microsoft's package requirements list `.appx`,
+  `.appxbundle` and `.appxupload` alongside the MSIX formats for new submissions,
+  and Store packages are **re-signed by Microsoft** during publishing, so no
+  certificate is purchased or stored. A certificate is only needed to sideload
+  outside the Store.
+- **MSIX is not available in the published toolchain yet.** The MSIX target is
+  documented in electron-builder's master branch, but the newest published
+  version (26.18.0) rejects `msix` as an unknown configuration property. AppX
+  shares the manifest format and the Store flow, and it builds with the
+  electron-builder already pinned by the release pipeline.
+- **The Store config stays out of `package.json`.** electron-builder validates its
+  config schema strictly: an unknown key makes it refuse to build, which is why
+  the identity is passed as CLI overrides by `scripts/build-store.mjs` instead of
+  sitting in the release config. When electron-builder publishes MSIX support,
+  only that script's target flag changes.
 
 ## Build the package
 
@@ -45,26 +52,25 @@ npm run dist:store
 ```
 
 Or Actions → **Store package** → *Run workflow*, then download the
-`writecanvas-store-msix` artifact. Both produce:
+`writecanvas-store-appx` artifact. Both produce:
 
 ```
-dist/<app>-<version>-x64.msix          the package
-dist/<app>-<version>-x64.msixupload    the file Partner Center wants
+dist/<app>-<version>-x64.appx    the package to upload
 ```
 
 The workflow additionally reads `AppxManifest.xml` back out of the package and
-fails unless `Identity/Name` and `Identity/Publisher` match `package.json`.
+fails unless `Identity/Name` and `Identity/Publisher` match `store/identity.json`.
 
-Version numbering for the Store is four parts. electron-builder derives
-`1.1.0.0` from `package.json` `1.1.0`, and the fourth part is reserved for the
-Store. A new submission must use a higher version than the last published one, so
-bump `package.json` and `CHANGELOG.md` before building.
+AppX package versions are four parts. electron-builder derives `1.1.0.0` from
+`package.json` `1.1.0`, and the fourth part is reserved for the Store. A new
+submission must use a higher version than the last published one, so bump
+`package.json` and `CHANGELOG.md` before building.
 
 ## Submit
 
 1. Partner Center → **Apps and games** → **WriteCanvas** → **Start submission**.
-2. **Packages**: upload the `.msixupload`. Architecture x64, Windows 10/11
-   desktop. Do not upload the NSIS `.exe` in this flow.
+2. **Packages**: upload the `.appx`. Architecture x64, Windows 10/11 desktop. Do
+   not upload the NSIS `.exe` in this flow.
 3. **Store listing**:
    - **Category**: Productivity.
    - **Pricing**: Free. No in-app purchases, no ads.
@@ -159,7 +165,10 @@ The tile assets are regenerated with `scripts/make-store-assets.ps1`.
 
 - The Store package is **x64 only**, matching the NSIS installer. The other
   builds (macOS x64/arm64, Linux x64/arm64) are on the GitHub release.
-- Local sideloading of the MSIX needs a trusted certificate; that is a separate
+- Local sideloading of the AppX needs a trusted certificate; that is a separate
   concern from Store submission and is not configured here.
 - The app is `1.x`; the Store will not accept a version lower than one already
   published.
+- If electron-builder ships the MSIX target, `scripts/build-store.mjs` only needs
+  its `--win appx` flag changed to `--win msix` and the override prefix from
+  `-c.appx.` to `-c.msix.`; the identity and the Store steps stay the same.
