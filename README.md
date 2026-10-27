@@ -16,7 +16,24 @@
 
 <img src="src/img/writecanvas.png" alt="WriteCanvas logo" width="160">
 
+<p>
+  <a href="https://apps.microsoft.com/detail/9NF59Q2L7QP3?hl=en-us&gl=US">
+    <img src="https://get.microsoft.com/images/en-us%20dark.svg" width="220" alt="Get it from Microsoft Store">
+  </a>
+</p>
+
 </div>
+
+## Preview
+
+<p align="center">
+  <img src="store/screenshot-1-ink.png" alt="Handwriting directly on the canvas" width="49%">
+  <img src="store/screenshot-2-pen.png" alt="Pen and inking controls" width="49%">
+</p>
+<p align="center">
+  <img src="store/screenshot-3-board.png" alt="Canvas board settings" width="49%">
+  <img src="store/screenshot-4-pages.png" alt="Multi-page canvas and page thumbnails" width="49%">
+</p>
 
 ## What it is
 
