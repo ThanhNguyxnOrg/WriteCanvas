@@ -1,33 +1,15 @@
 name: Release
 
-# Publish a version by pushing a commit to master whose subject is
-# `release: v1.4.0`. The notes come from the matching section of CHANGELOG.md,
-# and the installers for all three desktop targets are built and attached to the
-# release.
-#
-#   git commit --allow-empty -m "release: v1.4.0"
-#   git push
+# Build installers when the central release controller creates a vX.Y.Z tag.
+# Version files, changelog, tag and GitHub Release metadata are owned centrally.
 #
 # Building happens only here, never on an ordinary push: three operating systems
 # each download Electron and package the app, which is far too much work to do
 # for a commit that is not a release.
 #
-# The release, its tag and its assets are written with a ThanhNguyxnAgent token,
-# so the Release page names the Agent as the author.
+# This workflow only builds and uploads platform assets to the central draft release.
 on:
-  push:
-    branches: [master]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: Version to publish, without the leading v (e.g. 1.4.0)
-        required: true
-        type: string
-      force:
-        description: Replace the files of an already published version
-        required: true
-        type: boolean
-        default: false
+  create:
 
 permissions:
   contents: read
@@ -38,57 +20,27 @@ concurrency:
 
 jobs:
   prepare:
-    name: resolve version
+    name: resolve centrally created tag
+    if: github.event.ref_type == 'tag' && startsWith(github.event.ref, 'v')
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.version.outputs.should_release }}
       version: ${{ steps.version.outputs.version }}
-      skip: ${{ steps.guard.outputs.skip }}
+      skip: ${{ steps.version.outputs.skip }}
     steps:
-      - name: Mint ThanhNguyxnAgent token
-        id: agent
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-
-      - name: Resolve the version
+      - name: Resolve central release tag
         id: version
         env:
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: node .github/scripts/release-notes.mjs resolve
-
-      # A published version is left alone unless the run was asked to replace
-      # its files, which is what `force` is for. Only that version is touched;
-      # other releases keep their assets.
-      - name: Check whether this version is already published
-        id: guard
-        if: steps.version.outputs.should_release == 'true'
-        env:
-          GH_TOKEN: ${{ steps.agent.outputs.token }}
-          VERSION: ${{ steps.version.outputs.version }}
-          FORCE: ${{ inputs.force }}
+          TAG: ${{ github.ref_name }}
         run: |
-          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            if [ "${FORCE:-false}" = "true" ]; then
-              echo "::notice::v$VERSION exists; its files will be replaced"
-              echo "skip=false" >> "$GITHUB_OUTPUT"
-            else
-              echo "::notice::v$VERSION is already published; nothing to do (pass force to replace its files)"
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Invalid centrally created release tag: $TAG"
+            exit 1
           fi
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
   build:
     name: build / ${{ matrix.os }} / ${{ matrix.arch }}
@@ -176,10 +128,12 @@ jobs:
           retention-days: 3
 
   publish:
-    name: publish release
+    name: upload installers to central draft release
     needs: [prepare, build]
     if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.skip == 'false'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Mint ThanhNguyxnAgent token
         id: agent
@@ -189,54 +143,21 @@ jobs:
           private-key: ${{ secrets.BOT_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: write
 
-      - uses: actions/checkout@v7
-        with:
-          token: ${{ steps.agent.outputs.token }}
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-
-      - name: Build the notes from CHANGELOG.md
-        env:
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: node .github/scripts/release-notes.mjs notes
-
-      - name: Collect the installers
+      - name: Download installers from platform builds
         uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
 
-      - name: Create the release, or replace its files
+      - name: Upload assets to central draft release
         env:
           GH_TOKEN: ${{ steps.agent.outputs.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
-          NOTES_FILE: ${{ runner.temp }}/release-notes.md
         run: |
           set -euo pipefail
           tag="v$VERSION"
-          # A hyphen in the version (1.4.0-rc.1) marks a pre-release, so it is
-          # published as one and never becomes the "latest" release.
-          pre=""
-          case "$VERSION" in *-*) pre="--prerelease" ;; esac
-
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::notice::$tag already exists; replacing its files and notes"
-            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "$tag" --notes-file "$NOTES_FILE"
-          else
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --title "$tag" --notes-file "$NOTES_FILE" \
-              --target "$GITHUB_SHA" $pre
-          fi
-
-          # --clobber replaces an asset with the same name, so re-running a
-          # release swaps the installers of that version and leaves every other
-          # release untouched. An array is used because the default installer
-          # names contain spaces ("WriteCanvas Setup 1.4.0.exe"), which an
-          # unquoted glob would split into separate arguments.
           shopt -s nullglob
           assets=(release-assets/*)
           if [ ${#assets[@]} -eq 0 ]; then
@@ -244,7 +165,5 @@ jobs:
             exit 1
           fi
           gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-
-          echo "::notice::published $tag with installers, as ThanhNguyxnAgent"
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[] | "asset: \(.name) (\(.size) bytes)"'
+            --jq '.assets[] | "asset: (.name) ((.size) bytes)"'
