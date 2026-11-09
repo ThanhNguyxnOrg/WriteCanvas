@@ -80,10 +80,6 @@ test('every workflow that writes mints a ThanhNguyxnAgent token', () => {
   }
 })
 
-test('only the auto-merge workflow reacts to a finished run', () => {
-  for (const f of files) {
-    const text = read(f)
-    if (!/workflow_run:/.test(text)) continue
-    assert.equal(f, 'auto-merge.yml', `${f} should not need a workflow_run trigger`)
-  }
+test('repository-local auto-merge workflows are not duplicated', () => {
+  assert.ok(!files.some(f => /^auto-merge(?:-dependabot)?\.yml$/.test(f)), 'merge governance is centralized in ThanhNguyxnOrg/.github')
 })
