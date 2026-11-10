@@ -102,3 +102,10 @@ whose installers were the first ones that ran; those builds have been withdrawn.
 [Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.0.0
+
+## [1.1.1] - 2026-11-10
+
+### Bug Fixes and Performance
+
+- grant artifact-read permissions to shared publisher ([689bc35](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/689bc35b62c6177701c06656d3c2565639b7638c))
+
