@@ -118,7 +118,7 @@ jobs:
       - name: Collect the installer
         uses: actions/upload-artifact@v7
         with:
-          name: installer-${{ matrix.os }}-${{ matrix.arch }}
+          name: release-assets-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             dist/*.exe
             dist/*.dmg
@@ -128,42 +128,14 @@ jobs:
           retention-days: 3
 
   publish:
-    name: upload installers to central draft release
+    name: Publish installers through the organization library
     needs: [prepare, build]
     if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.skip == 'false'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Mint ThanhNguyxnAgent token
-        id: agent
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ github.event.repository.name }}
-          permission-contents: write
-
-      - name: Download installers from platform builds
-        uses: actions/download-artifact@v8
-        with:
-          path: release-assets
-          merge-multiple: true
-
-      - name: Upload assets to central draft release
-        env:
-          GH_TOKEN: ${{ steps.agent.outputs.token }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          tag="v$VERSION"
-          shopt -s nullglob
-          assets=(release-assets/*)
-          if [ ${#assets[@]} -eq 0 ]; then
-            echo "::error::no installers were collected from the build jobs"
-            exit 1
-          fi
-          gh release upload "$tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
-          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[] | "asset: (.name) ((.size) bytes)"'
+    uses: ThanhNguyxnOrg/.github/.github/workflows/release-publish.yml@5c7ae3eaec9f2cc4f555561630a4c157128754d1
+    with:
+      tag: v${{ needs.prepare.outputs.version }}
+      artifact_pattern: release-assets-*
+      artifact_directory: dist/release
+    secrets:
+      BOT_APP_ID: ${{ secrets.BOT_APP_ID }}
+      BOT_PRIVATE_KEY: ${{ secrets.BOT_PRIVATE_KEY }}
