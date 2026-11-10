@@ -1,6 +1,7 @@
 name: Release
 
 # Build installers when the central release controller creates a vX.Y.Z tag.
+# A manual workflow_dispatch can recover a failed build for an existing tag.
 # Version files, changelog, tag and GitHub Release metadata are owned centrally.
 #
 # Building happens only here, never on an ordinary push: three operating systems
@@ -10,6 +11,12 @@ name: Release
 # This workflow only builds and uploads platform assets to the central draft release.
 on:
   create:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to rebuild (for recovery; no new tag is created).
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -22,26 +29,34 @@ concurrency:
 jobs:
   prepare:
     name: resolve centrally created tag
-    if: github.event.ref_type == 'tag' && startsWith(github.event.ref, 'v')
+    if: (github.event_name == 'create' && github.event.ref_type == 'tag' && startsWith(github.event.ref, 'v')) || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.version.outputs.should_release }}
       version: ${{ steps.version.outputs.version }}
       skip: ${{ steps.version.outputs.skip }}
     steps:
-      - name: Resolve central release tag
+      - name: Checkout the requested release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - name: Resolve and validate release tag
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           VERSION="${TAG#v}"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::Invalid centrally created release tag: $TAG"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Invalid release tag: $TAG"
             exit 1
           fi
+          git rev-parse HEAD >/dev/null
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
+
 
   build:
     name: build / ${{ matrix.os }} / ${{ matrix.arch }}
@@ -75,6 +90,9 @@ jobs:
             targets: --linux AppImage
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v7
         with:
