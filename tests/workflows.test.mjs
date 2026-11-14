@@ -50,10 +50,22 @@ test('the same action is pinned to the same major in every workflow', () => {
   }
 })
 
-test('no workflow uses pull_request_target', () => {
-  for (const f of files) {
-    assert.doesNotMatch(read(f), /pull_request_target/, `${f} must not run in the target context`)
-  }
+test('pull_request_target is restricted to the metadata-only Agent signal', () => {
+  const triggered = files.filter(f => /^\\s*pull_request_target:/m.test(read(f)))
+  assert.deepEqual(triggered, ['agent-pr-signal.yml'])
+
+  const signal = read('agent-pr-signal.yml')
+  assert.match(signal, /^permissions:\\s*\\{\\}/m)
+  assert.match(signal, /^\\s+permissions:\\s*\\{\\}/m)
+  assert.match(signal, /EVENT_PR_HEAD_SHA:/)
+  assert.match(signal, /actions\\/upload-artifact@/)
+
+  // The target-context workflow must not receive credentials, execute PR code,
+  // check out a repository, or request a write-capable token.
+  assert.doesNotMatch(
+    signal,
+    /secrets\\.|github\\.token|GITHUB_TOKEN|actions\\/checkout|contents:\\s*write|pull-requests:\\s*write/i,
+  )
 })
 
 test('no workflow writes with the default token', () => {
