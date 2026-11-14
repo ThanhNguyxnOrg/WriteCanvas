@@ -27,7 +27,7 @@ jobs:
        github.event.workflow_run.event == 'workflow_run') &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.repository.owner.login == 'ThanhNguyxnOrg'
-    uses: ThanhNguyxnOrg/.github/.github/workflows/agent-pr-worker.yml@803811a38e18f338b6156b2b676e1e52ed7076de
+    uses: ThanhNguyxnOrg/.github/.github/workflows/agent-pr-worker.yml@main
     with:
       repository_owner: ${{ github.event.workflow_run.repository.owner.login }}
       repository_name: ${{ github.event.workflow_run.repository.name }}
