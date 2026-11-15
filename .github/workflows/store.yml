@@ -5,10 +5,6 @@ name: Microsoft Store
 on:
   release:
     types: [published]
-  push:
-    branches: [master]
-    paths:
-      - .store-recovery-trigger
   workflow_dispatch:
     inputs:
       tag:
@@ -26,10 +22,11 @@ concurrency:
 jobs:
   appx:
     name: Build and submit Microsoft Store update
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag || 'v1.2.0' }}
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
       STORE_TENANT_ID: ${{ vars.MSSTORE_TENANT_ID }}
       STORE_CLIENT_ID: ${{ vars.MSSTORE_CLIENT_ID }}
       STORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
