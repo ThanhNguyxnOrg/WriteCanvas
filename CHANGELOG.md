@@ -218,3 +218,13 @@ whose installers were the first ones that ran; those builds have been withdrawn.
 [1.1.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.0.0
+
+## [1.2.1] - 2026-11-15
+
+### Bug Fixes and Performance
+
+- target Windows 10 1809 for MSIX ([3271a81](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/3271a81806a50f7fa503ffdc53e13b8a6dbbc62b))
+- enforce MSIX Windows 10 1809 minimum ([c108813](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/c1088138eba63b55c27795170b4b8e21ef297b78))
+- correct stable release tag regex ([a86d259](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/a86d25967fac5776d11336a9fce52d2902429e35))
+- complete release tag validation expression ([ad35895](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/ad358957fa8a2a7138c9c6bb626872607b85ac86))
+
