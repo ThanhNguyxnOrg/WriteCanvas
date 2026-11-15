@@ -1,33 +1,54 @@
-name: Store package
+name: Microsoft Store
 
-# Builds the Windows package for Microsoft Store submission (AppX).
-#
-# Manual on purpose: a Store package is tied to the identity Partner Center
-# assigned to the reserved product, and it is worth looking at the version before
-# it is uploaded. The identity is public (it is inside every installed package),
-# so it lives in store/identity.json.
-#
-# No certificate is involved. The Store re-signs Store submissions itself; a
-# certificate is only needed to sideload outside the Store.
-#
-# AppX rather than MSIX: the MSIX target exists in electron-builder's master
-# branch, but the newest published release still rejects the `msix` config key.
-# The Store accepts .appx for new submissions, so this uses the AppX target that
-# the pinned electron-builder already ships.
+# Submit a Store-compatible AppX package whenever a stable GitHub Release is
+# published. Keep workflow_dispatch as a recovery/manual submission path.
 on:
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag to submit (for example v1.2.0).
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: microsoft-store-${{ github.event.release.tag_name || inputs.tag || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   appx:
-    name: build appx
+    name: Build and submit Microsoft Store update
+    # Prerelease builds must never enter the public Store listing.
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
     runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+      STORE_PRODUCT_ID: 9NF59Q2L7QP3
 
-      - uses: actions/setup-node@v7
+    steps:
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v(?<version>\\d+\\.\\d+\\.\\d+)$') {
+            throw "Microsoft Store submissions require a stable vX.Y.Z release tag. Received: $env:RELEASE_TAG"
+          }
+          "version=$($Matches.version)" >> $env:GITHUB_OUTPUT
+        id: release
+
+      - name: Checkout released source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -35,53 +56,113 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build the Store package
+      - name: Verify package version matches release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($packageVersion -ne '${{ steps.release.outputs.version }}') {
+            throw "package.json version ($packageVersion) does not match release tag ($env:RELEASE_TAG)"
+          }
+          Write-Host "Preparing WriteCanvas $packageVersion for Microsoft Store."
+
+      - name: Build Store AppX
         run: npm run dist:store
 
-      - name: Verify the packaged bundle
-        env:
-          PACKAGE_ARCH: x64
-        run: node .github/scripts/verify-package.mjs
-
-      # Reads the identity back out of the package. A mismatch with Partner
-      # Center is the one rejection that is easy to avoid, and impossible to fix
-      # after upload.
-      - name: Check the manifest identity
+      - name: Validate Store package identity and version
+        id: package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $expectedName = (node -p "require('./store/identity.json').identityName").Trim()
           $expectedPublisher = (node -p "require('./store/identity.json').publisher").Trim()
+          $expectedVersion = '${{ steps.release.outputs.version }}'
 
-          $appx = Get-ChildItem dist/*.appx | Select-Object -First 1
-          if (-not $appx) { throw 'electron-builder produced no .appx' }
+          $packages = @(Get-ChildItem dist -Filter '*.appx' -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one Store .appx package in dist; found $($packages.Count)."
+          }
 
-          Copy-Item $appx.FullName "$env:TEMP\app.zip" -Force
-          Expand-Archive "$env:TEMP\app.zip" "$env:TEMP\app" -Force
-          [xml]$manifest = Get-Content "$env:TEMP\app\AppxManifest.xml"
+          $extract = Join-Path $env:RUNNER_TEMP 'writecanvas-appx-manifest'
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          New-Item -ItemType Directory -Path $extract | Out-Null
+          $archive = Join-Path $env:RUNNER_TEMP 'writecanvas-appx.zip'
+          Copy-Item $packages[0].FullName $archive -Force
+          Expand-Archive $archive $extract -Force
+
+          $manifestPath = Join-Path $extract 'AppxManifest.xml'
+          if (-not (Test-Path $manifestPath)) { throw 'AppxManifest.xml is missing from the Store package.' }
+          [xml]$manifest = Get-Content $manifestPath
           $identity = $manifest.Package.Identity
-          "identity: $($identity.Name)"
-          "publisher: $($identity.Publisher)"
-          "version: $($identity.Version)"
 
-          if ($identity.Name -ne $expectedName) { throw "identity name is $($identity.Name), expected $expectedName" }
-          if ($identity.Publisher -ne $expectedPublisher) { throw "publisher is $($identity.Publisher), expected $expectedPublisher" }
-          "::notice::AppX identity matches the Partner Center values in store/identity.json"
+          if ($identity.Name -ne $expectedName) {
+            throw "Package identity name '$($identity.Name)' does not match '$expectedName'."
+          }
+          if ($identity.Publisher -ne $expectedPublisher) {
+            throw "Package publisher '$($identity.Publisher)' does not match the Partner Center identity."
+          }
+          if (-not $identity.Version.StartsWith("$expectedVersion.")) {
+            throw "Package version '$($identity.Version)' does not match release '$expectedVersion'."
+          }
 
-      - name: Keep the generated manifest when the build fails
-        if: failure()
+          Write-Host "Validated $($packages[0].Name)"
+          Write-Host "Identity: $($identity.Name)"
+          Write-Host "Publisher: $($identity.Publisher)"
+          Write-Host "Version: $($identity.Version)"
+          "appx_file=$($packages[0].Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Preserve Store package artifact
         uses: actions/upload-artifact@v7
         with:
-          name: appx-manifest
-          path: dist/__appx-x64/AppxManifest.xml
-          if-no-files-found: ignore
-          retention-days: 3
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: writecanvas-store-appx
-          path: |
-            dist/*.appx
-            dist/*.appxbundle
+          name: writecanvas-store-${{ env.RELEASE_TAG }}
+          path: dist/*.appx
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+
+      - name: Validate Partner Center credentials
+        shell: pwsh
+        env:
+          STORE_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          STORE_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          STORE_CLIENT_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          STORE_SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @(
+            'STORE_TENANT_ID',
+            'STORE_CLIENT_ID',
+            'STORE_CLIENT_SECRET',
+            'STORE_SELLER_ID'
+          )
+          $missing = @($required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          if ($missing.Count -gt 0) {
+            throw "Configure these GitHub Actions secrets before Store submission: AZURE_AD_TENANT_ID, AZURE_AD_APPLICATION_CLIENT_ID, AZURE_AD_APPLICATION_SECRET, SELLER_ID."
+          }
+
+      - name: Configure Microsoft Store Developer CLI
+        uses: microsoft/microsoft-store-apppublisher@v1.4
+
+      - name: Authenticate with Partner Center
+        shell: pwsh
+        env:
+          STORE_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          STORE_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          STORE_CLIENT_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          STORE_SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          msstore reconfigure `
+            --tenantId "$env:STORE_TENANT_ID" `
+            --sellerId "$env:STORE_SELLER_ID" `
+            --clientId "$env:STORE_CLIENT_ID" `
+            --clientSecret "$env:STORE_CLIENT_SECRET"
+
+      - name: Submit AppX update to Microsoft Store
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The Microsoft Store CLI's Electron publisher reads the .appx
+          # package from the project's dist directory and submits it to the
+          # already-published Store product.
+          msstore publish "$env:GITHUB_WORKSPACE" --appId "$env:STORE_PRODUCT_ID"
+
