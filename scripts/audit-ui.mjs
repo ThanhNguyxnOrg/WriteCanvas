@@ -9,7 +9,7 @@ const pending = new Map()
 const failures = []
 // Values that came back from the page can carry newlines; a line-oriented
 // report reads as one result per line only once they are gone.
-const oneLine = value => String(value).replace(/[\r\n]+/g, '')
+const oneLine = value => String(value).replace(/[\r\n]/g, '')
 const pass = n => console.log('PASS', n)
 const fail = (n, info) => { const text = oneLine(info); failures.push(`${n}: ${text}`); console.log('FAIL', n, ':', text) }
 const ok = (n, cond, info = '') => cond ? pass(n) : fail(n, info || 'expected true')

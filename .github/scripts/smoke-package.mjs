@@ -35,7 +35,7 @@ async function fetchJson(url, timeoutMs = 2_000) {
 // app's own output must stay one line and must not smuggle an escape sequence
 // of its own.
 const escapeCommand = value =>
-  String(value).replace(/[\r\n]+/g, '').replace(/%/g, '%25')
+  String(value).replace(/[\r\n]/g, '').replace(/%/g, '%25')
 
 const fail = message => {
   console.error(`::error::${escapeCommand(message)}`)
