@@ -40,7 +40,167 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          if ($env:RELEASE_TAG -notmatch '^v(?<version>\\d+\\.\\d+\\.\\d+)$') {
+          if ($env:RELEASE_TAG -notmatch '^v(?<version>\d+\.\d+\.\d+)
+            throw "Microsoft Store submissions require a stable vX.Y.Z release tag. Received: $env:RELEASE_TAG"
+          }
+
+          $required = @(
+            'STORE_TENANT_ID',
+            'STORE_CLIENT_ID',
+            'STORE_CLIENT_SECRET',
+            'STORE_SELLER_ID',
+            'STORE_PRODUCT_ID'
+          )
+          $missing = @($required | Where-Object {
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_))
+          })
+          if ($missing.Count -gt 0) {
+            throw "Missing Microsoft Store configuration. Check Organization variables MSSTORE_TENANT_ID, MSSTORE_CLIENT_ID, MSSTORE_SELLER_ID; Organization secret MSSTORE_CLIENT_SECRET; and repository variable MSSTORE_PRODUCT_ID."
+          }
+
+          "version=$($Matches.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout released source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify package version matches release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($packageVersion -ne '${{ steps.release.outputs.version }}') {
+            throw "package.json version ($packageVersion) does not match release tag $env:RELEASE_TAG"
+          }
+          Write-Host "Preparing WriteCanvas $packageVersion for Microsoft Store."
+
+      # The v1.2.0 tag predates this setting, so enforce it in the checked-out
+      # release source as well as storing it in store/identity.json for future tags.
+      - name: Enforce Microsoft Store MSIX minimum Windows version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identityPath = Join-Path $env:GITHUB_WORKSPACE 'store/identity.json'
+          if (-not (Test-Path -LiteralPath $identityPath)) {
+            throw "Store identity configuration not found: $identityPath"
+          }
+
+          $identity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+          $identity | Add-Member -MemberType NoteProperty -Name minVersion -Value '10.0.17763.0' -Force
+          $identity | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $identityPath -Encoding utf8NoBOM
+          Write-Host "Enforced Store package MinVersion: $($identity.minVersion)"
+
+      - name: Build Store AppX
+        run: npm run dist:store
+
+      - name: Validate Store package identity and prepare MSIX input
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expectedName = (node -p "require('./store/identity.json').identityName").Trim()
+          $expectedPublisher = (node -p "require('./store/identity.json').publisher").Trim()
+          $expectedVersion = '${{ steps.release.outputs.version }}'
+
+          $packages = @(Get-ChildItem dist -Filter '*.appx' -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one Store .appx package in dist; found $($packages.Count)."
+          }
+
+          $extract = Join-Path $env:RUNNER_TEMP 'writecanvas-appx-manifest'
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          New-Item -ItemType Directory -Path $extract | Out-Null
+          $archive = Join-Path $env:RUNNER_TEMP 'writecanvas-appx.zip'
+          Copy-Item $packages[0].FullName $archive -Force
+          Expand-Archive $archive $extract -Force
+
+          $manifestPath = Join-Path $extract 'AppxManifest.xml'
+          if (-not (Test-Path $manifestPath)) {
+            throw 'AppxManifest.xml is missing from the Store package.'
+          }
+
+          [xml]$manifest = Get-Content $manifestPath
+          $identity = $manifest.Package.Identity
+
+          if ($identity.Name -ne $expectedName) {
+            throw "Package identity name '$($identity.Name)' does not match '$expectedName'."
+          }
+          if ($identity.Publisher -ne $expectedPublisher) {
+            throw "Package publisher '$($identity.Publisher)' does not match the Partner Center identity."
+          }
+          if (-not $identity.Version.StartsWith("$expectedVersion.")) {
+            throw "Package version '$($identity.Version)' does not match release '$expectedVersion'."
+          }
+
+          $targetFamilies = @($manifest.Package.Dependencies.TargetDeviceFamily)
+          if ($targetFamilies.Count -eq 0) {
+            throw 'AppxManifest.xml does not declare a TargetDeviceFamily.'
+          }
+          $requiredMinVersion = [version]'10.0.17763.0'
+          foreach ($family in $targetFamilies) {
+            $actualMinVersion = [version]$family.MinVersion
+            if ($actualMinVersion -lt $requiredMinVersion) {
+              throw "Package MinVersion '$actualMinVersion' is below required '$requiredMinVersion' for Microsoft Store MSIX submissions."
+            }
+            Write-Host "Target device family $($family.Name): MinVersion $actualMinVersion"
+          }
+
+          # AppX/MSIX share the same package container; the Store CLI publisher
+          # discovers .msix inputs, so preserve the AppX and create an MSIX-named copy.
+          $msixPath = [System.IO.Path]::ChangeExtension($packages[0].FullName, '.msix')
+          Copy-Item -LiteralPath $packages[0].FullName -Destination $msixPath -Force
+
+          Write-Host "Validated $($packages[0].Name)"
+          Write-Host "Identity: $($identity.Name)"
+          Write-Host "Publisher: $($identity.Publisher)"
+          Write-Host "Version: $($identity.Version)"
+          Write-Host "MSStore CLI input: $msixPath"
+          "msix_file=$([System.IO.Path]::GetFileName($msixPath))" >> $env:GITHUB_OUTPUT
+
+      - name: Preserve Store submission package
+        uses: actions/upload-artifact@v7
+        with:
+          name: writecanvas-store-${{ env.RELEASE_TAG }}
+          path: dist/*.msix
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Configure Microsoft Store Developer CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+
+      - name: Authenticate with Partner Center
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          msstore reconfigure `
+            --tenantId $env:STORE_TENANT_ID `
+            --sellerId $env:STORE_SELLER_ID `
+            --clientId $env:STORE_CLIENT_ID `
+            --clientSecret $env:STORE_CLIENT_SECRET
+
+      - name: Submit update to Microsoft Store
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packages = @(Get-ChildItem dist -Filter '*.msix' -File)
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one .msix package for submission; found $($packages.Count)."
+          }
+
+          Write-Host "Submitting $($packages[0].Name) for Store product $env:STORE_PRODUCT_ID"
+          msstore publish "$($packages[0].FullName)" -id "$env:STORE_PRODUCT_ID"
+) {
             throw "Microsoft Store submissions require a stable vX.Y.Z release tag. Received: $env:RELEASE_TAG"
           }
 
