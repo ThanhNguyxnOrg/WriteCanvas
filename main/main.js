@@ -36,7 +36,6 @@ async function createWindow() {
   // other platforms keep the native frame.
   const useWCO = process.platform === 'win32'
   win = new BrowserWindow({
-    icon: path.join(__dirname, '..', 'src', 'img', 'writecanvas.png'),
     // the original runs on a 1920-wide desktop UI; default to a size that
     // fits the full toolbar (left tools + title + 10 pens + 6 toggles)
     width: 1700, height: 1000, minWidth: 1420, minHeight: 760,

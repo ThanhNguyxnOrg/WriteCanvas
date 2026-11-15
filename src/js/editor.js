@@ -4,7 +4,7 @@ import { bridge } from './bridge.js'
 import { SIZES, paperDocSize, paperMM, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
 import { makeStroke, addPoint, drawStrokeAlpha, createStrokeStamper, paintStamps, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
 import { clipLineToRect, lineSnapPoint, pointLineDistance, knobCenter, paintRulerStencil, paintProtractorStencil } from './ruler.js'
-import { Recorder, playReplay } from './replay.js'
+import { Recorder } from './replay.js'
 import { applyShortcutHints, initShortcutSheet, openShortcutSheet, isShortcutSheetOpen, modShortcut, modAria } from './shortcuts.js'
 
 const $ = id => document.getElementById(id)
@@ -56,7 +56,6 @@ const COLOR_NAMES = {
 const newPage = paper => ({ paper: { ...paper }, strokes: [], texts: [], rasterBitmap: null, undo: [], redo: [], dirty: false, recorder: new Recorder(), inkGif: null })
 let host = null // App context, set by init()
 
-function layer(id) { return $(id) }
 function ctxOf(id) { return $(id).getContext('2d') }
 
 let el = {}
@@ -809,7 +808,6 @@ function addPage() {
 }
 
 // ---------- pages rail (left, like the original app) ----------
-let thumbsQueued = null
 function refreshPages() {
   const bar = $('pagesBar')
   bar.innerHTML = ''
@@ -2764,7 +2762,6 @@ function onPointerUp(e) {
   }
   if (rulerGrip) { rulerGrip = null; return }
   if (rulerRotate) { rulerRotate = null; return }
-  const { x, y } = pageCoords(e)
   const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
   if (shapeDraft) {
     const d = shapeDraft
@@ -3536,7 +3533,6 @@ function showFlyoutNear(id, anchor) {
 function showFlyoutCentered(id, anchor) {
   const f = $(id)
   f.classList.remove('hidden')
-  const btn = anchor.getBoundingClientRect()
   placeFlyout(f, anchor)
 }
 
@@ -4051,15 +4047,6 @@ async function exportProject() {
   } catch (err) {
     exportFailed('Editable copy export', err)
   }
-}
-
-// ---------- replay ----------
-let replayStop = null
-function toggleReplay() {
-  if (replayStop) { replayStop(); replayStop = null; return }
-  const page = current(); if (!page) return
-  const viewport = $('viewport')
-  replayStop = playReplay(viewport, page, () => { replayStop = null })
 }
 
 // ---------- title / rename ----------

@@ -6,6 +6,10 @@
 // and the version must have a changelog section to use as the release body.
 const VERSION_RE = /^release:\s*v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)$/
 
+// The version is a validated release subject in practice, but this function is
+// exported, so every metacharacter is escaped rather than just the dot.
+const escapeRegExp = value => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
 export function parseVersion(message) {
   const subject = String(message || '').replace(/\r/g, '').split('\n')[0].trim()
   const m = VERSION_RE.exec(subject)
@@ -15,7 +19,8 @@ export function parseVersion(message) {
 // Returns the body of the `## [<version>]` section, or null when absent.
 export function changelogSection(markdown, version) {
   const lines = String(markdown || '').replace(/\r/g, '').split('\n')
-  const heading = new RegExp(`^##\\s+(\\[${version.replace(/\./g, '\\.')}\\]|${version.replace(/\./g, '\\.')})(\\s|$)`)
+  const literal = escapeRegExp(version)
+  const heading = new RegExp(`^##\\s+(\\[${literal}\\]|${literal})(\\s|$)`)
   const start = lines.findIndex(line => heading.test(line.trim()))
   if (start === -1) return null
 

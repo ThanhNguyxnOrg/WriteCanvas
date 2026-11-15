@@ -7,8 +7,11 @@ import { setTimeout as sleep } from 'node:timers/promises'
 let wsSeq = 1
 const pending = new Map()
 const failures = []
+// Values that came back from the page can carry newlines; every result reads
+// as one line only if they do not.
+const oneLine = value => String(value).replace(/[\r\n]+/g, ' ')
 const pass = n => console.log('PASS', n)
-const fail = (n, info) => { failures.push(`${n}: ${info}`); console.log('FAIL', n, ':', info) }
+const fail = (n, info) => { const text = oneLine(info); failures.push(`${n}: ${text}`); console.log('FAIL', n, ':', text) }
 const ok = (n, cond, info = '') => cond ? pass(n) : fail(n, info || 'expected true')
 
 const connect = wsUrl => new Promise((res, rej) => { const w = new WebSocket(wsUrl); w.addEventListener('open', () => res(w)); w.addEventListener('error', rej) })
@@ -564,7 +567,7 @@ const createdId = await state(`__wc.S.noteId`)
 
 // ---------- 7. exception gate ----------
 ok('no uncaught JS exceptions during audit', jsErrors.length === 0, jsErrors.slice(0, 5).join(' | '))
-if (jsErrors.length) console.log('JS ERRORS:\n' + jsErrors.join('\n'))
+if (jsErrors.length) console.log('JS ERRORS:\n' + jsErrors.map(oneLine).join('\n'))
 
 // ---------- cleanup ----------
 if (openId) { try { await evalJs(ws, `__wc.App.openNote(${openId})`, { awaitPromise: true }) } catch { } }

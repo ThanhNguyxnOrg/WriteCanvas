@@ -31,8 +31,13 @@ async function fetchJson(url, timeoutMs = 2_000) {
   }
 }
 
+// The runner parses workflow commands out of stdout, so a message carrying the
+// app's own output must not be able to begin a command of its own.
+const escapeCommand = value =>
+  String(value).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
+
 const fail = message => {
-  console.error(`::error::${message}`)
+  console.error(`::error::${escapeCommand(message)}`)
   process.exit(1)
 }
 
@@ -176,7 +181,8 @@ try {
   if (state.bridgeError) fail('the app is showing the "No host bridge" message')
   if (!state.canvas || state.tools < 1) fail(`the editor did not render (${JSON.stringify(state)})`)
 
-  console.log(`::notice::launched ${app.exe} as ${state.platform}; bridge present, ${state.tools} tool toggles`)
+  const summary = `launched ${app.exe} as ${state.platform}; bridge present, ${state.tools} tool toggles`
+  console.log(`::notice::${escapeCommand(summary)}`)
 } catch (error) {
   console.error(readLog())
   fail(error.message)
