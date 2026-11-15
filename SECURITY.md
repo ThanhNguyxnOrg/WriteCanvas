@@ -54,7 +54,8 @@ The parts that matter most, in order:
 
 - Keep dependencies current through Dependabot, with major bumps held for human
   review (`docs/AUTOMATION.md`).
-- Run CodeQL with the `security-and-quality` query pack on every push and weekly.
+- Run CodeQL on every pull request, on pushes to `master`, and weekly, through
+  GitHub's default code-scanning setup.
 - Keep the renderer free of Node access: all file work happens in `main/` behind
   validated IPC, and the window keeps `contextIsolation: true`,
   `nodeIntegration: false` and `sandbox: true`.

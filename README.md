@@ -5,7 +5,7 @@
 **Handwriting, notes and pages on a canvas that reads and writes the Scrble Ink file format.**
 
 [![CI](https://github.com/ThanhNguyxnOrg/WriteCanvas/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ThanhNguyxnOrg/WriteCanvas/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/ThanhNguyxnOrg/WriteCanvas/actions/workflows/codeql.yml/badge.svg?branch=master)](https://github.com/ThanhNguyxnOrg/WriteCanvas/actions/workflows/codeql.yml)
+[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-6C63FF?logo=github)](https://github.com/ThanhNguyxnOrg/WriteCanvas/security/code-scanning)
 [![Release](https://img.shields.io/github/v/release/ThanhNguyxnOrg/WriteCanvas?sort=semver&display_name=tag)](https://github.com/ThanhNguyxnOrg/WriteCanvas/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Electron](https://img.shields.io/badge/electron-38-47848F?logo=electron&logoColor=white)](package.json)

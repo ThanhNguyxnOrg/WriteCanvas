@@ -4,9 +4,10 @@ The organization owns the policy; this repository owns the adapters. Merge
 decisions, dependency routing, version bumps, changelog commits, tags and GitHub
 Release metadata are handled by **ThanhNguyxnAgent** from the central
 [`ThanhNguyxnOrg/.github`](https://github.com/ThanhNguyxnOrg/.github) repository.
-This repository keeps only what needs local knowledge: its test matrix, CodeQL
-scan, package builds, the Store package and two managed pull-request relay
-workflows.
+This repository keeps only what needs local knowledge: its test matrix, package
+builds, the Store submission and two managed pull-request relay workflows. Code
+scanning is GitHub's default CodeQL setup, configured in repository settings
+rather than by a workflow in this tree.
 
 ## The control plane
 
@@ -64,7 +65,7 @@ changes, and no workflow edit is needed.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | Push to `master`, every pull request, manual | Delegates to the organization's `ci-node.yml`, pinned to a commit SHA. Runs the unit suite on Ubuntu (Node 22 and 24), Windows and macOS (Node 22), plus a `node --check` pass over every module. Read-only. |
-| `codeql.yml` | Push to `master`, pull requests into `master`, weekly | Runs the `security-and-quality` query pack over the JavaScript and uploads code-scanning alerts. Read-only apart from the alerts. |
+| Code scanning | Pull requests and pushes, weekly; no local workflow | GitHub's default CodeQL setup runs the default query suite over the JavaScript and the Actions workflows, and uploads code-scanning alerts. It is configured in repository settings, so there is no `codeql.yml` to edit here. |
 | `agent-pr-signal.yml` | `pull_request_target`; and `workflow_run` of the test workflows | Metadata-only. Writes a small JSON envelope with the repository, pull-request number and head SHA, then uploads it as a one-day artifact. No checkout, no secrets, no write token, no PR code. **Managed; do not edit.** |
 | `agent-pr-worker.yml` | `workflow_run` after the signal completes | Forwards the signal artifact and `BOT_PRIVATE_KEY` to the central `agent-pr-worker.yml`. The central worker validates the event against the GitHub API and performs the actual routing or merge. **Managed; do not edit.** |
 | `release.yml` | A tag is created; manual dispatch with an existing tag | The build adapter. Builds the six installers from the tag, verifies each bundle, launches the packaged app on its own platform, and uploads the assets to the tag's draft release through the shared publisher. It never creates a tag or a release. |
@@ -174,10 +175,11 @@ should be checked against the central controllers first.
 
 Branch protection and rulesets can reject the onboarder's direct commits; those
 failures are visible in the onboarding job rather than silently marking the
-repository as enrolled. **Code scanning must stay on the advanced setup.**
-`codeql.yml` uploads results itself, so the repository's "Code scanning →
-Default setup" has to remain disabled. Enabling default setup while this workflow
-exists makes the analysis job fail with a conflict error.
+repository as enrolled. **Code scanning runs on the default setup.** A local
+`codeql.yml` was removed on purpose: while it existed, the analysis job and the
+default setup fought over the same alerts and every run failed with a conflict
+error. Configure the languages and the schedule under "Code scanning" in
+repository settings instead of adding the workflow back.
 
 ## Keeping this page honest
 
