@@ -1,12 +1,8 @@
 name: Microsoft Store
 
-# Submit every stable GitHub Release to Microsoft Store.
-# workflow_dispatch is reserved for one-off recovery of an already-published tag.
+# Submit a Store package after every stable GitHub Release is published.
+# workflow_dispatch is retained only for controlled recovery of an existing tag.
 on:
-  push:
-    branches: [master]
-    paths:
-      - .github/workflows/store.yml
   release:
     types: [published]
   workflow_dispatch:
@@ -20,20 +16,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: microsoft-store-${{ github.event.release.tag_name || inputs.tag || github.event.head_commit.id || github.ref }}
+  group: microsoft-store-${{ github.event.release.tag_name || inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   appx:
     name: Build and submit Microsoft Store update
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'release' && github.event.release.prerelease == false) ||
-      (github.event_name == 'push' && github.event.head_commit.message == 'chore(store): one-time recovery submission v1.2.0')
+    if: github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag || 'v1.2.0' }}
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
       STORE_TENANT_ID: ${{ vars.MSSTORE_TENANT_ID }}
       STORE_CLIENT_ID: ${{ vars.MSSTORE_CLIENT_ID }}
       STORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
