@@ -169,7 +169,7 @@ jobs:
           "msix_file=$([System.IO.Path]::GetFileName($msixPath))" >> $env:GITHUB_OUTPUT
 
       - name: Preserve Store submission package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: writecanvas-store-${{ env.RELEASE_TAG }}
           path: dist/*.msix
