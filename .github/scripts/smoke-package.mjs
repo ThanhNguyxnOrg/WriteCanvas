@@ -32,9 +32,10 @@ async function fetchJson(url, timeoutMs = 2_000) {
 }
 
 // The runner parses workflow commands out of stdout, so a message carrying the
-// app's own output must not be able to begin a command of its own.
+// app's own output must stay one line and must not smuggle an escape sequence
+// of its own.
 const escapeCommand = value =>
-  String(value).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
+  String(value).replace(/[\r\n]+/g, '').replace(/%/g, '%25')
 
 const fail = message => {
   console.error(`::error::${escapeCommand(message)}`)
