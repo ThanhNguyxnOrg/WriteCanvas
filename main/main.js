@@ -1,5 +1,5 @@
 'use strict'
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const fss = require('node:fs')
@@ -116,7 +116,22 @@ function menu() {
         { role: 'quit' },
       ],
     },
-    { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }] },
+    {
+      // Custom items instead of editMenu roles: a menu accelerator consumes the
+      // chord before the page sees a keydown, so role items made Ctrl+C/X/V
+      // do nothing to a canvas selection. The renderer decides per context —
+      // canvas objects copy/paste through the selection code, text fields go
+      // back to webContents via the edit:native call.
+      label: 'Edit',
+      submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: send('edit-undo') },
+        { label: 'Redo', accelerator: process.platform === 'darwin' ? 'Shift+CmdOrCtrl+Z' : 'CmdOrCtrl+Y', click: send('edit-redo') },
+        { type: 'separator' },
+        { label: 'Cut', accelerator: 'CmdOrCtrl+X', click: send('edit-cut') },
+        { label: 'Copy', accelerator: 'CmdOrCtrl+C', click: send('edit-copy') },
+        { label: 'Paste', accelerator: 'CmdOrCtrl+V', click: send('edit-paste') },
+      ],
+    },
     {
       label: 'View',
       submenu: [
@@ -183,6 +198,30 @@ async function loadPageEntry(p) {
 }
 
 function registerIpc() {
+  // Canvas copy/paste: the selection payload is JSON text, written and read
+  // through the main process so it survives cross-note and cross-window paste
+  // and never needs a clipboard-read permission in the renderer.
+  ipcMain.handle('clipboard:write', (_e, text) => {
+    clipboard.writeText(String(text == null ? '' : text))
+    return true
+  })
+  ipcMain.handle('clipboard:read', () => clipboard.readText())
+
+  // Text fields keep the native editing behaviour the editMenu roles used to
+  // give them; the renderer asks for it only when a text box or prompt has focus.
+  ipcMain.handle('edit:native', (_e, op) => {
+    if (!win || win.isDestroyed()) return false
+    const wc = win.webContents
+    if (op === 'undo') wc.undo()
+    else if (op === 'redo') wc.redo()
+    else if (op === 'cut') wc.cut()
+    else if (op === 'copy') wc.copy()
+    else if (op === 'paste') wc.paste()
+    else if (op === 'selectAll') wc.selectAll()
+    else return false
+    return true
+  })
+
   // Windows draws the caption buttons in a native overlay above the page; the
   // overlay has its own colour and does not inherit body.dark. Keep it in step
   // with the in-app theme so dark mode never leaves a white corner.

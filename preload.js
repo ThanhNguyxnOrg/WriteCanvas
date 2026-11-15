@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld('WriteCanvasHost', {
   // portable project .wcanvas (ZIP manifest + pages), separate from image/PDF export
   async exportProject(noteId) { return ipcRenderer.invoke('export:project', { noteId }) },
   async importProject() { return ipcRenderer.invoke('project:import') },
+  // Canvas copy/paste payloads live on the OS clipboard as JSON text.
+  async clipboardWriteText(text) { return ipcRenderer.invoke('clipboard:write', text) },
+  async clipboardReadText() { return ipcRenderer.invoke('clipboard:read') },
+  // Native editing for focused text fields (what the editMenu roles used to do).
+  async editNative(op) { return ipcRenderer.invoke('edit:native', op) },
   // Keep the native Windows caption overlay in step with the in-app theme.
   setTitleBarTheme(dark) { ipcRenderer.send('ui:titlebar-theme', !!dark) },
   // QA helper: UI test scripts grab the window surface through the main

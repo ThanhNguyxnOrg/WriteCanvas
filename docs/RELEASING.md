@@ -10,8 +10,10 @@ version says, not the commit log.
 1. **Move the changelog entries** from `## [Unreleased]` into a new
    `## [X.Y.Z] - YYYY-MM-DD` section. Write it the way a user reads it: what
    changed and why it matters, not which file was touched.
-2. **Bump `package.json`** to the same version. A mismatch does not fail the
-   release, but it logs a warning and leaves the repository inconsistent.
+2. **Bump `package.json` and `package-lock.json`** to the same version
+   (`npm install --package-lock-only` refreshes the lockfile without touching
+   `node_modules`). A mismatch does not fail the release, but it logs a warning
+   and leaves the repository inconsistent.
 3. **Check the pair locally:**
 
 ```bash
@@ -27,8 +29,8 @@ npm test        # tests/release-notes.test.mjs fails if the version has no secti
 ```bash
 git checkout master
 git pull
-git add CHANGELOG.md package.json
-git commit -m "release: v0.2.0"
+git add CHANGELOG.md package.json package-lock.json
+git commit -m "release: v1.2.0"
 git push
 ```
 
@@ -43,7 +45,7 @@ That push does the rest:
 | Launch | Each build job then starts the packaged app on its own operating system — with a throwaway profile and library, under a virtual display on Linux — and fails unless the bridge exists and the editor renders. A complete bundle can still be unable to start on one platform. |
 | Publish | The notes come from the `## [X.Y.Z]` section of `CHANGELOG.md`, and the installers built above are attached to the release. Created with a ThanhNguyxnAgent token, so the Release page names the Agent. |
 
-A version containing a hyphen (`release: v0.2.0-rc.1`) is published as a
+A version containing a hyphen (`release: v1.3.0-rc.1`) is published as a
 pre-release and never becomes the "latest" release.
 
 ### Replacing the files of a published version
@@ -64,7 +66,7 @@ touched.
 
 - A tag on the release commit, and a GitHub Release whose notes are written by a
   person in `CHANGELOG.md`.
-- Four installers, named by electron-builder:
+- Six installers, named by electron-builder:
 
 | Asset | Platform |
 |---|---|
@@ -99,7 +101,7 @@ is what makes that acceptable. Do not put code changes in a release commit.
 | Warning about `package.json` | The version there does not match the release commit. Fix it in a follow-up commit; the release already exists. |
 | The release exists but the notes are wrong | Edit the changelog, then run `Release` with `version` set and `force: true`; the notes of that release are refreshed. |
 | The installer is broken or stale | Run `Release` with `version` set and `force: true`: the files of that version are replaced, other releases are untouched. |
-| Wrong tag on the wrong commit | Delete the release and the tag, fix the changelog or the commit, then re-run: `gh release delete v0.2.0 --yes --cleanup-tag`. Deleting a published tag is destructive — re-check the notes and the commit first. |
+| Wrong tag on the wrong commit | Delete the release and the tag, fix the changelog or the commit, then re-run: `gh release delete v1.2.0 --yes --cleanup-tag`. Deleting a published tag is destructive — re-check the notes and the commit first. |
 | A push that was meant to release did nothing | Check the subject line. It must be the first line, exactly `release: vX.Y.Z` (a leading `v` is optional, `release:` is not). |
 
 ## After the release

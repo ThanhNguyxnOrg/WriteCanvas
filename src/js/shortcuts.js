@@ -76,6 +76,10 @@ const GROUPS = [
     rows: [
       ['Undo', () => modShortcut('Z')],
       ['Redo', () => redoShortcut()],
+      ['Copy selection', () => modShortcut('C')],
+      ['Cut selection', () => modShortcut('X')],
+      ['Paste selection', () => modShortcut('V')],
+      ['Delete selection', () => 'Del'],
     ],
   },
   {

@@ -56,7 +56,7 @@ sheet names Linux chords explicitly.
 | **Notes that stay portable** | Pages are `Scribble/<Name>#NN.png` beside an `index.json`, with ink replay (`sINK`) and paper chunks preserved. Editable strokes live in a `sVec` extension, the raster base in `sRST`, so an imported page is never flattened away. |
 | **Ink engine** | Five pen types with the factory 29-colour palette, per-pen width and colour, custom hex and a colour picker. Translucent pens composite once per stroke, so a highlighter does not darken itself where it crosses. |
 | **Paper** | Letter, Legal, Tabloid and A0–A6, with blank, pattern and planner templates rendered at the original document scale. |
-| **Tools** | Pen, highlighter, eraser (stroke, segment, sheet), laser pointer, ruler with snap and rotation, shapes and text boxes, click or lasso selection with move, duplicate and delete. |
+| **Tools** | Pen, highlighter, eraser (stroke, segment, sheet — its card opens the picker, the pick stays), laser pointer, a ruler or protractor picked from the Ruler card — each takes only strokes that start on its edge or arc (drag the grip to move the stencil, the far handle to rotate) — shapes (drag to size or tap to place) and editable text boxes, and click-or-lasso selection of ink *and* text with move, copy, paste, duplicate, in-place editing and delete. |
 | **Pages** | Add, duplicate, delete, reorder and turn pages with a continuous scroll, page thumbnails and right-click actions. |
 | **Board colour** | Per page by default, or applied to the whole note on request. The interface theme is separate and never changes a board. |
 | **Saving** | Debounced autosave, an explicit save for all changed pages, and export to PDF (page or whole note), PNG, or a portable `.wcanvas` container. |
@@ -87,6 +87,7 @@ page until you draw on it.
 | `npm test` | Run the unit suite (plain `node:test`, no Electron needed). |
 | `npm run pack` | Build an unpacked app for the current OS. |
 | `npm run dist` | Build the installers: NSIS, DMG, AppImage and deb. |
+| `npm run dist:store` | Build the Windows Store AppX. |
 
 ## Documentation
 
@@ -103,6 +104,7 @@ below is the whole set; each page is self-contained.
 | [docs/PLATFORMS.md](docs/PLATFORMS.md) | Check per-OS behaviour, packaging targets and the full shortcut table. |
 | [docs/AUTOMATION.md](docs/AUTOMATION.md) | Trace what CI, Dependabot, CodeQL and ThanhNguyxnAgent do, and which pull requests they will not touch. |
 | [docs/RELEASING.md](docs/RELEASING.md) | Cut a release, and understand how a `release:` commit becomes a tag and a GitHub Release. |
+| [PRIVACY.md](PRIVACY.md) | Read what the app processes, and why nothing leaves the machine. |
 | [CHANGELOG.md](CHANGELOG.md) | See what shipped in each version. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Send a change: branch, commit style, review expectations, test requirements. |
 | [SECURITY.md](SECURITY.md) | Report a vulnerability privately, and see what is in scope. |

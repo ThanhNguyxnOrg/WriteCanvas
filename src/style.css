@@ -135,6 +135,10 @@ body.dark #topbar { box-shadow: 0 1px 0 rgba(255,255,255,.03) inset; }
 .tb-group { display: flex; align-items: center; flex: none; gap: 2px; }
 .tb-file { gap: 1px; }
 .tb-sep { width: 1px; height: 30px; background: var(--line); flex: none; margin: 0 2px; }
+/* soft cluster divider inside the tools group: quieter than .tb-sep so the
+   four tool clusters read as one command bar, not four toolbars */
+.tb-gap { width: 1px; height: 34px; background: var(--line); opacity: .75; flex: none; margin: 0 5px; }
+@media (max-width: 1120px) { .tb-gap { display: none; } }
 
 #topbar .tb-btn {
   background: transparent; border: none; color: var(--ink); cursor: pointer;
@@ -226,54 +230,6 @@ body.dark .tb-swatch.sel { box-shadow: inset 0 0 0 1px rgba(255,255,255,.30), 0 
 #topbar button.tb-toggle.active .tb-label { color: var(--on-accent); }
 #topbar button.tb-toggle.active:hover { background: var(--accent); filter: brightness(1.04); }
 
-/* Split tool + always-visible mode label. The mode half is a real 24px
-   target, so "Stroke" / "Click" is one click away instead of a tiny caret.
-   Both halves share one rounded card: selecting the tool must not look like a
-   second button appeared underneath it. */
-.tb-tool-split {
-  position: relative; display: flex; flex-direction: column; width: 62px; height: 62px;
-  flex: none; border-radius: 10px;
-  transition: background-color .12s ease, box-shadow .12s ease;
-}
-.tb-tool-split .tb-toggle {
-  width: 100%; height: 38px; padding: 2px 2px 0; gap: 1px;
-  border-radius: 10px 10px 0 0;
-}
-.tb-tool-split .tb-toggle svg { width: 22px; height: 22px; }
-.tb-tool-split .tb-label { font-size: 10.5px; }
-.tb-tool-split.active {
-  background: var(--accent);
-  box-shadow: 0 3px 10px rgba(11, 99, 197, .25);
-}
-.tb-tool-split.active .tb-toggle,
-#topbar .tb-tool-split .tb-toggle.active {
-  background: transparent; border-radius: 10px 10px 0 0;
-  box-shadow: none; color: var(--on-accent);
-}
-.tb-tool-split.active .tb-toggle:hover,
-#topbar .tb-tool-split .tb-toggle.active:hover { background: transparent; filter: none; }
-.tb-modebtn {
-  width: 100%; height: 24px; padding: 0 1px; border: 0; background: transparent;
-  color: var(--dim); font-size: 9.5px; font-weight: 600; line-height: 1;
-  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
-  gap: 3px; border-radius: 0 0 10px 10px; white-space: nowrap;
-  box-shadow: inset 0 1px 0 var(--line);
-}
-.tb-modebtn:hover { background: var(--hover); color: var(--ink); }
-.tb-tool-split.active .tb-modebtn {
-  color: var(--on-accent);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.22);
-}
-.tb-tool-split.active .tb-modebtn:hover {
-  background: rgba(255,255,255,.12); color: var(--on-accent);
-}
-.mode-chevron { width: 10px; height: 10px; flex: none; opacity: .65; }
-.tb-tool-split.active .mode-chevron { opacity: .9; }
-.tb-tool-split.active button:focus-visible {
-  outline-color: var(--on-accent); outline-offset: -3px;
-}
-body.dark .tb-tool-split.active .tb-modebtn { box-shadow: inset 0 1px 0 rgba(0,0,0,.18); }
-body.dark .tb-tool-split.active .tb-modebtn:hover { background: rgba(0,0,0,.08); }
 /* The laser is a presentation pointer, not another ink pen. A red active
    state plus the beam/dot icon keeps it from reading as a red marker. */
 #topbar button#tbLaser.active { background: #c62828; box-shadow: 0 3px 10px rgba(198, 40, 40, .28); }
@@ -327,65 +283,31 @@ body.dark #btnSave[data-save-state="error"]::after { box-shadow: 0 0 0 2px var(-
 #canvasHost {
   position: absolute; inset: 13px 13px 13px 0; overflow: auto;
   background: transparent;
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: auto;
+  overflow-anchor: none;
 }
 #canvasHost::-webkit-scrollbar { width: 0; height: 0; }
 #canvasStack {
   position: relative; margin: 0 auto;
-  border-radius: 2px;
+}
+/* Continuous stack: every page is its own sheet in a vertical run. The boxes
+   hold still renders while the editable layers float over the active one, so a
+   scroll across a boundary keeps the previous page's tail in view. */
+#pagesLayer { position: absolute; inset: 0; }
+.pageBox {
+  position: absolute; border-radius: 2px; overflow: hidden;
   box-shadow: 0 2px 6px rgba(19,28,45,.16), 0 16px 44px rgba(19,28,45,.12);
-}
-body.dark #canvasStack { box-shadow: 0 2px 8px rgba(0,0,0,.55), 0 18px 52px rgba(0,0,0,.40); }
-#stackInner { position: relative; transform-origin: 0 0; }
-
-/* Neighbour peek: while a page boundary is being pulled, the adjacent sheet
-   slides in with the same 10px seam it would have in a continuous stack. The
-   strip fills the gap the pull opens, so the two pages read as one stack
-   instead of two unrelated screens. Sizes are set from JS in document px. */
-.pagePeek {
-  position: absolute; left: 0; right: 0; height: 0;
-  overflow: hidden; pointer-events: none;
-}
-.pagePeek.prev { bottom: 100%; }
-.pagePeek.next { top: 100%; }
-.pagePeek .peekSheet {
-  position: absolute; left: 0; right: 0;
   background: var(--paper-white);
-  border-radius: 2px;
 }
-.pagePeek.prev .peekSheet {
-  top: 0; height: calc(100% - var(--page-seam, 10px));
-  box-shadow: 0 6px 16px rgba(19,28,45,.14);
-}
-.pagePeek.next .peekSheet {
-  top: var(--page-seam, 10px); height: calc(100% - var(--page-seam, 10px));
-  box-shadow: 0 -6px 16px rgba(19,28,45,.14);
-}
-body.dark .pagePeek.prev .peekSheet { box-shadow: 0 6px 18px rgba(0,0,0,.45); }
-body.dark .pagePeek.next .peekSheet { box-shadow: 0 -6px 18px rgba(0,0,0,.45); }
-.pagePeek .peekLabel {
-  position: absolute; left: 12px;
-  font: 600 12px/1 system-ui, sans-serif; letter-spacing: .08em;
-  text-transform: uppercase; opacity: .55; white-space: nowrap;
-}
-.pagePeek.prev .peekLabel { bottom: 8px; }
-.pagePeek.next .peekLabel { top: 8px; }
+body.dark .pageBox { box-shadow: 0 2px 8px rgba(0,0,0,.55), 0 18px 52px rgba(0,0,0,.40); }
+.pageBox canvas { width: 100%; height: 100%; }
+#stackInner { position: absolute; transform-origin: 0 0; will-change: transform; }
 /* Only tools that own the stroke should consume the gesture. Pan/View leave
    native touch scrolling enabled, while pen/eraser/lasso never scroll the page
-   out from under a stroke. */
-#stackInner.inking { touch-action: none; }
-/* Direction-aware page entry: the next sheet rises from below, the previous
-   sheet settles from above. The slide matches the pull direction so a committed
-   page turn keeps the momentum the peek strip set up. */
-#canvasStack.page-enter-next { animation: pageEnterNext .22s cubic-bezier(.2,.8,.2,1); }
-#canvasStack.page-enter-prev { animation: pageEnterPrev .22s cubic-bezier(.2,.8,.2,1); }
-@keyframes pageEnterNext {
-  from { opacity: .96; transform: translateY(26px); }
-  to { opacity: 1; transform: none; }
-}
-@keyframes pageEnterPrev {
-  from { opacity: .96; transform: translateY(-26px); }
-  to { opacity: 1; transform: none; }
-}
+   out from under a stroke. The stack carries the class too, so a touch that
+   starts on a neighbouring sheet inks instead of scrolling. */
+#stackInner.inking, #canvasStack.inking { touch-action: none; }
 #canvasStack canvas { position: absolute; top: 0; left: 0; display: block; }
 #paperC { position: relative !important; }
 
@@ -425,7 +347,6 @@ body.dark #titleStrip span { color: rgba(255,255,255,.45); }
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
 }
 .flyout-hint { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--dim); }
-.flyout-note { margin: -2px 0 12px; font-size: 12px; line-height: 1.45; color: var(--dim); }
 .hidden { display: none !important; }
 
 /* shared circle swatch (pen palette + board palette) */
@@ -740,15 +661,25 @@ body.dark #btnShortcuts kbd, body.dark .shortcut-row kbd { background: var(--fie
 .shortcut-row span { min-width: 0; }
 @media (max-width: 620px) { #shortcutList { grid-template-columns: 1fr; } }
 
-/* caret hot-zone: only tools that own a secondary flyout get one */
+/* corner chevron: marks the tools whose click opens a picker (Shapes, Select,
+   Ruler, Eraser), so the tile reads as "there is more inside" without a
+   second row of controls */
 .tb-toggle { position: relative; }
-.tb-caret[data-fly] { cursor: pointer; }
+.tb-caret {
+  position: absolute; right: 7px; top: 8px; width: 7px; height: 7px; opacity: .5;
+  border-right: 1.8px solid currentColor; border-bottom: 1.8px solid currentColor;
+  transform: rotate(45deg); border-radius: 1px;
+}
+.tb-toggle.active .tb-caret { opacity: .9; }
 
 /* shapes & text flyout */
 #shapeFlyout { width: 388px; }
-#shapeGrid {
-  display: grid; grid-template-columns: repeat(6, 48px); gap: 8px; justify-content: center;
+#shapeGrid { display: flex; flex-direction: column; gap: 10px; }
+.sh-section-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase;
+  color: var(--dim); margin: 0 0 5px 2px;
 }
+.sh-grid { display: grid; grid-template-columns: repeat(6, 48px); gap: 8px; justify-content: center; }
 #shapeGrid .sh-card {
   width: 48px; height: 48px; border: 1px solid transparent; background: transparent; cursor: pointer;
   padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 8px;
@@ -759,18 +690,13 @@ body.dark #btnShortcuts kbd, body.dark .shortcut-row kbd { background: var(--fie
 #shapeGrid .sh-card:hover { background: var(--hover); border-color: var(--line); }
 #shapeGrid .sh-card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 body.dark #shapeGrid .sh-card canvas { filter: invert(1) brightness(1.05); }
-.sh-textbtn {
-  width: 100%; height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--ink);
-  cursor: pointer; font-size: 13.5px; font-weight: 550;
-}
-.sh-textbtn svg { width: 18px; height: 18px; }
-.sh-textbtn:hover { background: var(--hover); border-color: var(--accent); }
 
-/* select + eraser flyouts */
+
+/* select + eraser + ruler flyouts */
 #selectFlyout { width: 340px; }
 #eraserFlyout { width: 412px; }
-#erModes, #selModes { display: flex; gap: 6px; }
+#rulerFlyout { width: 340px; }
+#erModes, #selModes, #rulModes { display: flex; gap: 6px; }
 .er-opt {
   flex: 1; height: 44px; border: 1px solid var(--line); background: var(--surface); color: var(--ink);
   font-size: 13px; cursor: pointer; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
@@ -827,7 +753,6 @@ body.dark #shapeGrid .sh-card canvas { filter: invert(1) brightness(1.05); }
 @media (prefers-reduced-motion: reduce) {
   #paperPanel { animation: none; }
   .pp-pill, .pp-knob { transition: none; }
-  #canvasStack.page-enter-next, #canvasStack.page-enter-prev { animation: none; }
 }
 
 /* replay overlay */
@@ -843,24 +768,25 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
 
 #saveState { font-size: 12px; color: var(--dim); padding-right: 6px; }
 
-/* ruler stencil floating rotate controls (counter-scaled) */
+/* ruler stencil floating controls: one pill, ‹ angle › (counter-scaled) */
 #rulerCtl {
-  position: absolute; display: flex; gap: 5px; z-index: 26;
+  position: absolute; display: flex; align-items: center; gap: 2px; padding: 3px;
+  border-radius: 999px; z-index: 26;
+  background: var(--surface); border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgba(15,23,42,.18);
 }
 #rulerCtl button {
-  width: 34px; height: 34px; border-radius: 50%; background: var(--surface);
-  border: 1px solid var(--line); color: var(--accent); cursor: pointer;
-  box-shadow: 0 3px 12px rgba(0,0,0,.18); display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%; border: none; background: transparent;
+  color: var(--accent); cursor: pointer; display: flex; align-items: center; justify-content: center;
   padding: 0;
 }
 #rulerCtl button:hover { background: var(--accent-soft); }
-#rulerCtl svg { width: 16px; height: 16px; display: block; }
+#rulerCtl button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#rulerCtl svg { width: 15px; height: 15px; display: block; }
 #rulerCtl .rul-angle {
-  min-width: 46px; height: 34px; padding: 0 7px; display: inline-flex;
-  align-items: center; justify-content: center; border-radius: 999px;
-  background: var(--surface); border: 1px solid var(--line);
+  min-width: 40px; height: 30px; padding: 0 6px; display: inline-flex;
+  align-items: center; justify-content: center;
   color: var(--dim); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums;
-  box-shadow: 0 3px 12px rgba(0,0,0,.12);
 }
 
 /* lasso selection floating action bar (counter-scaled) */
@@ -876,6 +802,7 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
 }
 #selBar button:hover { background: var(--hover); border-color: var(--line); }
 #selBar button.danger { color: var(--danger); }
+#selBar button svg { width: 15px; height: 15px; display: block; margin: 0 auto; }
 
 /* pull-to-add-page pill (last page only) */
 #pullHint {
@@ -904,7 +831,7 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
   from { opacity: 0; transform: translateY(-5px); }
   to { opacity: 1; transform: translateY(0); }
 }
-#penFlyout, #shapeFlyout, #selectFlyout, #eraserFlyout, #paperColorFlyout, #colorPopover { animation: flyIn .14s cubic-bezier(.16,.84,.3,1); }
+#penFlyout, #shapeFlyout, #selectFlyout, #rulerFlyout, #eraserFlyout, #paperColorFlyout, #colorPopover { animation: flyIn .14s cubic-bezier(.16,.84,.3,1); }
 #topbar, .tb-pen-current { user-select: none; -webkit-user-select: none; }
 
 /* responsive: keep every command visible and readable at 1280, then simplify */
@@ -918,9 +845,6 @@ img.replay-gif, canvas.replay-gif { background: #fff; }
   #topbar .tb-btn { width: 42px; height: 42px; }
   .tb-save-split .tb-more { min-height: 42px; }
   .tb-toggle { width: 54px; height: 56px; }
-  .tb-tool-split { width: 54px; height: 56px; }
-  .tb-tool-split .tb-toggle { height: 32px; }
-  .tb-tool-split .tb-toggle svg { width: 20px; height: 20px; }
   .tb-label { font-size: 10px; }
   .tb-pen-current { min-width: 136px; height: 52px; }
   .tp-dot { width: 36px; height: 36px; }

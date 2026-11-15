@@ -28,6 +28,7 @@ npm start
 | `npm test` | The unit suite (`node:test`). It never loads Electron — see [TESTING.md](TESTING.md). |
 | `npm run pack` | Build an unpacked app directory for the current OS. |
 | `npm run dist` | Build installers: NSIS, DMG, AppImage and deb. |
+| `npm run dist:store` | Build the Windows Store AppX (Windows only). |
 
 ## Developer scripts
 
@@ -45,6 +46,9 @@ running with `npm run start:debug`.
 | `scripts/qa-wcanvas.mjs` | CDP | End-to-end for the `.wcanvas` container: create, draw, save, export, inspect the file, re-import. |
 | `scripts/measure-paper.mjs` | — | Measures paper template geometry from PNG assets. Also exports `decodePNG`, which the other image-inspecting scripts use. |
 | `scripts/verify-note.mjs` | — | Byte-level Scrble Ink compatibility check on a saved note: PNG structure, expected chunk set, `sINK` header, and a round trip through `main/scrble-format.js`. |
+| `scripts/store-shots.mjs` | CDP | Captures the Microsoft Store listing screenshots from a throwaway library, so no personal note appears in the listing. |
+| `scripts/build-store.mjs` | Windows | Builds the Store AppX with electron-builder 26 and the identity in `store/identity.json`; run it through `npm run dist:store`. |
+| `scripts/make-store-assets.ps1` | Windows PowerShell | Regenerates the `build/appx` tiles and the Store icon from `src/img/writecanvas.png`. |
 
 The one-off probes that were used while reverse-engineering the original
 application's format have been removed once their findings were folded into

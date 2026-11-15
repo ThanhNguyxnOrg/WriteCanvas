@@ -11,6 +11,121 @@ written before the release commit — see
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-15
+
+### Added
+
+- **Selection clipboard** — copy, cut and paste strokes and shapes from the
+  selection toolbar or the Edit menu (`Ctrl+C`/`Ctrl+X`/`Ctrl+V`, `⌘` on
+  macOS). Copies ride the OS clipboard as a `writecanvas-objects` payload, so
+  they survive switching notes or windows and can be pasted after a restart;
+  text fields keep native editing. Pasting shows a hint when the clipboard
+  holds nothing that belongs to the app.
+- **Continuous page stack** — every page of a note now sits in one scrolling
+  run with stills for the inactive sheets, so the end of page 1 stays visible
+  while page 2 comes up, the way the original app scrolls. Only the bottom of
+  the last sheet still arms the pull hint that appends a new page.
+
+- **Text in the selection** — text boxes now behave like ink in the Select
+  tool: click or lasso them, drag to move, copy/cut/paste them together with
+  strokes, duplicate and delete them (button or `Del`), and edit in place by
+  double-clicking or tapping with the Text tool. A Text button on the toolbar
+  places boxes without opening the Shapes menu first.
+- **Tap to place a shape** — after picking a shape, a tap on the page places it
+  at a readable default size; dragging still sizes it by hand. The shape
+  gallery is grouped into Lines & arrows, Basics and Polygons.
+- **A protractor stencil, picked like a shape** — the Ruler card opens a
+  picker with the straight ruler or a degree-banded protractor, and the Select
+  card opens the same way for its Lasso and Click modes. Picking applies it at
+  once and the card marks the pick you used last; both survive a restart, like
+  the pen slots. A stroke that starts on the protractor's arc rides the
+  circle, the centre grip moves it and the far handle turns it.
+
+### Changed
+
+- **Lighter live inking** — a stroke in progress stamps only the slice its
+  newest samples added and composites that slice, instead of rebuilding and
+  repainting the whole stroke on every pointer sample; long strokes keep up
+  with the pen. The only part that is ever repainted is the short provisional
+  tail at the pen tip, wiped and restamped inside its own region and clip.
+- **Steadier fast strokes** — the pen reads the coalesced pointer samples
+  Chromium folds into a single event and paints the live slice at most once per
+  animation frame, so a quick flick keeps its true curve instead of collapsing
+  to a couple of chords per frame.
+- **A ruler that behaves like a stencil** — with the ruler on, only strokes
+  that start on its band snap to the line (the band glows while they do);
+  drawing away from it stays free-hand. A handle near the far end rotates the
+  stencil by dragging, every fifth division is drawn longer, and the ±10°
+  buttons still step.
+- **A stencil that looks like a tool** — the straight ruler and the protractor
+  are drawn as frosted acrylic: a soft shadow and a glassy body, graduations
+  running from the writing edge inward (millimetre marks appear as the page
+  zooms in; centimetres are numbered from the grip in both directions and stay
+  upright when the stencil is turned around) and a machined grip puck with a
+  move glyph next to a matching rotate ring. The floating angle control beside
+  the grip is one pill now instead of three loose circles. Snapping and the
+  handles' positions behave exactly as before.
+- **Select and Ruler open their pickers** — clicking either card pops its
+  chooser open the way the Shapes gallery already did, with the last pick
+  already marked: Select offers Lasso and Click, Ruler offers a straightedge
+  and a protractor. Choosing one applies it and closes the card, the pick is
+  remembered after a restart, and Esc puts the stencil away. The protractor is
+  a movable, turnable semicircle with its degree band; a stroke that starts on
+  its arc stays on the curve while it draws, like the ruler keeps one on its
+  edge.
+- **Eraser opens its picker** — clicking the Eraser card pops its chooser open
+  the way Select, Ruler and Shapes already did, with the mode you used last
+  already marked: Stroke, a Segment eraser (S/M/L) or Sheet for the whole page.
+  Picking a mode applies it, turns the eraser on and closes the card; the mode
+  and the segment size are remembered after a restart. The corner chevron is
+  gone, leaving the same caret the other picker cards carry.
+- **Pickers say less** — the helper paragraphs under the Select, Ruler and
+  Shapes pickers are gone; each card shows its title and its choices, with the
+  pick you used last already marked on the tile, like the original's flyouts,
+  which carry option labels and no prose.
+- **Toolbar in working order** — the tools run erase → select, text → shapes,
+  ruler → laser, pan, separated by thin cluster rules, with a dedicated Text
+  button. The mode caption that used to sit on a second row under Eraser and
+  Select is gone — on screen it read as a half-drawn second button, and it said
+  the same thing as the menu behind it; the eraser and select cards open their
+  own choosers, and the pick you used last stays marked inside. The Shapes menu
+  carries shapes alone, so text is not offered in two places, and the eraser
+  keeps the factory modes (stroke, segment sizes, sheet) instead of a fourth
+  "Drag" option that only duplicated stroke erasing with a movement threshold.
+- **Pens that read as five tools** — the picker shows a live sample of each
+  type beside its name (Pen — Smooth, Pencil — Grain, Calligraphy — Chisel 45°,
+  Highlighter — Translucent, Hi-Square — Solid block), and at everyday widths
+  each type inks a visibly different line: smooth and opaque, a lighter thin
+  stroke with graphite riding its rough edge, a strong thick/thin chisel, a
+  pale wide band, and a broad squared block. The differences were tuned up
+  (a lighter, narrower, grainier pencil; a wider, harder 45° nib; a squared
+  highlighter that is broad and near-opaque) because at one width setting the
+  five used to read as the same line at different shades.
+- **Pen-up changes nothing** — the line you see while drawing is the line that
+  stays, pixel for pixel: the mask liveC shows is the mask that is committed,
+  the pencil's grain is anchored to permanent stamps only, and the
+  highlighter's closing cap is already on screen in the last live frame. The
+  commit copies that mask onto the ink layer instead of rebuilding the stroke,
+  and the replay frame is taken on the next animation frame, so lifting the pen
+  paints and returns in about a millisecond instead of hitching for 20–50 ms.
+
+### Fixed
+
+- **Filled shapes respond everywhere** — the eraser and click-select now hit a
+  filled shape anywhere inside it, not only on the outline it was built from,
+  and the segment eraser removes a filled shape whole instead of leaving a
+  hollow outline fragment behind.
+- **The selection bar's duplicate action** shows the duplicate icon instead of
+  the "DC4" control glyph that a wrong entity produced, and all five actions
+  use the app's icon set rather than a mix of emoji, text characters and SVG.
+
+## [1.1.1] - 2026-11-10
+
+### Fixed
+
+- **Release publishing** — the shared publisher can read the build artifacts it
+  attaches, so a release no longer fails while collecting the installers.
+
 ## [1.1.0] - 2026-10-25
 
 ### Added
@@ -99,13 +214,8 @@ whose installers were the first ones that ran; those builds have been withdrawn.
   `WriteCanvasHost` bridge in `preload.js`; every library path from the renderer
   is resolved and validated in the main process before it is used.
 
-[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.2.0
+[1.1.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.0.0
-
-## [1.1.1] - 2026-11-10
-
-### Bug Fixes and Performance
-
-- grant artifact-read permissions to shared publisher ([689bc35](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/689bc35b62c6177701c06656d3c2565639b7638c))
-

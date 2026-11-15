@@ -31,6 +31,10 @@ no other platform's chord is ever advertised.
 | Open library menu | `Ctrl+O` | `⌘O` | `Ctrl+O` |
 | Undo | `Ctrl+Z` | `⌘Z` | `Ctrl+Z` |
 | Redo | `Ctrl+Y` | `⇧⌘Z` | `Ctrl+Y` |
+| Copy selection | `Ctrl+C` | `⌘C` | `Ctrl+C` |
+| Cut selection | `Ctrl+X` | `⌘X` | `Ctrl+X` |
+| Paste selection | `Ctrl+V` | `⌘V` | `Ctrl+V` |
+| Delete selection | `Del` | `Del` | `Del` |
 | Previous page | `Ctrl+PageUp` | `⌃PageUp` | `Ctrl+PageUp` |
 | Next page | `Ctrl+PageDown` | `⌃PageDown` | `Ctrl+PageDown` |
 | Zoom in | `Ctrl+=` | `⌘=` | `Ctrl+=` |
@@ -54,10 +58,12 @@ Two details that are easy to get wrong when touching input code:
   `T` are bare keys, and they are ignored while a text box has focus, so typing a
   word does not switch tools.
 
-The application menu owns `New`, `Save`, `Export`, `Zoom` and `Keyboard
-Shortcuts` accelerators; the renderer owns the tool keys, undo/redo, page turns
-and `Esc`. Both paths are listed above and both are covered by
-`tests/shortcuts.test.mjs` for the labels.
+The application menu owns `New`, `Save`, `Export`, `Zoom`, `Keyboard
+Shortcuts` and the Edit-menu chords — `Undo`, `Redo`, `Cut`, `Copy` and
+`Paste`. The Edit items forward to the renderer, so a canvas selection copies
+and pastes while a focused text field keeps its native editing. The renderer
+owns the tool keys, page turns and `Esc`. Both paths are listed above and both
+are covered by `tests/shortcuts.test.mjs` for the labels.
 
 ## Ink input
 

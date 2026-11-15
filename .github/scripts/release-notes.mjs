@@ -1,6 +1,6 @@
 // Release helpers for .github/workflows/release.yml.
 //
-// A push to master whose subject is `release: v1.4.0` publishes that version,
+// A push to master whose subject is `release: v1.2.0` publishes that version,
 // and the notes come from the matching section of CHANGELOG.md. Nothing is
 // generated from commit subjects: the changelog is the source of truth, so a
 // release without a changelog entry fails instead of publishing empty notes.

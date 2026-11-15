@@ -5,5 +5,19 @@ out/
 # build/ holds the Windows Store tile assets (build/appx), so it is tracked.
 *.log
 .playwright-mcp/
+
+# Local scratch: captures, profiles, plans and session transcripts never belong
+# in the published source.
+/attachments/
+/capture/
+/checks/
+/inbox/
+/investigation.cany/
+/pinned/
+/reference/
+/craft.json
+/feed.json
+/usage.json
+
 .DS_Store
 Thumbs.db

@@ -21,10 +21,22 @@ a page index, a save payload — is treated as untrusted and re-validated in the
 main process, including path resolution inside the library root.
 
 `src/js/bridge.js` wraps the host so the renderer does not care where it runs: it
-returns the Electron bridge when `WriteCanvasHost` exists and a Tauri adapter
-with the same call names otherwise.
+returns the Electron bridge when `WriteCanvasHost` exists and keeps a
+forward-looking Tauri adapter with the same call names for a future shell. Only
+the Electron bridge is shipped today.
 
 ## Canvas stack
+
+The whole note is one continuous run of sheets. `#canvasStack` lays every page
+out vertically (`layoutStack`, a 16 screen-px seam between sheets), and
+`#pagesLayer` holds a rendered still of each inactive page, so scrolling across
+a boundary shows the previous page's tail while the next page's head comes up.
+`#stackInner` floats the editable layers over the active sheet; `afterScroll`
+picks the active page from whichever sheet holds the viewport centre. Stills
+are drawn one per frame (`pumpStills`) and dropped outside a small window
+around the active page, so a long note never accumulates bitmaps. Rail
+thumbnails work the same way: a paper-only tile appears at once and the ink is
+queued after it, one page per frame (`pumpThumbs`).
 
 Each page is rendered into a stack of full-page canvases inside `#stackInner`,
 which is scaled by `S.zoom` (`0.08` to `8`). A document pixel is `S.zoom` CSS
@@ -35,7 +47,7 @@ pixels.
 | `paperC` | Paper size, template/pattern and board colour. | yes, composited |
 | `rasterC` | An imported or legacy raster base — the pixels of a page we did not draw. | yes, as `sRST` |
 | `inkC` | Committed strokes and text boxes. | yes, into `IDAT` and `sVec` |
-| `liveC` | The stroke in progress, plus previews (selection box, marching ants, shape drag). | no |
+| `liveC` | The stroke in progress — the same pixels the scratch mask holds, so committing is a copy and not a re-render — plus previews (selection box, marching ants, shape drag). | no |
 | `laserC` | The laser pointer session. | no |
 | `rulerC` | The ruler overlay. | no |
 
@@ -47,12 +59,14 @@ three are interface that happens to be drawn on the page. Nothing in `liveC`,
 
 | Module | Role |
 |---|---|
+| `src/js/app.js` | Bootstrap: wires the editor, library tree and bridge together, forwards main-process pushes, reopens the last note, and exposes the `window.__wc` test hook. |
+| `src/js/bridge.js` | The renderer-side host contract; picks the Electron bridge or the Tauri adapter. |
 | `src/js/editor.js` | The editor. Page state (`S`), the six canvases, tool dispatch, gestures, undo/redo, the save pipeline, selection, text boxes, the laser session. |
 | `src/js/paper.js` | Paper engine. Document scale (`DOC_DPI = 294.12`, sampled from the original asset: a Letter raster is 2500×3235 px for 8.5×11 in), the page-size table, template paths and `docMM()`. |
-| `src/js/pen.js` | Pen engine. The five pen types, the factory 29-colour palette, `makeStroke` and `addPoint`. Each stroke is stamped into an offscreen coverage mask (a union, so a stroke never darkens itself) and composited once with the pen's alpha. |
+| `src/js/pen.js` | Pen engine. The five pen types, the factory 29-colour palette, `makeStroke` and `addPoint`. Each stroke is stamped into an offscreen coverage mask (a union, so a stroke never darkens itself) and composited once with the pen's alpha. `createStrokeStamper` splits stamps into permanent ones (the settled spine, the pencil grain anchored to it, the opening cap) and a provisional tail that the editor wipes and repaints in its own region and clip; the mask at pen-up is therefore exactly the canonical build and the commit is a blit of it. |
 | `src/js/png-toolkit.js` | The one codec for the private `s*` chunks. Browser-safe, no `fs`, no `Buffer`; used by the renderer, by the Node facade and by the tests. |
 | `src/js/replay.js` | `Recorder`: captures composited frames after committed changes so the main process can encode the ink replay GIF. |
-| `src/js/ruler.js` | Ruler geometry: line/rectangle clipping and the angle maths. |
+| `src/js/ruler.js` | Ruler geometry (line/rectangle clipping, projection and distance for edge snapping, the angle maths) and the two stencil overlay painters (`paintRulerStencil`, `paintProtractorStencil`) the editor calls. |
 | `src/js/library.js` | Library tree UI: folders, notes, selection, drag-move, context actions. |
 | `src/js/ctx.js` | Floating context menu and modal prompt helpers. |
 | `src/js/shortcuts.js` | Per-platform chords, the `aria-keyshortcuts` values, and the help sheet. |
@@ -103,6 +117,23 @@ Keep these true; each one exists because breaking it caused a real bug.
   page.
 - **Cancel means cancel.** `pointercancel` abandons the in-flight gesture rather
   than committing a partial mark.
+
+## Input notes in code
+
+- **A pen stroke keeps every raw sample.** `onPointerMove` reads
+  `getCoalescedEvents()` so the points Chromium folds into one event still join
+  the stroke; drawing a fast flick from a couple of chords per frame used to
+  kink visibly. Synthetic events and hosts without the API fall back to the
+  event itself.
+- **Live ink paints once per frame.** The mask fill + composite for the newest
+  slice is queued on `requestAnimationFrame` (`scheduleLivePaint`), never run
+  per pointer event; the commit path still repaints the exact stroke on lift.
+- **A stencil takes a stroke only when it starts on its edge** (34 doc px of
+  the line or arc). Strokes begun away from it stay free-hand; the far handle
+  rotates the stencil, the centre grip moves it. The Ruler card's picker
+  switches between the straight ruler and the protractor and remembers the
+  pick; Select and the Eraser open their pickers the same way and keep their
+  last pick too.
 
 ## Platform notes in code
 

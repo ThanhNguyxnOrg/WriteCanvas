@@ -2,10 +2,10 @@
 
 import { bridge } from './bridge.js'
 import { SIZES, paperDocSize, paperMM, renderPaper, docMM, hexToCss, templatePathFor, TEMPLATES } from './paper.js'
-import { makeStroke, addPoint, drawStrokeAlpha, drawStrokeMask, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
-import { clipLineToRect } from './ruler.js'
+import { makeStroke, addPoint, drawStrokeAlpha, createStrokeStamper, paintStamps, strokeIntersectsCircle, PEN_TYPES, PEN_TYPE_ORDER, PEN_PALETTE, QUICK_PALETTE, DEFAULT_PEN_SLOTS } from './pen.js'
+import { clipLineToRect, lineSnapPoint, pointLineDistance, knobCenter, paintRulerStencil, paintProtractorStencil } from './ruler.js'
 import { Recorder, playReplay } from './replay.js'
-import { applyShortcutHints, initShortcutSheet, openShortcutSheet, isShortcutSheetOpen, modShortcut } from './shortcuts.js'
+import { applyShortcutHints, initShortcutSheet, openShortcutSheet, isShortcutSheetOpen, modShortcut, modAria } from './shortcuts.js'
 
 const $ = id => document.getElementById(id)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -19,13 +19,13 @@ export const S = {
   penSlots: DEFAULT_PEN_SLOTS.map(s => ({ ...s })),
   penIndex: 0,
   eraserMM: 5,           // segment eraser factory sizes: S=2, M=5, L=10
-  eraserMode: 'stroke',  // stroke / segment / sheet (whole-page) / drag-only
+  eraserMode: 'stroke',  // stroke / segment / sheet (whole-page)
   selectMode: 'lasso',   // lasso drag vs click a stroke to select it
   shapeKind: null,       // selected gallery shape; next drag on the page creates it
   shapeFill: false,
   rulerOn: false,
+  rulerMode: 'ruler',    // ruler / protractor — the RulerFlyout's remembered pick
   selection: null,
-  pullPx: 0,             // rubber-band offset (screen px) while pulling below the last page
   textBoxSize: 55,       // S/M/L = 38/55/86 doc px
   zoom: 1,
   spaceDown: false,
@@ -37,6 +37,7 @@ export const S = {
 // scratch canvas for the live-stroke alpha compositing
 const scratch = document.createElement('canvas')
 const scratchCtx = scratch.getContext('2d')
+let scratchUsed = null // doc-px rect the mask currently holds, for cheap clears
 const DEFAULT_PAPER = () => ({ size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF', borderLines: true })
 // Muted board colours: paper-like lights and pad.ws/Excalidraw-like darks.
 const BOARD_PALETTE = [
@@ -168,7 +169,9 @@ function compositeCurrentPage(page) {
 }
 
 // Replay frames only need the screen-sized sheet, not a full-page flatten.
-// Drawing the three live layers at replay resolution keeps pointer-up cheap.
+// Drawing the three live layers at replay resolution keeps pointer-up cheap,
+// and the scratch canvas is reused so a stroke does not allocate a new one.
+const replayScratch = document.createElement('canvas')
 function captureReplay(page) {
   if (!page || !page.recorder) return
   const { w, h } = docSize(page)
@@ -178,9 +181,11 @@ function captureReplay(page) {
   const scale = Math.min(1, maxDim / Math.max(w, h))
   const fw = Math.max(1, Math.round(w * scale))
   const fh = Math.max(1, Math.round(h * scale))
-  const off = document.createElement('canvas')
-  off.width = fw; off.height = fh
-  const c = off.getContext('2d')
+  if (replayScratch.width !== fw || replayScratch.height !== fh) {
+    replayScratch.width = fw; replayScratch.height = fh
+  }
+  const c = replayScratch.getContext('2d')
+  c.clearRect(0, 0, fw, fh)
   if (page === current()) {
     for (const id of ['paperC', 'rasterC', 'inkC']) {
       const layer = $(id)
@@ -190,7 +195,22 @@ function captureReplay(page) {
     const flat = flattenToCanvas(page)
     c.drawImage(flat, 0, 0, fw, fh)
   }
-  page.recorder.capture(off)
+  page.recorder.capture(replayScratch)
+}
+
+// The replay GIF is a preview of the note, not part of the stroke. Capturing
+// it on the pointer-up frame meant a full-page readback between the pen
+// leaving the glass and the ink appearing — the little hitch while writing.
+// One capture per frame is enough for a GIF, so a burst of quick strokes
+// coalesces and pen-up stays on the sheet.
+const replayQueued = new WeakSet()
+function scheduleReplayCapture(page) {
+  if (!page || !page.recorder || replayQueued.has(page)) return
+  replayQueued.add(page)
+  requestAnimationFrame(() => {
+    replayQueued.delete(page)
+    captureReplay(page)
+  })
 }
 
 async function flattenBytes(page, kind = 'image/png') {
@@ -202,20 +222,14 @@ async function flattenBytes(page, kind = 'image/png') {
 // ---------- transform / zoom ----------
 function applyTransform() {
   const page = current(); if (!page) return
-  const { w, h } = docSize(page)
-  const inner = $('stackInner')
-  inner.style.width = w + 'px'; inner.style.height = h + 'px'
-  inner.style.transform = `translateY(${-(S.pullPx || 0)}px) scale(${S.zoom})`
-  const stack = $('canvasStack')
-  stack.style.width = (w * S.zoom) + 'px'
-  stack.style.height = (h * S.zoom) + 'px'
+  layoutStack()
   // HUD layers redraw so their counter-scaled chrome tracks the zoom
   if (S.rulerOn) redrawRuler()
   updateSelectionChrome(page)
+  ensureVisibleStills()
 }
 
-// ---------- pull-to-add-page (last page only, Samsung-Notes parity) ----------
-let bounceRAF = 0
+// ---------- pull-to-add-page (last sheet only, Samsung-Notes parity) ----------
 let wheelOverscroll = 0
 let wheelAddLock = 0
 
@@ -252,53 +266,216 @@ function hidePullHint() {
   const bar = $('pullHint'); if (bar) bar.classList.add('hidden')
 }
 
-// ---------- neighbour peek (continuous-stack illusion) ----------
-// Only one page exists in the DOM, so a boundary pull used to open an empty
-// workspace gap. Painting the adjacent sheet into that gap makes the pull read
-// as sliding one stack rather than swapping screens. Heights are in document px
-// (the strip lives inside the zoomed stackInner), so divide by zoom.
-function showPagePeek(dir, screenPx) {
-  const el = $(dir > 0 ? 'peekNext' : 'peekPrev')
-  if (!el || !S.pages.length) return
-  const zoom = S.zoom || 1
-  const docPx = Math.max(0, screenPx) / zoom
-  if (docPx < 1) { hidePagePeek(); return }
+// ---------- continuous page stack ----------
+// The whole note is laid out as a vertical run of sheets inside #canvasStack;
+// the editable layers (#stackInner) float over the active sheet. Neighbours
+// keep a rendered still, so scrolling across a page boundary shows the
+// previous page's tail and the next page's head at once — one endless stack,
+// the way the original app scrolls.
+const PAGE_GAP = 16        // screen px between sheets
+const STILL_MAX = 2000     // longest still edge in device px (memory bound)
+let stackGeom = { tops: [], heights: [], width: 0, height: 0 }
+let hostScrollRaf = 0
+let scrollSyncLock = 0     // while a programmatic scroll is settling
+const stillQueue = new Set()
+let stillRaf = 0
+
+function pageBox(i) { return $('pagesLayer')?.children[i] || null }
+
+function syncPageBoxes() {
+  const layer = $('pagesLayer'); if (!layer) return
+  while (layer.children.length > S.pages.length) layer.lastElementChild.remove()
+  for (let i = 0; i < S.pages.length; i++) {
+    let box = layer.children[i]
+    if (!box) {
+      box = document.createElement('div')
+      box.className = 'pageBox'
+      layer.appendChild(box)
+    }
+    const page = S.pages[i]
+    box.dataset.page = String(i)
+    if (box._page !== page) {
+      // indices shift on delete/duplicate; a box that no longer matches its
+      // page drops its still rather than showing another sheet's ink
+      box._page = page
+      box.replaceChildren()
+    }
+    box.style.background = hexToCss(page.paper && page.paper.bg, '#FFFFFF')
+  }
+}
+
+function stillSize(page) {
+  const { w, h } = docSize(page)
+  const scale = Math.min(1, STILL_MAX / Math.max(w, h))
+  return { cw: Math.max(1, Math.round(w * scale)), ch: Math.max(1, Math.round(h * scale)) }
+}
+
+function stillCanvas(box) {
+  let c = box.querySelector('canvas')
+  if (!c) {
+    c = document.createElement('canvas')
+    c.setAttribute('aria-hidden', 'true')
+    box.appendChild(c)
+  }
+  return c
+}
+
+// Render one page's still from its data (paper + raster base + strokes/texts).
+function renderStill(i) {
+  const page = S.pages[i]
+  if (!page || i === S.currentPage) return
+  const box = pageBox(i); if (!box) return
+  const { w, h } = docSize(page)
+  const { cw, ch } = stillSize(page)
+  const c = stillCanvas(box)
+  if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch }
+  const g = c.getContext('2d')
+  g.save()
+  g.scale(cw / w, ch / h)
+  renderPaper(g, page.paper)
+  if (page.rasterBitmap) g.drawImage(page.rasterBitmap, 0, 0)
+  for (const st of page.strokes) drawStrokeItem(g, w, h, st)
+  if (page.texts) for (const t of page.texts) drawTextObj(g, t)
+  g.restore()
+  page.stillDirty = false
+}
+
+// Freeze the active page onto its still straight from the live layers — three
+// scaled drawImages instead of replaying every stroke.
+function captureStillFromLayers(i) {
+  const page = S.pages[i]
+  if (!page || i !== S.currentPage) return
+  const box = pageBox(i); if (!box) return
+  const { cw, ch } = stillSize(page)
+  const c = stillCanvas(box)
+  if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch }
+  const g = c.getContext('2d')
+  g.clearRect(0, 0, cw, ch)
+  for (const id of ['paperC', 'rasterC', 'inkC']) {
+    const layerEl = $(id)
+    if (layerEl) g.drawImage(layerEl, 0, 0, cw, ch)
+  }
+  page.stillDirty = false
+}
+
+function queueStill(i) {
+  if (i === S.currentPage || !S.pages[i]) return
+  const box = pageBox(i)
+  if (box && box.querySelector('canvas') && !S.pages[i].stillDirty) return
+  stillQueue.add(i)
+  pumpStills()
+}
+
+// One still per frame: rendering several full pages in one task would stall
+// the scroll it is trying to keep up with.
+function pumpStills() {
+  if (stillRaf) return
+  stillRaf = requestAnimationFrame(() => {
+    stillRaf = 0
+    const next = stillQueue.values().next().value
+    if (next === undefined) return
+    stillQueue.delete(next)
+    renderStill(next)
+    if (stillQueue.size) pumpStills()
+  })
+}
+
+function ensureVisibleStills() {
+  const host = $('canvasHost'); if (!host || !S.pages.length) return
+  const pad = host.clientHeight
+  const top = host.scrollTop - pad
+  const bottom = host.scrollTop + host.clientHeight + pad
+  const keep = new Set()
+  for (let i = 0; i < stackGeom.tops.length; i++) {
+    const t = stackGeom.tops[i], b = t + stackGeom.heights[i]
+    if (b < top) continue
+    if (t > bottom) break
+    keep.add(i)
+    queueStill(i)
+  }
+  // cache a small window around the active page; drop the rest so a long note
+  // never accumulates full-page bitmaps
+  for (let i = S.currentPage - 2; i <= S.currentPage + 2; i++) {
+    if (i >= 0 && i < S.pages.length) keep.add(i)
+  }
+  const layer = $('pagesLayer'); if (!layer) return
+  for (let i = 0; i < layer.children.length; i++) {
+    if (keep.has(i) || i === S.currentPage) continue
+    const c = layer.children[i].querySelector('canvas')
+    if (c) c.remove()
+  }
+}
+
+// Lay out the run of sheets (screen px) and park the editable layers over the
+// active page. Called on every zoom change, page change and note open.
+function layoutStack() {
+  const stack = $('canvasStack'), inner = $('stackInner')
+  if (!stack || !inner || !S.pages.length) return
+  const z = S.zoom || 1
+  const n = S.pages.length
+  let y = 0, maxW = 1
+  const tops = [], heights = [], sizes = []
+  for (let i = 0; i < n; i++) {
+    const { w, h } = docSize(S.pages[i])
+    sizes.push({ w, h })
+    tops.push(y)
+    const hs = Math.max(1, Math.round(h * z))
+    heights.push(hs)
+    y += hs + PAGE_GAP
+    maxW = Math.max(maxW, Math.round(w * z))
+  }
+  stackGeom = { tops, heights, width: maxW, height: Math.max(1, y - PAGE_GAP) }
+  stack.style.width = maxW + 'px'
+  stack.style.height = stackGeom.height + 'px'
+  syncPageBoxes()
+  for (let i = 0; i < n; i++) {
+    const box = pageBox(i); if (!box) continue
+    const wS = Math.round(sizes[i].w * z)
+    box.style.left = Math.round((maxW - wS) / 2) + 'px'
+    box.style.top = tops[i] + 'px'
+    box.style.width = wS + 'px'
+    box.style.height = heights[i] + 'px'
+  }
   const page = current()
-  const neighbour = dir > 0 ? S.pages[S.currentPage + 1] : S.pages[S.currentPage - 1]
-  const paper = (neighbour || page)?.paper || DEFAULT_PAPER()
-  const sheet = el.querySelector('.peekSheet')
-  if (sheet) sheet.style.background = hexToCss(paper.bg, '#FFFFFF')
-  const label = el.querySelector('.peekLabel')
-  if (label) {
-    label.textContent = neighbour
-      ? `Page ${S.currentPage + (dir > 0 ? 2 : 0)}`
-      : 'New page'
-    label.style.color = colorLuma(paper.bg) < .42 ? 'rgba(255,255,255,.6)' : 'rgba(19,28,45,.5)'
-  }
-  el.style.height = Math.round(docPx) + 'px'
-  el.classList.add('on')
-}
-
-function hidePagePeek() {
-  for (const id of ['peekPrev', 'peekNext']) {
-    const el = $(id)
-    if (!el) continue
-    el.classList.remove('on')
-    el.style.height = '0px'
+  if (page) {
+    const { w, h } = docSize(page)
+    const wS = Math.round(w * z)
+    inner.style.width = w + 'px'
+    inner.style.height = h + 'px'
+    inner.style.left = Math.round((maxW - wS) / 2) + 'px'
+    inner.style.top = tops[S.currentPage] + 'px'
+    inner.style.transform = `scale(${z})`
   }
 }
 
-function pullBounce(from) {
-  if (bounceRAF) cancelAnimationFrame(bounceRAF)
-  const t0 = performance.now()
-  const step = now => {
-    const k = Math.min(1, (now - t0) / 150)
-    S.pullPx = from * (1 - k) * (1 - k)
-    applyTransform()
-    if (k < 1) bounceRAF = requestAnimationFrame(step)
-    else { S.pullPx = 0; applyTransform(); bounceRAF = 0 }
+function scrollPageIntoView(i, smooth = false) {
+  const host = $('canvasHost'); if (!host) return
+  const top = Math.max(0, (stackGeom.tops[i] || 0) - 14)
+  // suppress the centre-based page switch while the animation is in flight,
+  // or a rail jump to page 10 would flip through every sheet on the way
+  scrollSyncLock = performance.now() + (smooth ? 900 : 120)
+  if (smooth && typeof host.scrollTo === 'function') host.scrollTo({ top, behavior: 'smooth' })
+  else host.scrollTop = top
+}
+
+function onHostScroll() {
+  if (hostScrollRaf) return
+  hostScrollRaf = requestAnimationFrame(() => { hostScrollRaf = 0; afterScroll() })
+}
+
+// Keep the active page and the visible stills in step with the scrollport.
+function afterScroll() {
+  ensureVisibleStills()
+  const host = $('canvasHost')
+  if (!host || !S.pages.length || noteBusy) return
+  if (performance.now() < scrollSyncLock) return
+  const mid = host.scrollTop + host.clientHeight / 2
+  let idx = -1
+  for (let i = 0; i < stackGeom.tops.length; i++) {
+    const t = stackGeom.tops[i]
+    if (mid >= t && mid < t + stackGeom.heights[i]) { idx = i; break }
   }
-  bounceRAF = requestAnimationFrame(step)
+  if (idx >= 0 && idx !== S.currentPage) setPage(idx, false, { keepScroll: true })
 }
 
 function zoomAt(cx, cy, factor) {
@@ -330,7 +507,26 @@ function pageCoords(e) {
   const inner = $('stackInner')
   const rect = inner.getBoundingClientRect()
   const scale = rect.width / inner.offsetWidth // = zoom
-  return { x: (e.clientX - rect.left) / scale, y: (e.clientY - rect.top) / scale }
+  return docPoint(e, rect, scale)
+}
+
+// Screen point -> document point against an already-read stack rect. A stroke
+// reads the rect once per event and reuses it for every coalesced sample, so
+// a burst of pen samples never costs a burst of layout reads.
+function docPoint(ev, rect, scale) {
+  return { x: (ev.clientX - rect.left) / scale, y: (ev.clientY - rect.top) / scale }
+}
+
+// Every raw pen sample the OS collected between two frames. Chromium folds
+// them into one pointermove; without reading them back a fast stroke is drawn
+// from a chord per frame and visibly kinks ("khựng"). Synthetic events and
+// platforms without the API fall back to the event itself.
+function coalescedSamples(e) {
+  try {
+    const raw = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null
+    if (raw && raw.length) return raw
+  } catch { /* synthetic/test events */ }
+  return [e]
 }
 
 // Fit-width zoom (with a little headroom), matching how the original always
@@ -361,6 +557,26 @@ function renderPage(page) {
   const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
   ctxOf('laserC').clearRect(0, 0, docSize(page).w, docSize(page).h)
   drawRulerLayer(page)
+  queuePreCapture(page)
+}
+
+// The replay GIF's "before" frame belongs to the clean page, not to the first
+// stroke. Taking it here — a moment after the page is on screen — keeps the
+// full-page readback out of the first pen-up, where it used to sit between the
+// pen leaving the glass and the ink appearing. The composited layers it reads
+// exclude liveC, so even if a stroke starts first the frame is still the
+// committed page. firstCommitPreCapture stays as the fallback.
+let preCaptureTimer = 0
+let preCapturePage = null
+function queuePreCapture(page) {
+  if (!page || !page.recorder || page.recorder.frames.length || page.recorder.changed) return
+  preCapturePage = page
+  clearTimeout(preCaptureTimer)
+  preCaptureTimer = setTimeout(() => {
+    preCaptureTimer = 0
+    if (preCapturePage !== page || page !== current()) return
+    firstCommitPreCapture(page)
+  }, 140)
 }
 
 export async function openNote(id) {
@@ -396,6 +612,7 @@ export async function openNote(id) {
       if (seq !== openSeq || token !== noteLoadToken) return
       if (!res || !res.pages || !res.pages.length) { showHint('Could not open note'); return }
       disposePages()
+      thumbQueue.clear()
       S.noteId = id
       orphanNoteId = null
       S.note = { ...res.note }
@@ -433,10 +650,8 @@ export async function openNote(id) {
       if (host && host.selectNote) host.selectNote(id)
       S.hadZoom = false
       S.zoom = 1
-      S.pullPx = 0
       wheelOverscroll = 0
       hidePullHint()
-      hidePagePeek()
       setPage(0, true)
       // the rail may still show the previous note when both have the same
       // page count; force a rebuild with this note's sheets
@@ -459,9 +674,18 @@ export async function openNote(id) {
             return
           }
           S.pages[i].rasterBitmap = bmp
-          if (i === S.currentPage) renderPage(S.pages[i])
-          // drop the vector-only thumbnail cached before the base decoded
-          refreshThumbOf(S.pages[i])
+          if (i === S.currentPage) {
+            renderPage(S.pages[i])
+            refreshThumbOf(S.pages[i])
+          } else {
+            // drop the thumbnail cached before the base decoded; the rail
+            // redraws it through the queue, one page per frame
+            S.pages[i].stillDirty = true
+            queueStill(i)
+            S.pages[i].thumbUrl = ''
+            thumbQueue.add(i)
+            pumpThumbs()
+          }
         } catch (err) { console.error('decode page failed', err) }
       }
       if (seq !== openSeq || token !== noteLoadToken || S.noteId !== id) return
@@ -489,6 +713,11 @@ export function closeNote() {
   autosaveTimer = null
   clearTimeout(retryTimer)
   retryTimer = null
+  clearTimeout(thumbTimer)
+  thumbTimer = 0
+  if (stillRaf) { cancelAnimationFrame(stillRaf); stillRaf = 0 }
+  if (thumbQueueRaf) { cancelAnimationFrame(thumbQueueRaf); thumbQueueRaf = 0 }
+  thumbQueue.clear()
   disposePages()
   clearSelection()
   S.noteId = null
@@ -496,10 +725,14 @@ export function closeNote() {
   S.note = null
   S.pages = []
   S.currentPage = -1
-  S.pullPx = 0
   wheelOverscroll = 0
   hidePullHint()
-  hidePagePeek()
+  stillQueue.clear()
+  stackGeom = { tops: [], heights: [], width: 0, height: 0 }
+  const pagesLayer = $('pagesLayer')
+  if (pagesLayer) pagesLayer.replaceChildren()
+  const canvasStack = $('canvasStack')
+  if (canvasStack) { canvasStack.style.width = '0px'; canvasStack.style.height = '0px' }
   const host = $('canvasHost')
   if (host) { host.scrollTop = 0; host.scrollLeft = 0 }
   for (const id of ['paperC', 'rasterC', 'inkC', 'liveC', 'laserC', 'rulerC']) {
@@ -522,35 +755,11 @@ function sanitizePage() {
   if (out && (out.dirty || out.recorder.changed)) saveCurrentPage()
 }
 
-function rememberPageScroll(page) {
-  const host = $('canvasHost')
-  if (!page || !host) return
-  page.scrollTop = host.scrollTop
-  page.scrollLeft = host.scrollLeft
-}
-
-function restorePageScroll(page) {
-  const host = $('canvasHost')
-  if (!page || !host) return
-  // New/unvisited pages start at the title. Revisiting a page keeps the reader
-  // where they were, so moving back and forth does not jump to the top.
-  host.scrollTop = page.scrollTop || 0
-  host.scrollLeft = page.scrollLeft || 0
-}
-
-let pageEnterTimer = 0
-function playPageEnter(dir = 1) {
-  const stack = $('canvasStack')
-  if (!stack || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
-  stack.classList.remove('page-enter-next', 'page-enter-prev')
-  // Force a reflow so repeated rail clicks restart the short transition.
-  void stack.offsetWidth
-  stack.classList.add(dir < 0 ? 'page-enter-prev' : 'page-enter-next')
-  clearTimeout(pageEnterTimer)
-  pageEnterTimer = setTimeout(() => stack.classList.remove('page-enter-next', 'page-enter-prev'), 240)
-}
-
-function setPage(i, internal = false) {
+// Switching sheets: the outgoing page freezes onto its still (so it stays
+// visible above/below), the editable layers move to the incoming one, and the
+// scroll position either follows it (rail, buttons) or is left untouched
+// (scrolling across a boundary made the page active on its own).
+function setPage(i, internal = false, { keepScroll = false, smooth = false } = {}) {
   if (!S.noteId || !S.pages.length || i < 0 || i >= S.pages.length) return
   // A note load owns the page array until it finishes; only the load itself
   // may select a page. Clicks and shortcuts during that window are dropped.
@@ -561,33 +770,27 @@ function setPage(i, internal = false) {
   cancelGesture()
   wheelOverscroll = 0
   hidePullHint()
-  hidePagePeek()
   const prevPage = S.currentPage
-  const switching = prevPage !== i
-  if (switching) {
-    const oldPage = current()
-    rememberPageScroll(oldPage)
-    // The stroke-end/undo paths already refreshed this thumbnail. Only pay for
-    // a repaint when there is no cached image yet.
-    if (oldPage && !oldPage.thumbUrl) {
-      const oldItem = $('pagesBar')?.children[S.currentPage]
-      if (oldItem) drawThumb(oldItem.querySelector('.pageThumb'), S.currentPage)
-    }
+  const oldPage = current()
+  if (oldPage) {
+    captureStillFromLayers(prevPage)
+    // The outgoing thumbnail must not wait on the debounce once the page
+    // leaves the screen; draw it while the layers still show this sheet.
+    flushThumbRefresh()
     sanitizePage()
   }
   clearSelection()
   S.currentPage = i
   const page = current()
-  hidePagePeek()
   renderPage(page)
   if (!S.hadZoom) fitZoom()
-  applyTransform()
-  restorePageScroll(page)
+  layoutStack()
   if (S.rulerOn) { ensureRulerVisible(); drawRulerLayer(current()) }
   syncPageRail()
-  if (switching) playPageEnter(i > prevPage ? 1 : -1)
   updateTitle()
   syncUndoRedo()
+  if (!keepScroll) scrollPageIntoView(i, smooth)
+  ensureVisibleStills()
 }
 
 function addPage() {
@@ -601,7 +804,7 @@ function addPage() {
   // PNG, otherwise reopening the note silently drops the sheet.
   added.dirty = true
   S.pages.push(added)
-  setPage(S.pages.length - 1)
+  setPage(S.pages.length - 1, false, { smooth: true })
   scheduleAutosave()
 }
 
@@ -624,14 +827,14 @@ function refreshPages() {
     t.className = 'pageThumb'
     t.title = 'Page ' + (i + 1)
     item.append(num, t)
-    item.onclick = () => setPage(i)
+    item.onclick = () => setPage(i, false, { smooth: true })
     item.oncontextmenu = e => {
       e.preventDefault()
       item.focus()
       pageMenu(i, e.clientX, e.clientY)
     }
     item.onkeydown = e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setPage(i) }
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setPage(i, false, { smooth: true }) }
       else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
         e.preventDefault()
         const r = item.getBoundingClientRect()
@@ -639,7 +842,7 @@ function refreshPages() {
       }
     }
     bar.appendChild(item)
-    drawThumb(t, i)
+    scheduleThumb(t, i)
   })
   syncPageNav()
 }
@@ -703,7 +906,7 @@ async function duplicatePage(index) {
       return
     }
     S.pages.push(page)
-    setPage(S.pages.length - 1, true)
+    setPage(S.pages.length - 1, true, { smooth: true })
     showHint(`Page ${index + 1} duplicated`)
   } catch (err) {
     console.error('duplicate page failed', err)
@@ -726,6 +929,10 @@ async function deletePageAt(index) {
     const res = await bridge.deletePage(noteId, index)
     if (S.noteId !== noteId) return
     const currentIndex = S.currentPage
+    // keep the reader's place inside the current sheet when an earlier page
+    // disappears above it
+    const host = $('canvasHost')
+    const keepOffset = Math.max(0, (host ? host.scrollTop : 0) - ((stackGeom.tops[currentIndex] || 0)))
     if (page.rasterBitmap && typeof page.rasterBitmap.close === 'function') page.rasterBitmap.close()
     S.pages.splice(index, 1)
     if (res && Array.isArray(res.pages)) {
@@ -739,13 +946,13 @@ async function deletePageAt(index) {
     if (removedCurrent) {
       clearSelection()
       const nextPage = current()
-      if (nextPage) {
-        renderPage(nextPage)
-        applyTransform()
-        restorePageScroll(nextPage)
-      }
+      if (nextPage) renderPage(nextPage)
     }
     refreshPages()
+    layoutStack()
+    const keepTop = (stackGeom.tops[S.currentPage] || 0) + keepOffset
+    if (host) host.scrollTop = Math.max(0, keepTop)
+    ensureVisibleStills()
     updateTitle()
     syncPageNav()
     syncUndoRedo()
@@ -834,10 +1041,64 @@ function refreshThumbOf(page) {
   if (item) drawThumb(item.querySelector('.pageThumb'), i)
 }
 
+// The rail paints a paper-only tile at once and replays the ink for one page
+// per frame: opening a long note used to flatten every page in one task, which
+// blocked the first paint for seconds.
+const thumbQueue = new Set()
+let thumbQueueRaf = 0
+function paintPaperThumb(t, page) {
+  const { w, h } = docSize(page)
+  t.style.aspectRatio = `${w} / ${h}`
+  const small = document.createElement('canvas')
+  small.width = 176; small.height = Math.round(176 * h / w)
+  const sc = small.getContext('2d')
+  sc.save(); sc.scale(small.width / w, small.height / h); renderPaper(sc, page.paper); sc.restore()
+  t.style.backgroundImage = `url(${small.toDataURL()})`
+}
+
+function scheduleThumb(t, i) {
+  const page = S.pages[i]
+  if (!page || !t) return
+  if (i === S.currentPage || page.thumbUrl) { drawThumb(t, i); return }
+  paintPaperThumb(t, page)
+  thumbQueue.add(i)
+  pumpThumbs()
+}
+
+function pumpThumbs() {
+  if (thumbQueueRaf) return
+  thumbQueueRaf = requestAnimationFrame(() => {
+    thumbQueueRaf = 0
+    const next = thumbQueue.values().next().value
+    if (next === undefined) return
+    thumbQueue.delete(next)
+    const item = $('pagesBar')?.children[next]
+    if (item && S.pages[next]) drawThumb(item.querySelector('.pageThumb'), next)
+    if (thumbQueue.size) pumpThumbs()
+  })
+}
+
+let thumbTimer = 0
 function refreshCurrentThumb() {
   syncUndoRedo()
-  const item = $('pagesBar').children[S.currentPage]
+  // Coalesce the thumbnail re-encode (a 176px PNG data-URL per call): rapid
+  // strokes used to hitch on encoding one after every pointer-up.
+  clearTimeout(thumbTimer)
+  thumbTimer = setTimeout(drawCurrentThumb, 220)
+}
+
+function drawCurrentThumb() {
+  thumbTimer = 0
+  const bar = $('pagesBar')
+  if (!bar || S.currentPage < 0) return
+  const item = bar.children[S.currentPage]
   if (item) drawThumb(item.querySelector('.pageThumb'), S.currentPage)
+}
+
+function flushThumbRefresh() {
+  if (!thumbTimer) return
+  clearTimeout(thumbTimer)
+  drawCurrentThumb()
 }
 
 // toolbar Undo/Redo start disabled in markup; keep them in step with the
@@ -850,7 +1111,7 @@ function syncUndoRedo() {
 }
 
 // ---------- pointer drawing ----------
-let live = null // {stroke, drawnIdx}
+let live = null // {stroke, stamper, page, snapMode} while a pen stroke is in flight
 let pan = null
 let erasePending = null
 // Only one pointer may drive a gesture. A second finger used to clear the
@@ -863,16 +1124,24 @@ function onPointerDown(e) {
   // While a note loads, S.pages still belongs to the outgoing note. Inking
   // then would edit pages that are discarded the moment the load completes.
   if (noteBusy) return
-  const page = current(); if (!page) return
   // HUD chrome lives inside the canvas stack: clicking Duplicate/Delete/rotate
   // or the ruler controls must never start an ink stroke underneath it
   if (e.target.closest('button, input, textarea, select, a, [contenteditable="true"], #selBar, #rulerCtl, #textEditBar, #titleStrip')) return
   if (activePointer !== null) return
+  const isPan = S.tool === 'pan' || S.tool === 'view' || S.spaceDown || e.button === 1
+  // A press on a neighbouring sheet makes it the active page first, so the
+  // stroke lands where the person aimed; pan keeps scrolling the stack instead.
+  if (!isPan && !e.target.closest('#stackInner')) {
+    const box = e.target.closest('.pageBox')
+    const idx = box ? Number(box.dataset.page) : NaN
+    if (Number.isInteger(idx) && idx !== S.currentPage && S.pages[idx]) {
+      setPage(idx, false, { keepScroll: true })
+    }
+  }
+  const page = current(); if (!page) return
   activePointer = e.pointerId
   const stack = $('stackInner')
   try { stack.setPointerCapture(e.pointerId) } catch { /* synthetic/test pointers */ }
-  if (bounceRAF) { cancelAnimationFrame(bounceRAF); bounceRAF = 0; S.pullPx = 0; applyTransform(); hidePullHint() }
-  const isPan = S.tool === 'pan' || S.tool === 'view' || S.spaceDown || e.button === 1
   if (isPan) {
     const host = $('canvasHost')
     pan = { x: e.clientX, y: e.clientY, sl: host.scrollLeft, st: host.scrollTop }
@@ -880,9 +1149,19 @@ function onPointerDown(e) {
   }
   if (e.button !== 0 && e.pointerType === 'mouse') return
   let { x, y } = pageCoords(e)
-  // dragging the ruler grip moves the stencil; drawing near it still snaps
+  // On the stencil: the centre grip moves the ruler, the far handle rotates it
   if (S.rulerOn && rulerHandleHit(page, x, y)) { rulerStartMove(x, y); return }
-  if (S.rulerOn && S.tool === 'pen') ({ x, y } = rulerSnapPoint(x, y))
+  if (S.rulerOn && rulerRotateHit(page, x, y)) { rulerRotate = {}; return }
+  // A stencil only takes a stroke that starts on its edge; pen strokes that
+  // begin away from it stay free-hand (they used to snap from anywhere).
+  let snapMode = null
+  if (S.rulerOn && S.tool === 'pen') {
+    if (S.rulerMode === 'protractor') {
+      if (protractorWithinSnap(page, x, y)) { snapMode = 'arc'; ({ x, y } = protractorSnapPoint(page, x, y)) }
+    } else if (rulerWithinSnap(page, x, y)) {
+      snapMode = 'line'; ({ x, y } = rulerSnapPoint(x, y))
+    }
+  }
   const lc = ctxOf('liveC'); const { w, h } = docSize(page)
   lc.clearRect(0, 0, w, h)
   if (S.tool === 'shape') {
@@ -892,25 +1171,30 @@ function onPointerDown(e) {
     return
   }
   if (S.tool === 'pen') {
-    // drawStrokeMask clears only the current stroke's bounds; without a full
-    // clear here the previous stroke would remain on the scratch mask and show
-    // through translucent highlights (a grey ghost under every new stroke).
-    if (scratch.width !== w) scratch.width = w
-    if (scratch.height !== h) scratch.height = h
-    scratchCtx.clearRect(0, 0, w, h)
-    live = { stroke: makeStroke(curPen(), docMM(curPen().widthMM)), drawnIdx: -1 }
-    if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
+    // Every stroke starts from a clean mask. Clearing only the region the last
+    // stroke painted avoids a full-page wipe per stroke; a size change still
+    // falls back to a full clear.
+    if (scratch.width !== w || scratch.height !== h) { scratch.width = w; scratch.height = h; scratchUsed = null }
+    if (scratchUsed) {
+      scratchCtx.clearRect(scratchUsed.x0, scratchUsed.y0, scratchUsed.x1 - scratchUsed.x0, scratchUsed.y1 - scratchUsed.y0)
+      scratchUsed = null
+    } else {
+      scratchCtx.clearRect(0, 0, w, h)
+    }
+    live = { stroke: makeStroke(curPen(), docMM(curPen().widthMM)), page, snapMode, tailBox: null }
+    live.stamper = createStrokeStamper(live.stroke)
+    if (snapMode) { rulerSnapActive = true; redrawRuler() }
+    if (addPoint(live.stroke, x, y, e.pressure, docMM(0.4))) drawLiveSlice(page)
   } else if (S.tool === 'text') {
-    placeTextBox(page, x, y)
+    // Tapping an existing box with the Text tool edits it instead of stacking
+    // a new one on top.
+    const hit = textAt(page, x, y)
+    if (hit) beginTextEdit(page, hit)
+    else placeTextBox(page, x, y)
   } else if (S.tool === 'erase') {
     if (S.eraserMode === 'sheet') { eraseSheet(page); return }
-    const dragOnly = S.eraserMode === 'drag'
-    erasePending = {
-      whole: [], pairs: [], mode: S.eraserMode,
-      armed: !dragOnly, startX: x, startY: y,
-    }
-    if (dragOnly) paintEraserCursor(page, x, y)
-    else eraseAt(page, x, y)
+    erasePending = { whole: [], pairs: [], mode: S.eraserMode }
+    eraseAt(page, x, y)
   } else if (S.tool === 'lasso') {
     const sel = S.selection
     if (sel && page === sel.page && x >= sel.bbox.x - 12 && x <= sel.bbox.x + sel.bbox.w + 12 && y >= sel.bbox.y - 12 && y <= sel.bbox.y + sel.bbox.h + 12) {
@@ -923,26 +1207,91 @@ function onPointerDown(e) {
   }
 }
 
-function drawLiveSlice(page) {
-  if (!live) return
-  const stroke = live.stroke
-  const lc = ctxOf('liveC')
-  const { w, h } = docSize(page)
-  if (scratch.width !== w) scratch.width = w
-  if (scratch.height !== h) scratch.height = h
-  // stamp the full stroke (opaque coverage) on the shared scratch, then
-  // composite exactly once at the pen's alpha — no within-stroke darkening
-  drawStrokeMask(scratchCtx, w, h, stroke)
-  lc.clearRect(0, 0, w, h)
-  lc.globalAlpha = stroke.opacity != null ? clamp(stroke.opacity, 0.02, 1)
+function boxUnion(a, b) {
+  if (!a) return b || null
+  if (!b) return a
+  return { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) }
+}
+
+function clampBox(b, w, h) {
+  if (!b) return null
+  const x0 = Math.max(0, b.x0 - 1), y0 = Math.max(0, b.y0 - 1)
+  const x1 = Math.min(w, b.x1 + 1), y1 = Math.min(h, b.y1 + 1)
+  return x1 > x0 && y1 > y0 ? { x0, y0, x1, y1 } : null
+}
+
+function asXBox(b) {
+  return b ? { x0: b.x0, y0: b.y0, x1: b.x0 + b.w, y1: b.y0 + b.h } : null
+}
+
+function strokeAlpha(stroke) {
+  return stroke.opacity != null ? clamp(stroke.opacity, 0.02, 1)
     : (PEN_TYPES[stroke.type] || PEN_TYPES.marker).alpha
-  lc.drawImage(scratch, 0, 0)
+}
+
+// Paint the in-flight stroke into the scratch mask and report the region that
+// changed, in document pixels. Permanent stamps only append, the provisional
+// tail is wiped and repainted inside its own region (with the mask restored
+// underneath it), so the mask holds exactly the stamp set the committed stroke
+// is built from — which is why lifting the pen changes nothing on screen.
+function paintLiveStroke(page) {
+  if (!live || !live.stamper) return null
+  const stroke = live.stroke
+  const { w, h } = docSize(page)
+  if (scratch.width !== w || scratch.height !== h) { scratch.width = w; scratch.height = h; scratchUsed = null; live.tailBox = null }
+  const batch = live.stamper.feed(false)
+  if (!batch) return null
+  if (batch.stable.length && batch.stableBox) paintStamps(scratchCtx, batch.stable, stroke.color)
+  const stableBox = clampBox(asXBox(batch.stableBox), w, h)
+  const tailBox = clampBox(boxUnion(live.tailBox, asXBox(batch.tailBox)), w, h)
+  if (tailBox) {
+    scratchCtx.clearRect(tailBox.x0, tailBox.y0, tailBox.x1 - tailBox.x0, tailBox.y1 - tailBox.y0)
+    const cover = live.stamper.covers({ x0: tailBox.x0, y0: tailBox.y0, w: tailBox.x1 - tailBox.x0, h: tailBox.y1 - tailBox.y0 })
+    // Both repaints are clipped to the wiped box: a stamp reaching past it
+    // must not repaint (and so re-darken) the edge it painted in an earlier
+    // frame, or the mask would hold values the composited slices never showed.
+    if (cover.length) paintStamps(scratchCtx, cover, stroke.color, tailBox)
+    if (batch.tail.length) paintStamps(scratchCtx, batch.tail, stroke.color, tailBox)
+  }
+  live.tailBox = asXBox(batch.tailBox)
+  const box = boxUnion(stableBox, tailBox)
+  if (box) scratchUsed = scratchUsed ? boxUnion(scratchUsed, box) : box
+  return box
+}
+
+function drawLiveSlice(page) {
+  const box = paintLiveStroke(page)
+  if (!box) return
+  const lc = ctxOf('liveC')
+  // Composite exactly once at the pen's alpha — no within-stroke darkening
+  lc.clearRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0)
+  lc.globalAlpha = strokeAlpha(live.stroke)
+  lc.drawImage(scratch, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0)
   lc.globalAlpha = 1
+}
+
+// Live slices are composited at most once per frame (rAF), never per raw
+// sample: a 240 Hz pen would otherwise run the mask fill + composite several
+// times between two frames and the compositor never gets a clean slot, which
+// is what made fast strokes hitch. The stroke's points are already updated
+// when this fires, so nothing is dropped — only the paint is coalesced.
+let livePaintRaf = 0
+function scheduleLivePaint() {
+  if (livePaintRaf) return
+  livePaintRaf = requestAnimationFrame(() => {
+    livePaintRaf = 0
+    if (live) drawLiveSlice(live.page)
+  })
+}
+function cancelLivePaint() {
+  if (!livePaintRaf) return
+  cancelAnimationFrame(livePaintRaf)
+  livePaintRaf = 0
 }
 
 // the factory eraser modes: 'stroke' removes touched strokes whole, 'segment'
 // cuts the stroke where the eraser circle crosses (S/M/L via S.eraserMM),
-// 'drag' behaves like stroke but only after the pointer has actually moved.
+// 'sheet' rubs the whole page out in one tap.
 function eraseCursorR() {
   return docMM(S.eraserMode === 'segment' ? S.eraserMM : 4)
 }
@@ -984,7 +1333,10 @@ function eraseAt(page, x, y) {
   const kept = [], whole = [], pairs = []
   for (const st of page.strokes) {
     if (!strokeIntersectsCircle(st, x, y, r)) { kept.push(st); continue }
-    if (S.eraserMode === 'segment') {
+    // A filled shape is solid ink: splitting its outline into fragments would
+    // leave a hollow shell behind, so the segment eraser removes it whole.
+    const solid = st.type === 'shape' && st.shape && st.shape.fill
+    if (S.eraserMode === 'segment' && !solid) {
       const pieces = splitStrokeAroundCircle(st, x, y, r)
       if (pieces) { pairs.push([st, pieces]); kept.push(...pieces); continue }
     }
@@ -993,7 +1345,7 @@ function eraseAt(page, x, y) {
   if (!whole.length && !pairs.length) { paintEraserCursor(page, x, y, r); return }
   firstCommitPreCapture(page)
   page.strokes = kept
-  if (!erasePending) erasePending = { whole: [], pairs: [], mode: S.eraserMode, armed: true }
+  if (!erasePending) erasePending = { whole: [], pairs: [], mode: S.eraserMode }
   erasePending.whole.push(...whole)
   erasePending.pairs.push(...pairs)
   redrawInk(page)
@@ -1006,60 +1358,41 @@ function onPointerMove(e) {
   const page = current(); if (!page) return
   if (pan) {
     const host = $('canvasHost')
+    scrollSyncLock = 0 // dragging is manual scrolling; follow it at once
     host.scrollLeft = Math.max(0, Math.min(pan.sl - (e.clientX - pan.x), host.scrollWidth - host.clientWidth))
     const maxTop = Math.max(0, host.scrollHeight - host.clientHeight)
-    const top = pan.st - (e.clientY - pan.y)
-    if (top > maxTop && S.pages.length) {
-      // Pulling past the bottom moves to the next sheet when one exists; only
-      // the last sheet grows a new page. This removes the dead end at the end
-      // of page 1 in a two-page note.
-      pan.over = top - maxTop
-      pan.under = 0
-      S.pullPx = Math.min(230, pan.over * 0.35)
-      applyTransform()
-      updatePullHint(pan.over, 'pull', S.currentPage < S.pages.length - 1 ? 'next' : 'add')
-      showPagePeek(1, S.pullPx)
-      return
-    }
-    if (top < 0 && S.currentPage > 0) {
-      // Symmetric boundary: pulling down at the top of a page reveals the
-      // previous sheet instead of dead-ending. The page follows the finger
-      // downward, then lands at the bottom of the previous sheet on release.
-      pan.under = -top
-      pan.over = 0
-      S.pullPx = -Math.min(230, pan.under * 0.35)
-      applyTransform()
-      updatePullHint(pan.under, 'pull', 'prev')
-      showPagePeek(-1, -S.pullPx)
-      return
-    }
-    host.scrollTop = Math.max(0, top)
-    pan.over = 0 // pulled past the bottom then back up: releasing must not add a page
-    pan.under = 0
-    if (S.pullPx) { S.pullPx = 0; applyTransform() }
-    updatePullHint(0)
-    hidePagePeek()
+    host.scrollTop = Math.max(0, Math.min(pan.st - (e.clientY - pan.y), maxTop))
     return
   }
-  let { x, y } = pageCoords(e)
+  // One layout read per event; every coalesced sample is measured against it.
+  const inner = $('stackInner')
+  const rect = inner.getBoundingClientRect()
+  const scale = rect.width / inner.offsetWidth || 1
+  let { x, y } = docPoint(e, rect, scale)
   if (rulerGrip) { rulerMoveUpdate(page, x, y); return }
+  if (rulerRotate) { rulerRotateUpdate(page, x, y); return }
   if (shapeDraft) {
     shapeDraft.bx = x
     shapeDraft.by = y
     drawShapePreview()
     return
   }
-  if (S.rulerOn && live) { ({ x, y } = rulerSnapPoint(x, y)) }
   if (live) {
-    if (addPoint(live.stroke, x, y, e.pressure, docMM(0.8))) drawLiveSlice(page)
-  } else if (erasePending) {
-    const ep = erasePending
-    if (!ep.armed) {
-      const slop = gestureSlopDoc()
-      if ((x - ep.startX) ** 2 + (y - ep.startY) ** 2 < slop * slop) return
-      ep.armed = true
-      eraseAt(page, ep.startX, ep.startY)
+    // Feed every raw sample the OS produced since the last frame, not just
+    // the one Chromium surfaced: a quick flick then draws its true curve
+    // instead of two long chords per frame. Painting is frame-batched.
+    let added = false
+    for (const s of coalescedSamples(e)) {
+      const p = s === e ? { x, y } : docPoint(s, rect, scale)
+      let sx = p.x, sy = p.y
+      if (live.snapMode === 'line') ({ x: sx, y: sy } = rulerSnapPoint(sx, sy))
+      else if (live.snapMode === 'arc') ({ x: sx, y: sy } = protractorSnapPoint(page, sx, sy))
+      if (addPoint(live.stroke, sx, sy, s.pressure, docMM(0.4))) added = true
     }
+    if (added) scheduleLivePaint()
+    return
+  }
+  if (erasePending) {
     eraseAt(page, x, y)
   } else if (lasso) {
     lassoAddPoint(x, y)
@@ -1074,7 +1407,10 @@ function onPointerMove(e) {
     d.lx = x; d.ly = y
     drawSelectionPreview(page)
   } else if (laserLive) {
-    laserAddPoint(page, x, y, false)
+    for (const s of coalescedSamples(e)) {
+      const p = s === e ? { x, y } : docPoint(s, rect, scale)
+      laserAddPoint(page, p.x, p.y, false)
+    }
   }
 }
 
@@ -1251,6 +1587,8 @@ function paintLaser() {
 // ---------- lasso selection (move / duplicate / delete) ----------
 let lasso = null        // {pts:[{x,y}]} while drawing the marching ants
 let dragSel = null      // {lx,ly,dx,dy} while moving the selection
+let clipboardObjects = null // copied strokes/shapes for copy/paste
+let clipboardTexts = null   // copied text boxes, pasted with the strokes
 
 function setTool(t) {
   if (S.tool === 'laser') laserStop()
@@ -1264,10 +1602,11 @@ function setTool(t) {
   stackInnerClass()
   if (t === 'laser') showHint('Laser pointer — trail fades, never saved')
   else if (t === 'lasso') showHint(S.selectMode === 'click'
-    ? 'Click a stroke to select, or drag a lasso; drag inside the box to move'
-    : 'Circle strokes to select, drag inside to move')
+    ? 'Tap a stroke or text to select it, then drag inside the box to move'
+    : 'Circle strokes and text to select, then drag inside the box to move')
   else if (t === 'view') showHint('View mode — drag anywhere to pan')
-  else if (t === 'shape') showHint('Drag on the page to size the shape')
+  else if (t === 'shape') showHint('Drag to size the shape, or tap to place one')
+  else if (t === 'text') showHint('Tap on the page to place a text box — tap an existing one to edit')
 }
 
 function anyPtInPoly(pts, poly) {
@@ -1292,6 +1631,64 @@ function strokeBBox(strokes) {
   }
   if (x0 === Infinity) return null
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
+// ---------- text-box geometry (measure with the same font the page draws) ----
+const textMeasureCtx = document.createElement('canvas').getContext('2d')
+function textFontSpec(t) {
+  return `${t.italic ? 'italic ' : ''}${t.bold ? '600 ' : ''}${t.size}px "Segoe UI", sans-serif`
+}
+function textBounds(t) {
+  textMeasureCtx.font = textFontSpec(t)
+  const lines = String(t.txt).split('\n')
+  let w = 0
+  for (const ln of lines) w = Math.max(w, textMeasureCtx.measureText(ln).width)
+  return { x: t.x, y: t.y, w: Math.max(w, t.size * 0.5), h: lines.length * t.size * 1.25 }
+}
+
+// Union box of everything a selection holds (strokes and text boxes). A text
+// box has no points, so the old stroke-only bbox would have left it behind.
+function selectionBBox(sel) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  const push = b => {
+    if (!b) return
+    if (b.x < x0) x0 = b.x; if (b.y < y0) y0 = b.y
+    if (b.x + b.w > x1) x1 = b.x + b.w
+    if (b.y + b.h > y1) y1 = b.y + b.h
+  }
+  for (const st of sel.strokes || []) push(strokeBBox([st]))
+  for (const t of sel.texts || []) push(textBounds(t))
+  if (x0 === Infinity) return { x: 0, y: 0, w: 0, h: 0 }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
+function textAt(page, x, y) {
+  const texts = page.texts || []
+  // Later boxes draw on top; hit-test from the top down like strokes.
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const b = textBounds(texts[i])
+    const pad = Math.max(6, texts[i].size * 0.15)
+    if (x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad) return texts[i]
+  }
+  return null
+}
+
+// A lasso catches a text box when any sample of its area lands inside the
+// loop: corners, edge midpoints and centre — cheap and reliable for boxes a
+// loop only partly covers.
+function textInPoly(t, poly) {
+  const b = textBounds(t)
+  const xs = [b.x, b.x + b.w / 2, b.x + b.w]
+  const ys = [b.y, b.y + b.h / 2, b.y + b.h]
+  for (const px of xs) for (const py of ys) {
+    let inside = false
+    for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+      const xi = poly[j].x, yi = poly[j].y, xk = poly[k].x, yk = poly[k].y
+      if (((yi > py) !== (yk > py)) && (px < (xk - xi) * (py - yi) / (yk - yi) + xi)) inside = !inside
+    }
+    if (inside) return true
+  }
+  return false
 }
 
 function lassoBegin(page, x, y) {
@@ -1336,10 +1733,18 @@ function strokeAt(page, x, y) {
   return null
 }
 
-function selectStrokeAt(page, x, y) {
+function selectItemAt(page, x, y) {
+  // Text boxes render above strokes, so they win the tap first.
+  const t = textAt(page, x, y)
+  if (t) {
+    S.selection = { page, strokes: [], texts: [t], bbox: selectionBBox({ strokes: [], texts: [t] }) }
+    drawSelectionBox(page)
+    showSelBar(page)
+    return
+  }
   const st = strokeAt(page, x, y)
   if (!st) { clearSelection(); return }
-  S.selection = { page, strokes: [st], bbox: strokeBBox([st]) }
+  S.selection = { page, strokes: [st], texts: [], bbox: selectionBBox({ strokes: [st], texts: [] }) }
   drawSelectionBox(page)
   showSelBar(page)
 }
@@ -1351,14 +1756,15 @@ function lassoCommit(page) {
   // Click mode adds tap-to-select without taking away the drag lasso. A real
   // drag still follows the original polygon path below.
   if (l && !l.moved && S.selectMode === 'click') {
-    selectStrokeAt(page, l.startX, l.startY)
+    selectItemAt(page, l.startX, l.startY)
     return
   }
   const pts = l ? l.pts : null
   if (!pts || pts.length < 3) { clearSelection(); return }
   const hits = page.strokes.filter(st => anyPtInPoly(st.pts, pts))
-  if (!hits.length) { clearSelection(); return }
-  S.selection = { page, strokes: hits, bbox: strokeBBox(hits) }
+  const textHits = (page.texts || []).filter(t => textInPoly(t, pts))
+  if (!hits.length && !textHits.length) { clearSelection(); return }
+  S.selection = { page, strokes: hits, texts: textHits, bbox: selectionBBox({ strokes: hits, texts: textHits }) }
   drawSelectionBox(page)
   showSelBar(page)
 }
@@ -1366,7 +1772,7 @@ function lassoCommit(page) {
 function drawSelectionBox(page) {
   const sel = S.selection
   if (!sel || sel.page !== page) return
-  const b = strokeBBox(sel.strokes)
+  const b = selectionBBox(sel)
   sel.bbox = b
   const lc = ctxOf('liveC')
   lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
@@ -1388,10 +1794,19 @@ function drawSelectionPreview(page) {
   const sel = S.selection; if (!sel) return
   drawSelectionBox(page)
   const lc = ctxOf('liveC')
+  const { w, h } = docSize(page)
   lc.save()
   lc.translate(dragSel.dx, dragSel.dy)
-  for (const st of sel.strokes) drawStrokeItem(lc, docSize(page).w, docSize(page).h, st)
+  for (const st of sel.strokes) drawStrokeItem(lc, w, h, st)
   lc.restore()
+  // Text boxes ride along in the preview too, shifted by the same drag.
+  for (const t of sel.texts || []) drawTextObj(lc, { ...t, x: t.x + dragSel.dx, y: t.y + dragSel.dy })
+}
+
+// Shift a selection (strokes and text boxes) by (dx, dy) in either direction.
+function shiftSelection(sel, dx, dy) {
+  for (const st of sel.strokes || []) for (const p of st.pts) { p.x += dx; p.y += dy }
+  for (const t of sel.texts || []) { t.x += dx; t.y += dy }
 }
 
 function selectionCommitMove(page) {
@@ -1401,10 +1816,10 @@ function selectionCommitMove(page) {
   ctxOf('liveC').clearRect(0, 0, docSize(page).w, docSize(page).h)
   if (!dx && !dy) { drawSelectionBox(page); refreshSelBar(); return }
   firstCommitPreCapture(page)
-  for (const st of sel.strokes) for (const p of st.pts) { p.x += dx; p.y += dy }
-  page.undo.push({ t: 'move', strokes: sel.strokes, dx, dy })
+  shiftSelection(sel, dx, dy)
+  page.undo.push({ t: 'move', strokes: sel.strokes, texts: sel.texts || [], dx, dy })
   page.redo = []
-  sel.bbox = strokeBBox(sel.strokes)
+  sel.bbox = selectionBBox(sel)
   redrawInk(page)
   drawSelectionBox(page)
   refreshSelBar()
@@ -1414,6 +1829,11 @@ function selectionCommitMove(page) {
   refreshCurrentThumb()
 }
 
+function selectionHasItems() {
+  const sel = S.selection
+  return !!sel && ((sel.strokes && sel.strokes.length) || (sel.texts && sel.texts.length))
+}
+
 function showSelBar(page) {
   let bar = $('selBar')
   if (!bar) {
@@ -1421,9 +1841,19 @@ function showSelBar(page) {
     bar.id = 'selBar'
     bar.setAttribute('role', 'toolbar')
     bar.setAttribute('aria-label', 'Selection actions')
-    bar.innerHTML = `<button id="selDup" title="Duplicate" aria-label="Duplicate">&#9236;</button><button id="selDel" title="Delete" aria-label="Delete" class="danger">&#10005;</button><button id="selClear" title="Deselect" aria-label="Deselect">&#215;</button>`
+    // Every action carries a sprite icon: text glyphs here once rendered as
+    // tofu or the wrong control picture (the duplicate button showed "DC4").
+    bar.innerHTML = `<button id="selCopy" title="Copy" aria-label="Copy"><svg aria-hidden="true"><use href="#ic-copy"/></svg></button><button id="selPaste" title="Paste" aria-label="Paste"><svg aria-hidden="true"><use href="#ic-paste"/></svg></button><button id="selDup" title="Duplicate" aria-label="Duplicate"><svg aria-hidden="true"><use href="#ic-dup"/></svg></button><button id="selDel" title="Delete" aria-label="Delete" class="danger"><svg aria-hidden="true"><use href="#ic-trash"/></svg></button><button id="selClear" title="Deselect" aria-label="Deselect"><svg aria-hidden="true"><use href="#ic-close"/></svg></button>`
     bar.style.transformOrigin = '0 0'
     $('stackInner').append(bar)
+    const copyBtn = bar.querySelector('#selCopy')
+    copyBtn.title = `Copy (${modShortcut('C')})`
+    copyBtn.setAttribute('aria-keyshortcuts', modAria('C'))
+    copyBtn.onclick = () => selectionCopy()
+    const pasteBtn = bar.querySelector('#selPaste')
+    pasteBtn.title = `Paste (${modShortcut('V')})`
+    pasteBtn.setAttribute('aria-keyshortcuts', modAria('V'))
+    pasteBtn.onclick = () => selectionPaste()
     bar.querySelector('#selDup').onclick = () => selectionDuplicate()
     bar.querySelector('#selDel').onclick = () => selectionDelete()
     bar.querySelector('#selClear').onclick = () => { clearSelection(); redrawInk(current()) }
@@ -1445,12 +1875,51 @@ function positionSelBar() {
   bar.style.top = Math.max(2, Math.round(b.y - 90)) + 'px'
 }
 
+function selectionCopy() {
+  const sel = S.selection
+  if (!selectionHasItems()) return
+  // Deep copy so later moves/erases never touch the clipboard buffer
+  clipboardObjects = (sel.strokes || []).map(st => JSON.parse(JSON.stringify(st)))
+  clipboardTexts = (sel.texts || []).map(t => JSON.parse(JSON.stringify(t)))
+  const data = JSON.stringify({ type: 'writecanvas-objects', version: 2, objects: clipboardObjects, texts: clipboardTexts })
+  // The OS clipboard carries the copy across notes, windows and app restarts;
+  // the in-memory buffer stays as the fallback when the host has no clipboard.
+  try {
+    if (bridge && bridge.clipboardWriteText) bridge.clipboardWriteText(data).catch(() => {})
+    else if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(data).catch(() => {})
+  } catch { /* clipboard unavailable — in-memory paste still works */ }
+  const n = clipboardObjects.length + clipboardTexts.length
+  showHint(`Copied ${n} object${n === 1 ? '' : 's'} — ${modShortcut('V')} to paste`)
+}
+
+// Read a WriteCanvas payload from the OS clipboard. Returns {strokes, texts}
+// (v1 payloads carry strokes only), or null when the clipboard holds
+// something else.
+async function readClipboardObjects() {
+  let text = ''
+  try {
+    if (bridge && bridge.clipboardReadText) text = await bridge.clipboardReadText()
+    else if (navigator.clipboard && navigator.clipboard.readText) text = await navigator.clipboard.readText()
+  } catch { return null }
+  if (!text || text[0] !== '{') return null
+  try {
+    const parsed = JSON.parse(text)
+    if (!parsed || parsed.type !== 'writecanvas-objects' || !Array.isArray(parsed.objects)) return null
+    const strokes = parsed.objects.filter(validStroke).map(st => JSON.parse(JSON.stringify(st)))
+    const texts = Array.isArray(parsed.texts) ? parsed.texts.filter(validText).map(t => JSON.parse(JSON.stringify(t))) : []
+    return (strokes.length || texts.length) ? { strokes, texts } : null
+  } catch { return null }
+}
+
 function selectionDelete() {
   const sel = S.selection; if (!sel) return
   const page = sel.page
   firstCommitPreCapture(page)
-  page.strokes = page.strokes.filter(st => !sel.strokes.includes(st))
-  page.undo.push({ t: 'erase', strokes: [...sel.strokes] })
+  const goneStrokes = [...(sel.strokes || [])]
+  const goneTexts = [...(sel.texts || [])]
+  page.strokes = page.strokes.filter(st => !goneStrokes.includes(st))
+  page.texts = page.texts.filter(t => !goneTexts.includes(t))
+  page.undo.push({ t: 'erase', strokes: goneStrokes, texts: goneTexts })
   page.redo = []
   clearSelection()
   redrawInk(page)
@@ -1460,16 +1929,61 @@ function selectionDelete() {
   refreshCurrentThumb()
 }
 
-function selectionDuplicate() {
-  const sel = S.selection; if (!sel) return
-  const page = sel.page
-  const copies = sel.strokes.map(st => ({ ...st, pts: st.pts.map(p => ({ x: p.x + 26, y: p.y + 26 })), shape: st.shape ? { ...st.shape } : undefined }))
+async function selectionPaste() {
+  const page = current(); if (!page) return
+  let source = (clipboardObjects && clipboardObjects.length) || (clipboardTexts && clipboardTexts.length)
+    ? { strokes: clipboardObjects || [], texts: clipboardTexts || [] }
+    : null
+  if (!source) {
+    // Nothing copied in this session: fall back to the OS clipboard so paste
+    // still works after a restart, or from another window.
+    source = await readClipboardObjects()
+    if (source) { clipboardObjects = source.strokes; clipboardTexts = source.texts }
+  }
+  if (!source || (!source.strokes.length && !source.texts.length)) {
+    showHint(`Nothing to paste — select ink and press ${modShortcut('C')} to copy first`)
+    return
+  }
+  const copies = source.strokes.map(st => {
+    const c = JSON.parse(JSON.stringify(st))
+    if (c.pts) {
+      c.pts = c.pts.map(p => ({ x: p.x + 26, y: p.y + 26 }))
+    }
+    return c
+  })
+  const textCopies = source.texts.map(t => ({ ...JSON.parse(JSON.stringify(t)), x: t.x + 26, y: t.y + 26 }))
   firstCommitPreCapture(page)
   page.strokes.push(...copies)
-  page.undo.push({ t: 'add', strokes: copies })
+  page.texts.push(...textCopies)
+  page.undo.push({ t: 'add', strokes: copies, texts: textCopies })
+  page.redo = []
+  S.selection = { page, strokes: copies, texts: textCopies, bbox: null }
+  S.selection.bbox = selectionBBox(S.selection)
+  redrawInk(page)
+  drawSelectionBox(page)
+  showSelBar(page)
+  positionSelBar()
+  captureReplay(page)
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+  const n = copies.length + textCopies.length
+  showHint(`Pasted ${n} object${n === 1 ? '' : 's'}`)
+}
+
+function selectionDuplicate() {
+  const sel = S.selection; if (!sel || !selectionHasItems()) return
+  const page = sel.page
+  const copies = (sel.strokes || []).map(st => ({ ...st, pts: st.pts.map(p => ({ x: p.x + 26, y: p.y + 26 })), shape: st.shape ? { ...st.shape } : undefined }))
+  const textCopies = (sel.texts || []).map(t => ({ ...JSON.parse(JSON.stringify(t)), x: t.x + 26, y: t.y + 26 }))
+  firstCommitPreCapture(page)
+  page.strokes.push(...copies)
+  page.texts.push(...textCopies)
+  page.undo.push({ t: 'add', strokes: copies, texts: textCopies })
   page.redo = []
   sel.strokes = copies
-  sel.bbox = strokeBBox(copies)
+  sel.texts = textCopies
+  sel.bbox = selectionBBox(sel)
   redrawInk(page)
   drawSelectionBox(page)
   refreshSelBar()
@@ -1524,6 +2038,8 @@ function ensureRulerVisible() {
 function toggleRuler() {
   S.rulerOn = !S.rulerOn
   const page = current(); if (!page) return
+  rulerRotate = null
+  rulerSnapActive = false
   syncToolButtons()
   if (S.rulerOn) {
     ensureRulerVisible()
@@ -1543,57 +2059,169 @@ function rulerDir(page) {
 function rulerSnapPoint(x, y) {
   const page = current(); if (!page || !S.rulerOn) return { x, y }
   const { ux, uy, px, py } = rulerDir(page)
-  const t = (x - px) * ux + (y - py) * uy
-  return { x: px + t * ux, y: py + t * uy }
+  const p = lineSnapPoint(x, y, px, py, ux, uy)
+  return { x: p.x, y: p.y }
 }
 
+// Half the stencil band plus a small margin, in document px. A stroke only
+// snaps when it starts inside this band, so the ruler can be left alone.
+const RULER_SNAP_DOC = 34
+function rulerWithinSnap(page, x, y) {
+  const { ux, uy, px, py } = rulerDir(page)
+  return pointLineDistance(x, y, px, py, ux, uy) <= RULER_SNAP_DOC
+}
+
+// ---------- protractor stencil (the RulerFlyout's second pick) ----------
+// A semicircular stencil sharing the ruler's geometry state (angle/fx/fy), so
+// switching between the two keeps it where the person left it. The flat edge
+// is the base; the arc takes any stroke that starts on it, exactly as the
+// straight ruler takes a stroke on its band.
+export const protractor = { r: 0.26 }   // arc radius as a fraction of the short page side
+
+function protractorCenter(page) {
+  const { w, h } = docSize(page)
+  return { px: ruler.fx * w, py: ruler.fy * h, a: ruler.angle * Math.PI / 180, w, h }
+}
+
+function protractorRadius(page) {
+  const { w, h } = docSize(page)
+  return Math.max(220, Math.min(w, h) * protractor.r)
+}
+
+// Point on the arc `deg` degrees from the base (0 and 180 are the base's ends,
+// 90 is the apex the rotate handle rides on).
+function protractorAt(page, deg) {
+  const { px, py, a } = protractorCenter(page)
+  const r = protractorRadius(page)
+  const phi = a - deg * Math.PI / 180
+  return { x: px + r * Math.cos(phi), y: py + r * Math.sin(phi) }
+}
+
+// Where a point sits relative to the protractor: distance from the centre and
+// its signed angle off the base (-180..180). Null right on the pivot, where
+// the angle is meaningless.
+function protractorArcInfo(page, x, y) {
+  const { px, py, a } = protractorCenter(page)
+  const dx = x - px, dy = y - py
+  const d = Math.hypot(dx, dy)
+  if (d < 1) return null
+  let rel = (a - Math.atan2(dy, dx)) * 180 / Math.PI
+  rel = ((rel % 360) + 360) % 360
+  if (rel > 180) rel -= 360
+  return { px, py, a, d, rel, r: protractorRadius(page) }
+}
+
+export function protractorWithinSnap(page, x, y) {
+  const info = protractorArcInfo(page, x, y)
+  if (!info) return false
+  // the ±8° slack lets a stroke run right up to the base's ends
+  return Math.abs(info.d - info.r) <= RULER_SNAP_DOC && info.rel >= -8 && info.rel <= 188
+}
+
+// Every sample of a snapped stroke is pulled onto the arc, keeping its angle:
+// the pen rides the curve like a compass instead of following the raw hand.
+export function protractorSnapPoint(page, x, y) {
+  const info = protractorArcInfo(page, x, y)
+  if (!info) return { x, y }
+  const phi = info.a - clamp(info.rel, 0, 180) * Math.PI / 180
+  return { x: info.px + info.r * Math.cos(phi), y: info.py + info.r * Math.sin(phi) }
+}
+
+function protractorRotateHandle(page) {
+  const { px, py } = protractorCenter(page)
+  const r = protractorRadius(page)
+  const scale = Math.max(0.08, S.zoom || 1)
+  const pull = Math.min(26 / scale, r * 0.2)
+  const apex = protractorAt(page, 90)
+  const ux = (apex.x - px) / r, uy = (apex.y - py) / r
+  return { x: px + ux * (r - pull), y: py + uy * (r - pull) }
+}
+
+// The far-end handle rotates the stencil by hand (the ±10° buttons stay for
+// fine steps). It rides along the clipped segment so it is always on-screen.
+let rulerRotate = null
+let rulerSnapActive = false   // a snapped stroke is in flight — band glows
+
+export function rulerRotateHandle(page) {
+  if (S.rulerMode === 'protractor') return protractorRotateHandle(page)
+  const { ux, uy, px, py, w, h } = rulerDir(page)
+  const seg = clipLineToRect(px, py, ux, uy, w, h)
+  if (!seg) return null
+  const t0 = (seg.x0 - px) * ux + (seg.y0 - py) * uy
+  const t1 = (seg.x1 - px) * ux + (seg.y1 - py) * uy
+  const tEnd = Math.abs(t1) >= Math.abs(t0) ? t1 : t0   // farther end
+  if (Math.abs(tEnd) < 8) return null
+  const scale = Math.max(0.08, S.zoom || 1)
+  const pull = Math.min(26 / scale, Math.abs(tEnd) * 0.5)
+  const t = tEnd - Math.sign(tEnd) * pull
+  return { x: px + ux * t, y: py + uy * t }
+}
+
+function rulerRotateHit(page, x, y) {
+  if (!S.rulerOn) return false
+  const h = rulerRotateHandle(page)
+  if (!h) return false
+  const scale = Math.max(0.08, S.zoom || 1)
+  const r = 22 / scale
+  return (x - h.x) ** 2 + (y - h.y) ** 2 <= r * r
+}
+
+function rulerRotateUpdate(page, x, y) {
+  const { px, py } = rulerDir(page)
+  let deg = Math.atan2(y - py, x - px) * 180 / Math.PI
+  // the protractor's handle rides the apex, a quarter turn off the base
+  if (S.rulerMode === 'protractor') deg += 90
+  // Near a straight angle the stencil clicks into place; otherwise 1° steps.
+  const straight = Math.round(deg / 45) * 45
+  deg = Math.abs(deg - straight) < 4 ? straight : Math.round(deg)
+  ruler.angle = ((deg + 180) % 360 + 360) % 360 - 180
+  redrawRuler()
+}
+
+// The stencil overlay: one painter per stencil (ruler.js) plus the floating
+// rotate/angle pill. The painters are screen-constant, so the drawing keeps
+// its size while the page zooms underneath it.
 function drawRulerLayer(page) {
   const c = $('rulerC'); if (!c || c.width === 0) return
   const ctx = c.getContext('2d')
   ctx.clearRect(0, 0, c.width, c.height)
   if (!S.rulerOn) return
-  const { ux, uy, px, py, w, h } = rulerDir(page)
   const scale = Math.max(0.08, S.zoom || 1)
-  const half = (w + h) * 0.52 // long enough to cross any page
+  if (S.rulerMode === 'protractor') {
+    const { px, py, a } = protractorCenter(page)
+    paintProtractorStencil(ctx, {
+      px, py, a,
+      r: protractorRadius(page),
+      scale,
+      snapActive: rulerSnapActive,
+      rotate: protractorRotateHandle(page),
+    })
+    drawRulerCtl(px, py)
+    return
+  }
+  const { ux, uy, px, py, w, h } = rulerDir(page)
   const seg = clipLineToRect(px, py, ux, uy, w, h)
   if (!seg) return
-  const { x0, y0, x1: x1r, y1: y1r } = seg
-  ctx.save()
-  // body of the stencil: a thick translucent band under the line
-  ctx.strokeStyle = 'rgba(11,99,197,.16)'
-  ctx.lineWidth = 56
-  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1r, y1r); ctx.stroke()
-  ctx.strokeStyle = 'rgba(11,99,197,.85)'
-  ctx.lineWidth = 3
-  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1r, y1r); ctx.stroke()
-  // division ticks stay legible at any zoom: constant screen px, not doc px.
-  // All ticks share one path (one stroke() call) — hundreds of tiny stroke()
-  // calls per drag frame used to make moving the ruler feel choppy.
-  ctx.lineWidth = Math.max(1, 2 / scale)
-  ctx.strokeStyle = 'rgba(11,99,197,.55)'
-  const tickStep = Math.max(1, Math.round(docMM(10)))
-  const tickLen = 14 / scale
-  ctx.beginPath()
-  for (let t = 0; t <= half; t += tickStep) {
-    for (const s of [1, -1]) {
-      const bx = px + s * t * ux, by = py + s * t * uy
-      if (bx < -20 || bx > w + 20 || by < -20 || by > h + 20) continue
-      ctx.moveTo(bx, by)
-      ctx.lineTo(bx - uy * tickLen, by + ux * tickLen)
-    }
-  }
-  ctx.stroke()
-  // grip handle at the pivot; constant screen size so it is easy to grab at
-  // fit-width zoom instead of shrinking to a few pixels
-  ctx.setLineDash([])
-  ctx.fillStyle = '#fff'
-  ctx.strokeStyle = 'rgba(11,99,197,.9)'
-  ctx.lineWidth = Math.max(1.5, 2.5 / scale)
-  const gripR = 16 / scale
-  ctx.beginPath(); ctx.arc(px, py, gripR, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
-  ctx.beginPath(); ctx.arc(px, py, 5 / scale, 0, Math.PI * 2); ctx.fillStyle = 'rgba(11,99,197,.9)'; ctx.fill()
-  ctx.restore()
+  paintRulerStencil(ctx, {
+    px, py, ux, uy, seg, scale,
+    snapActive: rulerSnapActive,
+    rotate: rulerRotateHandle(page),
+    mm: docMM(1),
+  })
   drawRulerCtl(px, py)
+}
+
+// centre of the active stencil plus the unit direction from it into the body:
+// the ruler's body normal, the protractor's inward radial. The grip hit test
+// and the painters derive the puck position from the same pair, so the drawn
+// puck is exactly what can be grabbed.
+function stencilFrame(page) {
+  if (S.rulerMode === 'protractor') {
+    const { px, py, a } = protractorCenter(page)
+    return { px, py, dx: Math.cos(a - Math.PI / 2), dy: Math.sin(a - Math.PI / 2) }
+  }
+  const { ux, uy, px, py } = rulerDir(page)
+  return { px, py, dx: -uy, dy: ux }
 }
 
 function drawRulerCtl(px, py) {
@@ -1607,15 +2235,21 @@ function drawRulerCtl(px, py) {
     ctl.querySelector('#rulCW').onclick = ev => { ev.stopPropagation(); ruler.angle += 10; redrawRuler() }
     $('stackInner').append(ctl)
   }
-  const gap = 22 / Math.max(0.08, S.zoom || 1)
+  const scale = Math.max(0.08, S.zoom || 1)
+  // clear of the body: the ruler's body is 46 screen px wide, the protractor's
+  // disc sits on the apex side of its base
+  const gap = (S.rulerMode === 'protractor' ? 24 : 64) / scale
   ctl.style.left = (px + gap) + 'px'
   ctl.style.top = (py + gap) + 'px'
-  ctl.style.transform = `scale(${1 / Math.max(0.08, S.zoom || 1)})`
+  ctl.style.transform = `scale(${1 / scale})`
   ctl.dataset.angle = String(ruler.angle)
   ctl.dataset.px = String(px)
   ctl.dataset.py = String(py)
   const angle = ctl.querySelector('#rulAngle')
-  if (angle) angle.textContent = `${((Math.round(ruler.angle) + 180) % 360 + 360) % 360 - 180}\u00b0`
+  if (angle) {
+    angle.textContent = `${((Math.round(ruler.angle) + 180) % 360 + 360) % 360 - 180}\u00b0`
+    angle.title = S.rulerMode === 'protractor' ? 'Protractor angle' : 'Ruler angle'
+  }
 }
 
 // Interactive ruler repaints coalesce into ONE paint per animation frame.
@@ -1631,15 +2265,18 @@ function redrawRuler() {
   })
 }
 
-// ruler grip dragging (a pointer down on the handle circle moves the line)
+// ruler grip dragging: a pointer down on the pivot (24 screen px, generous for
+// pen/touch at fit-width zoom) or on the drawn grip puck moves the line. The
+// puck's hit circle matches exactly where the painters draw it.
 function rulerHandleHit(page, x, y) {
   if (!S.rulerOn) return false
-  const { px, py } = rulerDir(page)
-  // 24 screen px radius: generous for pen/touch at fit-width zoom without
-  // swallowing normal drawing away from the grip.
   const scale = Math.max(0.08, S.zoom || 1)
   const hit = 24 / scale
-  return (x - px) ** 2 + (y - py) ** 2 <= hit * hit
+  const { px, py, dx, dy } = stencilFrame(page)
+  if ((x - px) ** 2 + (y - py) ** 2 <= hit * hit) return true
+  const knob = knobCenter(px, py, dx, dy, scale)
+  const kr = knob.r + 6 / scale
+  return (x - knob.x) ** 2 + (y - knob.y) ** 2 <= kr * kr
 }
 
 function rulerStartMove(x, y) {
@@ -1795,6 +2432,14 @@ function makeShapeStrokes(kind, fill, ax, ay, bx, by) {
   }))
 }
 
+// Default box for a tap-to-place: lines and arrows stay horizontal, every
+// other shape gets a readable box centred on the tap (341x240 doc px).
+function defaultShapeBox(kind, cx, cy) {
+  const w = 341, h = 240
+  if (kind === 'line' || kind === 'arrow') return { ax: cx - w / 2, ay: cy, bx: cx + w / 2, by: cy }
+  return { ax: cx - w / 2, ay: cy - h / 2, bx: cx + w / 2, by: cy + h / 2 }
+}
+
 function drawShapePreview() {
   if (!shapeDraft || !shapeDraft.page) return
   const lc = ctxOf('liveC')
@@ -1812,24 +2457,50 @@ function syncShapeGrid() {
   })
 }
 
+// The gallery reads in three labelled rows (lines, basics, polygons) instead
+// of one undivided wall of 26 icons.
+const SHAPE_SECTIONS = (() => {
+  const lines = [], basics = [], polygons = []
+  for (const [kind, fill] of SHAPE_GALLERY) {
+    if (kind === 'line' || kind === 'arrow') lines.push([kind, fill])
+    else if (kind.startsWith('polygon')) polygons.push([kind, fill])
+    else basics.push([kind, fill])
+  }
+  return [['Lines & arrows', lines], ['Basics', basics], ['Polygons', polygons]]
+})()
+
 function buildShapeGrid() {
   const g = $('shapeGrid')
   if (!g) return
-  SHAPE_GALLERY.forEach(([kind, fill]) => {
-    const b = document.createElement('button')
-    b.className = 'sh-card'
-    b.dataset.kind = kind
-    b.dataset.fill = fill ? '1' : '0'
-    b.setAttribute('aria-pressed', 'false')
-    const name = kind.startsWith('polygon') ? `${kind.slice(7)}-sided` : kind
-    b.title = fill ? `${name} (filled) — drag on the page` : `${name} — drag on the page`
-    const cv = document.createElement('canvas')
-    cv.width = 36; cv.height = 36
-    drawShapeIcon(cv, kind, !!fill)
-    b.append(cv)
-    b.onclick = () => startShapeTool(kind, fill)
-    g.append(b)
-  })
+  g.replaceChildren()
+  for (const [label, items] of SHAPE_SECTIONS) {
+    const sec = document.createElement('section')
+    sec.className = 'sh-section'
+    const head = document.createElement('div')
+    head.className = 'sh-section-label'
+    head.textContent = label
+    const grid = document.createElement('div')
+    grid.className = 'sh-grid'
+    for (const [kind, fill] of items) {
+      const b = document.createElement('button')
+      b.className = 'sh-card'
+      b.dataset.kind = kind
+      b.dataset.fill = fill ? '1' : '0'
+      b.setAttribute('aria-pressed', 'false')
+      const name = kind.startsWith('polygon') ? `${kind.slice(7)}-sided` : kind
+      b.title = fill
+        ? `${name} (filled) — drag on the page, or tap to place one`
+        : `${name} — drag on the page, or tap to place one`
+      const cv = document.createElement('canvas')
+      cv.width = 36; cv.height = 36
+      drawShapeIcon(cv, kind, !!fill)
+      b.append(cv)
+      b.onclick = () => startShapeTool(kind, fill)
+      grid.append(b)
+    }
+    sec.append(head, grid)
+    g.append(sec)
+  }
   syncShapeGrid()
 }
 
@@ -1872,9 +2543,13 @@ function drawEraserPreview() {
 }
 
 // ---------- text box (CanvasTextBox parity stub: session-editable, baked on save) ----------
-function wireTextTool() {
-  const b = $('btnTextTool')
-  if (b) b.onclick = startTextTool
+// The Text tool has exactly one entry point — the toolbar button (and T). The
+// second "Text box" button that used to sit inside the Shapes flyout was the
+// duplicated feature the person pointed at.
+function startTextTool() {
+  setTool('text')
+  closeToolFlyout('shapeFlyout')
+  showHint('Tap on the page to place a text box — tap an existing one to edit')
 }
 
 let textEdit = null
@@ -1889,11 +2564,7 @@ export function showHint(msg) {
   hintTimer = setTimeout(() => h.classList.add('hidden'), 2600)
 }
 
-function startTextTool() {
-  setTool('text')
-  closeToolFlyout('shapeFlyout')
-  showHint('Tap on the page to place a text box')
-}
+
 
 function textStyle(el, obj) {
   el.style.fontWeight = obj.bold ? '600' : '400'
@@ -1919,18 +2590,39 @@ function placeTextBox(page, x, y) {
     color: curPen().color,
     bold: false, italic: false, underline: false,
   }
+  openTextBoxEditor(page, obj)
+}
+
+// Re-open an already committed text box. The box leaves page.texts while the
+// editor is up (otherwise it would draw twice), and goes back at the same
+// index when the edit finishes; `before` is the untouched snapshot for undo.
+function beginTextEdit(page, obj) {
+  if (textEdit) { textEdit.el.focus(); return }
+  if (!page.texts) page.texts = []
+  const index = page.texts.indexOf(obj)
+  if (index < 0) return
+  const before = { ...obj }
+  page.texts.splice(index, 1)
+  clearSelection()
+  if (page === current()) redrawInk(page)
+  openTextBoxEditor(page, obj, { editing: true, index, before })
+}
+
+function openTextBoxEditor(page, obj, { editing = false, index = -1, before = null } = {}) {
   const inner = $('stackInner')
   const el = document.createElement('textarea')
   el.id = 'textEdit'
   el.rows = 1
   el.spellcheck = false
-  el.style.left = Math.round(x) + 'px'
-  el.style.top = Math.round(y) + 'px'
-  textStyle(el, obj)
+  el.style.left = Math.round(obj.x) + 'px'
+  el.style.top = Math.round(obj.y) + 'px'
   inner.append(el)
+  if (editing) el.value = obj.txt
+  // measure after mounting: a detached textarea reports a zero scroll size
+  textStyle(el, obj)
   const bar = buildTextEditBar(page, obj, el)
   bar.style.left = el.style.left
-  bar.style.top = Math.max(4, Math.round(y) - 44 / S.zoom) + 'px'
+  bar.style.top = Math.max(4, Math.round(obj.y) - 44 / S.zoom) + 'px'
   // the bar is UI chrome: counter-scale so buttons stay screen-sized at any zoom
   bar.style.transformOrigin = '0 0'
   bar.style.transform = `scale(${1 / S.zoom})`
@@ -1943,11 +2635,16 @@ function placeTextBox(page, x, y) {
   // Focus leaves for formatting buttons too: commit, but keep the Text tool
   // active so the next tap can place another box.
   el.addEventListener('blur', () => { if (textEdit) finishText(false, { keepTool: true }) })
-  textEdit = { el, bar, page, obj }
+  textEdit = { el, bar, page, obj, editing, index, before }
   // The pointerdown that placed the box was aimed at the canvas, so the
   // browser's mousedown default would move focus there and blur (and thus
   // discard) the brand-new box. Focus once that default has run.
-  setTimeout(() => { if (textEdit && textEdit.el === el) el.focus({ preventScroll: true }) }, 0)
+  setTimeout(() => {
+    if (textEdit && textEdit.el === el) {
+      el.focus({ preventScroll: true })
+      if (editing) el.setSelectionRange(el.value.length, el.value.length)
+    }
+  }, 0)
 }
 
 function buildTextEditBar(page, obj, el) {
@@ -1982,11 +2679,48 @@ function buildTextEditBar(page, obj, el) {
 // new page and composite the old page's ink into the new page's PNG.
 function finishText(discard, { keepTool = false } = {}) {
   if (!textEdit) return
-  const { el, bar, page, obj } = textEdit
+  const { el, bar, page, obj, editing, index, before } = textEdit
   textEdit = null
   obj.txt = el.value.replace(/\s+$/, '')
   const committed = !!obj.txt
   el.remove(); bar.remove()
+  if (!page.texts) page.texts = []
+
+  if (editing) {
+    // The box was lifted out of page.texts when the editor opened.
+    if (discard) {
+      // Put the original values back on the same object and re-insert it; a
+      // cancel must not dirty the page.
+      Object.assign(obj, before)
+      page.texts.splice(Math.min(index, page.texts.length), 0, obj)
+      if (page === current()) redrawInk(page)
+      return
+    }
+    if (!committed) {
+      // Clearing the whole text and committing deletes the box; undo brings
+      // the old content back.
+      firstCommitPreCapture(page)
+      page.undo.push({ t: 'erase', strokes: [], texts: [before] })
+      page.redo = []
+      if (page === current()) redrawInk(page)
+      captureReplay(page)
+      page.dirty = true
+      scheduleAutosave()
+      refreshThumbOf(page)
+      return
+    }
+    const after = { ...obj }
+    page.texts.splice(Math.min(index, page.texts.length), 0, obj)
+    page.undo.push({ t: 'text-edit', obj, before, after })
+    page.redo = []
+    if (page === current()) redrawInk(page)
+    captureReplay(page)
+    page.dirty = true
+    scheduleAutosave()
+    refreshThumbOf(page)
+    return // keep whatever tool was active when the box was opened
+  }
+
   if (discard || !committed) return
   firstCommitPreCapture(page)
   page.texts.push(obj)
@@ -2022,43 +2756,35 @@ function onPointerUp(e) {
   if (noteBusy) return
   const page = current(); if (!page) return
   if (pan) {
-    const over = pan.over || 0
-    const under = pan.under || 0
-    const pull = S.pullPx || 0
-    const host = $('canvasHost')
-    const commit = Math.max(96, host.clientHeight * 0.12)
+    // Panning is plain scrolling now: the stack is continuous, so a drag
+    // simply moves through the pages that are already there.
     pan = null
-    S.pullPx = 0
     hidePullHint()
-    hidePagePeek()
-    if (under >= commit && S.currentPage > 0) {
-      // Release at the top: settle into the bottom of the previous sheet so the
-      // two pages share a seam instead of jumping to an unrelated top edge.
-      applyTransform()
-      setPage(S.currentPage - 1)
-      host.scrollTop = host.scrollHeight
-    } else if (over >= commit) {
-      // Release past the threshold: reveal the next sheet, or append one when
-      // this is already the last sheet. Both land at the top of the target.
-      applyTransform()
-      if (S.currentPage < S.pages.length - 1) setPage(S.currentPage + 1)
-      else addPage()
-      host.scrollTop = 0
-    } else if (Math.abs(pull) > 3) {
-      pullBounce(pull)
-    } else {
-      applyTransform()
-    }
     return
   }
   if (rulerGrip) { rulerGrip = null; return }
+  if (rulerRotate) { rulerRotate = null; return }
   const { x, y } = pageCoords(e)
   const lc = ctxOf('liveC'); lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
   if (shapeDraft) {
     const d = shapeDraft
     shapeDraft = null
     if (Math.hypot(d.bx - d.ax, d.by - d.ay) < 12) {
-      showHint('Drag to give the shape a size')
+      // A tap places a readable default-size shape centred on the spot; a drag
+      // still sizes it by hand (tap used to only show a hint).
+      const box = defaultShapeBox(d.kind, d.ax, d.ay)
+      const strokes = makeShapeStrokes(d.kind, d.fill, box.ax, box.ay, box.bx, box.by)
+      if (!strokes.length) return
+      firstCommitPreCapture(page)
+      page.strokes.push(...strokes)
+      page.undo.push({ t: 'add', strokes })
+      page.redo = []
+      redrawInk(page)
+      scheduleReplayCapture(page)
+      page.dirty = true
+      scheduleAutosave()
+      refreshCurrentThumb()
+      showHint('Shape added — drag to size one, or press Esc')
       return
     }
     const strokes = makeShapeStrokes(d.kind, d.fill, d.ax, d.ay, d.bx, d.by)
@@ -2068,7 +2794,7 @@ function onPointerUp(e) {
     page.undo.push({ t: 'add', strokes })
     page.redo = []
     redrawInk(page)
-    captureReplay(page)
+    scheduleReplayCapture(page)
     page.dirty = true
     scheduleAutosave()
     refreshCurrentThumb()
@@ -2076,15 +2802,40 @@ function onPointerUp(e) {
     return
   }
   if (live) {
+    // Drop the queued live paint before clearing: its callback must not
+    // repaint a stroke that is being committed (or was already discarded).
+    cancelLivePaint()
     const stroke = live.stroke
+    const snapped = live.snapMode
+    // Bring the mask up to date with the last samples, then commit those very
+    // pixels: the ink lands exactly as it looked on the sheet, with no stroke
+    // rebuild to hitch on. A bare tap (nothing painted yet) or a stroke the
+    // mask could not cover falls back to the canonical render.
+    paintLiveStroke(page)
+    const { w, h } = docSize(page)
+    const mask = scratchUsed
     live = null
+    if (snapped) { rulerSnapActive = false; redrawRuler() }
     if (!stroke.pts.length) return
     firstCommitPreCapture(page)
+    const ic = ctxOf('inkC')
+    let committed = false
+    if (mask) {
+      const bx0 = Math.max(0, mask.x0), by0 = Math.max(0, mask.y0)
+      const bx1 = Math.min(w, mask.x1), by1 = Math.min(h, mask.y1)
+      if (bx1 > bx0 && by1 > by0) {
+        ic.save()
+        ic.globalAlpha = strokeAlpha(stroke)
+        ic.drawImage(scratch, bx0, by0, bx1 - bx0, by1 - by0, bx0, by0, bx1 - bx0, by1 - by0)
+        ic.restore()
+        committed = true
+      }
+    }
+    if (!committed) drawStrokeItem(ic, w, h, stroke)
     page.strokes.push(stroke)
-    drawStrokeItem(ctxOf('inkC'), docSize(page).w, docSize(page).h, stroke)
     page.undo.push({ t: 'add', stroke })
     page.redo = []
-    captureReplay(page)
+    scheduleReplayCapture(page)
     page.dirty = true
     scheduleAutosave()
     refreshCurrentThumb()
@@ -2095,18 +2846,16 @@ function onPointerUp(e) {
     if (ep.pairs.length) page.undo.push({ t: 'erase-split', pairs: ep.pairs })
     if (ep.whole.length || ep.pairs.length) {
       page.redo = []
-      captureReplay(page)
+      scheduleReplayCapture(page)
       page.dirty = true
       scheduleAutosave()
       refreshCurrentThumb()
-    } else if (ep.mode === 'drag' && !ep.armed) {
-      showHint('Drag over ink to erase')
     }
   } else if (dragSel) {
     const d = dragSel
     if (!d.moved && S.selectMode === 'click') {
       dragSel = null
-      selectStrokeAt(page, d.sx, d.sy)
+      selectItemAt(page, d.sx, d.sy)
     } else {
       selectionCommitMove(page)
     }
@@ -2129,20 +2878,19 @@ function cancelGesture() {
   const page = current()
   if (pan) {
     pan = null
-    S.pullPx = 0
-    if (bounceRAF) { cancelAnimationFrame(bounceRAF); bounceRAF = 0 }
     hidePullHint()
-    hidePagePeek()
-    applyTransform()
     return
   }
   rulerGrip = null
+  rulerRotate = null
+  if (rulerSnapActive) { rulerSnapActive = false; redrawRuler() }
   if (shapeDraft) {
     shapeDraft = null
     clearLive(page)
     return
   }
   if (live) {
+    cancelLivePaint()
     live = null
     clearLive(page)
     return
@@ -2200,6 +2948,11 @@ function undo() {
       const idx = page.strokes.lastIndexOf(st)
       if (idx >= 0) page.strokes.splice(idx, 1)
     }
+    // pasted/duplicated text boxes travel in the same undo entry
+    for (const t of (a.texts || [])) {
+      const idx = page.texts.lastIndexOf(t)
+      if (idx >= 0) page.texts.splice(idx, 1)
+    }
     page.redo.push(a)
   } else if (a.t === 'erase') {
     page.strokes.push(...a.strokes)
@@ -2208,6 +2961,11 @@ function undo() {
   } else if (a.t === 'text') {
     const i = page.texts.indexOf(a.obj)
     if (i >= 0) page.texts.splice(i, 1)
+    page.redo.push(a)
+  } else if (a.t === 'text-edit') {
+    // In-place edit of an existing box: the box object stays in page.texts,
+    // only its content/style fields roll back.
+    Object.assign(a.obj, a.before)
     page.redo.push(a)
   } else if (a.t === 'erase-split') {
     // Splits within one gesture can nest (a fragment is split again), so undo
@@ -2222,7 +2980,7 @@ function undo() {
     }
     page.redo.push(a)
   } else if (a.t === 'move') {
-    for (const st of a.strokes) for (const p of st.pts) { p.x -= a.dx; p.y -= a.dy }
+    shiftSelection(a, -a.dx, -a.dy)
     page.redo.push(a)
     clearSelection()
   }
@@ -2242,6 +3000,7 @@ function redo() {
   if (a.t === 'add') {
     if (a.strokes) page.strokes.push(...a.strokes)
     else page.strokes.push(a.stroke)
+    if (a.texts) page.texts.push(...a.texts)
     page.undo.push(a)
   } else if (a.t === 'erase') {
     page.strokes = page.strokes.filter(st => !a.strokes.includes(st))
@@ -2249,6 +3008,9 @@ function redo() {
     page.undo.push(a)
   } else if (a.t === 'text') {
     page.texts.push(a.obj)
+    page.undo.push(a)
+  } else if (a.t === 'text-edit') {
+    Object.assign(a.obj, a.after)
     page.undo.push(a)
   } else if (a.t === 'erase-split') {
     // Rebuild forward, then drop every superseded original in one pass. With
@@ -2259,7 +3021,7 @@ function redo() {
     page.strokes = page.strokes.filter(st => !superseded.has(st))
     page.undo.push(a)
   } else if (a.t === 'move') {
-    for (const st of a.strokes) for (const p of st.pts) { p.x += a.dx; p.y += a.dy }
+    shiftSelection(a, a.dx, a.dy)
     page.undo.push(a)
     clearSelection()
   }
@@ -2751,6 +3513,9 @@ function syncFlyoutAria() {
   const pairs = [
     ['penFlyout', $('tbPenCurrent')],
     ['shapeFlyout', $('tbObject')],
+    ['selectFlyout', $('tbLasso')],
+    ['rulerFlyout', $('tbRuler')],
+    ['eraserFlyout', $('tbEraser')],
     ['saveFlyout', $('btnSaveMore')],
     ['paperColorFlyout', $('ppBgColor')],
   ]
@@ -2758,9 +3523,6 @@ function syncFlyoutAria() {
     if (!btn) continue
     btn.setAttribute('aria-expanded', S.flyoutOpenTool === id ? 'true' : 'false')
   }
-  document.querySelectorAll('#topbar .tb-modebtn[data-fly]').forEach(btn => {
-    btn.setAttribute('aria-expanded', S.flyoutOpenTool === btn.dataset.fly ? 'true' : 'false')
-  })
 }
 
 // All toolbar flyouts are anchored to their control, never to a magic offset.
@@ -2979,7 +3741,15 @@ function applyPaperBg(hex) {
     showHint('Light board on - pen switched to dark for contrast')
   }
   markPaperChanged(page)
-  if (targets.length > 1) refreshPages()
+  if (targets.length > 1) {
+    refreshPages()
+    // board colour is page data: neighbouring stills must repaint too
+    for (let i = 0; i < S.pages.length; i++) {
+      if (i === S.currentPage) continue
+      S.pages[i].stillDirty = true
+      queueStill(i)
+    }
+  }
   syncPaperPanel()
   syncPaperColorFlyout()
   syncPenFlyout()
@@ -3405,6 +4175,7 @@ export function init(app) {
     savePens()
   })
   loadPens()
+  loadToolPrefs()
   buildQuickPalette()
   // restore the saved active pen *after* loading slots; selectColor() saves the
   // slots and must never run before loadPens() or it would overwrite them
@@ -3416,9 +4187,9 @@ export function init(app) {
   buildPaperPalette()
   syncPaperPanel()
   buildShapeGrid()
-  wireTextTool()
   $('shapeClose').onclick = () => closeToolFlyout('shapeFlyout')
   $('selectClose').onclick = () => closeToolFlyout('selectFlyout')
+  $('rulerClose').onclick = () => closeToolFlyout('rulerFlyout')
   $('eraserClose').onclick = () => closeToolFlyout('eraserFlyout')
   initTheme()
 
@@ -3465,19 +4236,31 @@ export function init(app) {
   $('ppPaneOn').onclick = () => setWritingPane(true)
   $('ppPaneOff').onclick = () => setWritingPane(false)
   $('btnAddPage').onclick = addPage
-  $('btnPrevPage').onclick = () => setPage(S.currentPage - 1)
-  $('btnNextPage').onclick = () => setPage(S.currentPage + 1)
+  $('btnPrevPage').onclick = () => setPage(S.currentPage - 1, false, { smooth: true })
+  $('btnNextPage').onclick = () => setPage(S.currentPage + 1, false, { smooth: true })
   syncPageNav()
   wireToolbarToggles()
   stackInnerClass()
 
-  // pointer + wheel
-  const inner = $('stackInner')
-  inner.addEventListener('pointerdown', onPointerDown)
-  inner.addEventListener('pointermove', onPointerMove)
-  inner.addEventListener('pointerup', onPointerUp)
-  inner.addEventListener('pointercancel', onPointerCancel)
-  inner.addEventListener('contextmenu', e => e.preventDefault())
+  // pointer + wheel. Listeners sit on the stack so a gesture can start on any
+  // sheet of the continuous run and switch the active page itself.
+  const stack = $('canvasStack')
+  stack.addEventListener('pointerdown', onPointerDown)
+  stack.addEventListener('pointermove', onPointerMove)
+  stack.addEventListener('pointerup', onPointerUp)
+  stack.addEventListener('pointercancel', onPointerCancel)
+  stack.addEventListener('contextmenu', e => e.preventDefault())
+  // Double-click a text box with the Select tool to edit its content in place.
+  stack.addEventListener('dblclick', e => {
+    if (noteBusy || promptOpen() || isTextEditing()) return
+    if (e.target.closest('button, input, textarea, select, a, [contenteditable="true"], #selBar, #rulerCtl, #textEditBar, #titleStrip')) return
+    if (S.tool !== 'lasso' && S.tool !== 'text') return
+    const page = current(); if (!page) return
+    const { x, y } = pageCoords(e)
+    const hit = textAt(page, x, y)
+    if (hit) { e.preventDefault(); beginTextEdit(page, hit) }
+  })
+  $('canvasHost').addEventListener('scroll', onHostScroll, { passive: true })
   $('canvasHost').addEventListener('wheel', e => {
     if (e.ctrlKey || e.metaKey) {
       wheelOverscroll = 0
@@ -3485,69 +4268,37 @@ export function init(app) {
       zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.15 : 1 / 1.15)
       return
     }
+    // Normal wheel/trackpad scrolling is left untouched: it now runs across
+    // every sheet of the stack. Only at the very bottom of the last sheet does
+    // continued downward scrolling become a deliberate "add a page" gesture.
     const host = $('canvasHost')
+    // a manual wheel means the reader has taken over: the active page should
+    // follow immediately even if a rail jump is still animating
+    scrollSyncLock = 0
     const dy = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? host.clientHeight : 1)
-    if (!S.pages.length) {
+    if (!S.pages.length || dy <= 0) {
       wheelOverscroll = 0
+      hidePullHint()
       return
     }
     if (performance.now() < wheelAddLock) return
-    const atTop = host.scrollTop <= 2
     const atBottom = host.scrollHeight - host.clientHeight - host.scrollTop <= 2
-    // Upward wheel at the top of a page reveals the previous sheet. The
-    // scrollport is already at 0, so the delta cannot move anything natively;
-    // accumulating it turns the dead end into a deliberate page turn.
-    if (dy < 0) {
-      if (!atTop || S.currentPage <= 0) {
-        wheelOverscroll = 0
-        hidePullHint()
-        return
-      }
-      wheelOverscroll += -dy
-      const commit = Math.max(250, host.clientHeight * 0.28)
-      if (wheelOverscroll < commit) {
-        const display = wheelOverscroll * (pullCommitLimit() / commit)
-        updatePullHint(display, 'wheel', 'prev')
-        return
-      }
-      wheelOverscroll = 0
-      wheelAddLock = performance.now() + 900
-      hidePullHint()
-      setPage(S.currentPage - 1)
-      // Land at the bottom of the previous sheet; the remaining upward delta
-      // then scrolls up into it natively, keeping the boundary continuous.
-      host.scrollTop = host.scrollHeight
-      return
-    }
-    // Normal wheel/trackpad scrolling is left untouched. Once the last page
-    // is already at the bottom, continued downward scrolling becomes a clear,
-    // deliberate gesture that appends the next page.
-    if (dy <= 0) {
+    if (!atBottom || S.currentPage < S.pages.length - 1) {
       wheelOverscroll = 0
       hidePullHint()
-      return
-    }
-    if (!atBottom) {
-      wheelOverscroll = 0
       return
     }
     wheelOverscroll += dy
     const commit = Math.max(250, host.clientHeight * 0.28)
-    const hasNext = S.currentPage < S.pages.length - 1
     if (wheelOverscroll < commit) {
       const display = wheelOverscroll * (pullCommitLimit() / commit)
-      updatePullHint(display, 'wheel', hasNext ? 'next' : 'add')
+      updatePullHint(display, 'wheel', 'add')
       return
     }
     wheelOverscroll = 0
     wheelAddLock = performance.now() + 900
     hidePullHint()
-    if (hasNext) setPage(S.currentPage + 1)
-    else addPage()
-    // Start at the top of the target sheet. The rest of this wheel delta then
-    // scrolls into it natively, so the boundary keeps its momentum instead of
-    // snapping back to the top after the event.
-    host.scrollTop = 0
+    addPage()
   }, { passive: false })
 
   window.addEventListener('keydown', e => {
@@ -3572,12 +4323,19 @@ export function init(app) {
     // PageUp/PageDown with Ctrl switches sheets without reaching for the rail.
     if (c && !typing && (e.key === 'PageDown' || e.key === 'PageUp')) {
       e.preventDefault()
-      setPage(S.currentPage + (e.key === 'PageDown' ? 1 : -1))
+      setPage(S.currentPage + (e.key === 'PageDown' ? 1 : -1), false, { smooth: true })
       return
     }
     // inside a text box, Ctrl+Z/Y must undo the text, not the canvas ink
     if (c && !typing && !e.shiftKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undo() }
     if (c && !typing && (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))) { e.preventDefault(); redo() }
+    if (c && !typing && e.key.toLowerCase() === 'c') { if (selectionHasItems()) { e.preventDefault(); editCopy(); return } }
+    if (c && !typing && e.key.toLowerCase() === 'x') { if (selectionHasItems()) { e.preventDefault(); editCut(); return } }
+    if (c && !typing && e.key.toLowerCase() === 'v') { e.preventDefault(); editPaste(); return }
+    // Delete removes whatever the Select tool holds (strokes, shapes, texts).
+    if (!typing && !promptOpen() && !c && (e.key === 'Delete' || e.key === 'Backspace') && selectionHasItems()) {
+      e.preventDefault(); selectionDelete(); return
+    }
     if (c && e.key.toLowerCase() === 's') { e.preventDefault(); saveCurrentPage() }
     if (c && !typing && !promptOpen() && e.key.toLowerCase() === 'e') { e.preventDefault(); exportMenu($('btnSaveMore')) }
     // tool shortcuts (factory parity): V laser, E eraser, R ruler,
@@ -3591,10 +4349,11 @@ export function init(app) {
       else if (k === 't') { e.preventDefault(); startTextTool() }
       else if (k === 'escape') {
         closeColorPopover()
-        for (const f of ['shapeFlyout', 'selectFlyout', 'eraserFlyout', 'penFlyout', 'saveFlyout', 'paperColorFlyout']) closeToolFlyout(f)
+        for (const f of ['shapeFlyout', 'selectFlyout', 'rulerFlyout', 'eraserFlyout', 'penFlyout', 'saveFlyout', 'paperColorFlyout']) closeToolFlyout(f)
         if (libCloser) toggleLibraryFlyout()
         $('paperPanel').classList.add('hidden')
         if (S.tool === 'shape') setTool('pen')
+        if (S.rulerOn) toggleRuler()
         clearSelection()
       }
     }
@@ -3645,6 +4404,11 @@ export function init(app) {
       case 'export-project': exportProject(); break
       case 'reveal-library': bridge.revealLibraryFolder(); break
       case 'zoom': app.cmdZoom(arg); break
+      case 'edit-undo': editUndo(); break
+      case 'edit-redo': editRedo(); break
+      case 'edit-copy': editCopy(); break
+      case 'edit-cut': editCut(); break
+      case 'edit-paste': editPaste(); break
     }
   })
   app.cmdZoom = arg => {
@@ -3658,8 +4422,13 @@ function stackInnerClass() {
   inner.classList.toggle('panning', S.spaceDown || S.tool === 'view')
   inner.classList.toggle('shape-tool', S.tool === 'shape')
   // A pen drag must be ink, never a browser scroll gesture. All inking tools
-  // opt out of native touch/pen panning; Pan/View keep native scrolling.
-  inner.classList.toggle('inking', !S.spaceDown && S.tool !== 'pan' && S.tool !== 'view')
+  // opt out of native touch/pen panning; Pan/View keep native scrolling. The
+  // class also lands on #canvasStack so a gesture starting on a neighbouring
+  // sheet is ink too, never a scroll.
+  const inking = !S.spaceDown && S.tool !== 'pan' && S.tool !== 'view'
+  inner.classList.toggle('inking', inking)
+  const stack = $('canvasStack')
+  if (stack) stack.classList.toggle('inking', inking)
 }
 
 function isTextEditing() {
@@ -3671,6 +4440,51 @@ function isTextEditing() {
 function promptOpen() {
   const d = $('dlg')
   return !!d && !d.classList.contains('hidden')
+}
+
+// ---------- edit commands (Edit menu + Ctrl/Cmd chords) ----------
+// The native Edit menu routes through the renderer now, because a menu
+// accelerator would otherwise swallow the chord before the page ever sees it.
+// A focused text field or prompt still gets the real native editing behaviour;
+// everywhere else the commands act on the canvas selection.
+function editContextIsNative() {
+  return isTextEditing() || promptOpen()
+}
+
+function editNativeOr(op, fallback) {
+  if (editContextIsNative()) {
+    if (bridge && bridge.editNative) bridge.editNative(op).catch(() => {})
+    else if (fallback) document.execCommand(fallback)
+    return true
+  }
+  return false
+}
+
+function editUndo() {
+  if (editNativeOr('undo', 'undo')) return
+  undo()
+}
+
+function editRedo() {
+  if (editNativeOr('redo', 'redo')) return
+  redo()
+}
+
+function editCopy() {
+  if (editNativeOr('copy', 'copy')) return
+  selectionCopy()
+}
+
+function editCut() {
+  if (editNativeOr('cut', 'cut')) return
+  if (!selectionHasItems()) return
+  selectionCopy()
+  selectionDelete()
+}
+
+function editPaste() {
+  if (editNativeOr('paste', null)) return
+  selectionPaste()
 }
 
 export function selectColor(c) {
@@ -3829,7 +4643,7 @@ function inkTooLightForLightBoard(hex) {
 }
 
 function syncToolButtons() {
-  const map = { erase: 'tbEraser', laser: 'tbLaser', lasso: 'tbLasso', view: 'tbEye', shape: 'tbObject' }
+  const map = { erase: 'tbEraser', laser: 'tbLaser', lasso: 'tbLasso', view: 'tbEye', shape: 'tbObject', text: 'tbText' }
   for (const [tool, id] of Object.entries(map)) {
     const b = $(id)
     if (!b) continue
@@ -3837,11 +4651,6 @@ function syncToolButtons() {
     b.classList.toggle('active', on)
     b.setAttribute('aria-pressed', on ? 'true' : 'false')
   }
-  // The tool + its mode row share one card; the card owns the accent fill so
-  // the mode row never looks like a second selected button.
-  document.querySelectorAll('.tb-tool-split').forEach(split => {
-    split.classList.toggle('active', !!split.querySelector('.tb-toggle.active'))
-  })
   const rulerBtn = $('tbRuler')
   if (rulerBtn) {
     const on = !!S.rulerOn
@@ -3850,41 +4659,98 @@ function syncToolButtons() {
   }
 }
 
-// toggles: laser/laso/eye switch the active tool, ruler toggles the ruler
-// overlay, object opens the shapes&text flyout; eraser toggles the eraser tool
+// toggles: laser/eye switch the active tool; select, ruler, shapes and eraser
+// open the picker the person chooses from (their last pick is already marked)
+// and choosing applies it at once, so all four cards behave the same way
 function wireToolbarToggles() {
   const eraserBtn = $('tbEraser')
-  if (eraserBtn) eraserBtn.onclick = () => setTool(S.tool === 'erase' ? 'pen' : 'erase')
+  if (eraserBtn) eraserBtn.onclick = () => { syncEraserFlyout(); openToolFlyout('eraserFlyout', eraserBtn) }
   const objBtn = $('tbObject')
   if (objBtn) objBtn.onclick = () => openToolFlyout('shapeFlyout', objBtn)
   $('tbLaser').onclick = () => setTool(S.tool === 'laser' ? 'pen' : 'laser')
-  $('tbRuler').onclick = () => toggleRuler()
-  $('tbLasso').onclick = () => setTool(S.tool === 'lasso' ? 'pen' : 'lasso')
+  // Select, Ruler and Eraser open their choosers on click, like the Shapes
+  // gallery: the remembered pick is already marked when the card appears.
+  $('tbRuler').onclick = () => { syncRulerFlyout(); openToolFlyout('rulerFlyout', $('tbRuler')) }
+  $('tbLasso').onclick = () => { syncSelectFlyout(); openToolFlyout('selectFlyout', $('tbLasso')) }
+  $('tbText').onclick = () => setTool(S.tool === 'text' ? 'pen' : 'text')
   $('tbEye').onclick = () => setTool(S.tool === 'view' ? 'pen' : 'view')
-  // The visible mode label under each split tool opens its flyout. The icon
-  // above still toggles the tool itself, so neither action hides the other.
-  document.querySelectorAll('#topbar .tb-modebtn[data-fly]').forEach(z => {
-    z.addEventListener('click', ev => {
-      const fly = z.dataset.fly
-      if (!fly || !$(fly)) return
-      ev.stopPropagation()
-      if (fly === 'selectFlyout') syncSelectFlyout()
-      if (fly === 'eraserFlyout') syncEraserFlyout()
-      openToolFlyout(fly, z, { ignore: z })
-    })
-  })
+  // Picking a mode applies it and closes the picker, exactly like picking a
+  // shape: one click in the card, one click on the choice.
   const sll = $('selLasso'), slc = $('selClick')
-  if (sll) sll.onclick = () => { S.selectMode = 'lasso'; syncSelectFlyout() }
-  if (slc) slc.onclick = () => { S.selectMode = 'click'; syncSelectFlyout() }
-  const est = $('erStroke'), esg = $('erSegment'), esh = $('erSheet'), edg = $('erDrag')
-  if (est) est.onclick = () => { S.eraserMode = 'stroke'; syncEraserFlyout() }
-  if (esg) esg.onclick = () => { S.eraserMode = 'segment'; syncEraserFlyout() }
-  if (esh) esh.onclick = () => { S.eraserMode = 'sheet'; syncEraserFlyout() }
-  if (edg) edg.onclick = () => { S.eraserMode = 'drag'; syncEraserFlyout() }
+  if (sll) sll.onclick = () => applySelectMode('lasso')
+  if (slc) slc.onclick = () => applySelectMode('click')
+  const rru = $('rulRuler'), rpr = $('rulProtractor')
+  if (rru) rru.onclick = () => applyRulerMode('ruler')
+  if (rpr) rpr.onclick = () => applyRulerMode('protractor')
+  // 'drag' was an invented fourth mode that only erased after the pointer had
+  // moved — the same tool as 'stroke' with a threshold, which made the flyout
+  // read as duplicated options. The factory flyout lists stroke / segment
+  // sizes / sheet only.
+  if (S.eraserMode === 'drag') S.eraserMode = 'stroke'
+  const est = $('erStroke'), esg = $('erSegment'), esh = $('erSheet')
+  if (est) est.onclick = () => applyEraserMode('stroke')
+  if (esg) esg.onclick = () => applyEraserMode('segment')
+  if (esh) esh.onclick = () => applyEraserMode('sheet')
   document.querySelectorAll('#erSizes .er-chip').forEach(ch => {
-    ch.onclick = () => { S.eraserMM = parseFloat(ch.dataset.mm) || 5; syncEraserFlyout() }
+    ch.onclick = () => { S.eraserMM = parseFloat(ch.dataset.mm) || 5; saveToolPrefs(); syncEraserFlyout() }
   })
   syncSelectFlyout()
+  syncEraserFlyout()
+  syncRulerFlyout()
+}
+
+const SELECT_MODE_LABEL = { lasso: 'Lasso', click: 'Click' }
+const RULER_MODE_LABEL = { ruler: 'Ruler', protractor: 'Protractor' }
+const ERASER_MODE_LABEL = { stroke: 'Stroke', segment: 'Segment', sheet: 'Sheet' }
+
+// Picking in the chooser applies it at once and closes the picker — the same
+// one-click contract as picking a shape in the Shapes gallery.
+function applySelectMode(mode) {
+  S.selectMode = mode === 'click' ? 'click' : 'lasso'
+  saveToolPrefs()
+  closeToolFlyout('selectFlyout')
+  setTool('lasso')
+  showHint(S.selectMode === 'click'
+    ? 'Select on — tap a stroke or text box, then drag inside the box to move it'
+    : 'Select on — circle strokes and text, then drag inside the box to move them')
+  syncSelectFlyout()
+}
+
+function applyRulerMode(mode) {
+  const prev = S.rulerMode
+  S.rulerMode = mode === 'protractor' ? 'protractor' : 'ruler'
+  saveToolPrefs()
+  const wasOn = S.rulerOn
+  const page = current()
+  S.rulerOn = true
+  rulerRotate = null
+  rulerSnapActive = false
+  if (page) {
+    ensureRulerVisible()
+    drawRulerLayer(page)
+  }
+  syncToolButtons()
+  closeToolFlyout('rulerFlyout')
+  if (!wasOn || prev !== S.rulerMode) {
+    showHint(S.rulerMode === 'protractor'
+      ? 'Protractor on — a stroke that starts on the arc follows it, Esc when done'
+      : 'Ruler on — a stroke that starts on the edge rides it, Esc when done')
+  }
+  syncRulerFlyout()
+}
+
+// Picking an eraser mode applies it, turns the eraser on and closes the card —
+// the same one-click contract as Select, Ruler and the Shapes gallery.
+function applyEraserMode(mode) {
+  S.eraserMode = ERASER_MODE_LABEL[mode] ? mode : 'stroke'
+  saveToolPrefs()
+  closeToolFlyout('eraserFlyout')
+  setTool('erase')
+  showHint(S.eraserMode === 'segment'
+    ? `Segment eraser on — ${S.eraserMM} mm, drag over the ink to rub out parts`
+    : S.eraserMode === 'sheet'
+      ? 'Sheet eraser on — tap a page to clear it'
+      : 'Stroke eraser on — tap a stroke to remove the whole line')
   syncEraserFlyout()
 }
 
@@ -3895,42 +4761,43 @@ function syncSelectFlyout() {
     b.classList.toggle('active', S.selectMode === k)
     b.setAttribute('aria-pressed', S.selectMode === k ? 'true' : 'false')
   }
-  const mode = S.selectMode === 'click' ? 'Click' : 'Lasso'
-  const label = $('selModeLabel')
-  if (label) label.textContent = mode
+  const label = SELECT_MODE_LABEL[S.selectMode] || 'Lasso'
   const btn = $('tbLasso')
   if (btn) {
-    btn.setAttribute('aria-label', `Select strokes, ${mode} mode`)
-    btn.title = `Select (${mode} mode)`
+    btn.title = `Select strokes and text (${label} picked) — click to change`
+    btn.setAttribute('aria-label', `Select strokes and text. Current pick: ${label}. Open selection modes`)
   }
-  const modeBtn = document.querySelector('.tb-modebtn[data-fly="selectFlyout"]')
-  if (modeBtn) {
-    modeBtn.title = `Select mode: ${mode} — open options`
-    modeBtn.setAttribute('aria-label', `Select mode: ${mode}. Open options`)
+}
+
+// The RulerFlyout: straightedge or protractor, the last pick stays marked.
+function syncRulerFlyout() {
+  const modes = { ruler: $('rulRuler'), protractor: $('rulProtractor') }
+  for (const [k, b] of Object.entries(modes)) {
+    if (!b) continue
+    b.classList.toggle('active', S.rulerMode === k)
+    b.setAttribute('aria-pressed', S.rulerMode === k ? 'true' : 'false')
+  }
+  const label = RULER_MODE_LABEL[S.rulerMode] || 'Ruler'
+  const btn = $('tbRuler')
+  if (btn) {
+    btn.title = `Ruler or protractor (${label} picked) — click to change`
+    btn.setAttribute('aria-label', `Ruler or protractor. Current pick: ${label}. Open stencil choices`)
   }
 }
 
 // the factory eraser modes (SetupFlyout copy: Stroke Eraser / Segment
-// Eraser - Small/Medium/Large) — sheet eraser stands in for erase-all;
-// Drag is the additive "only erase after the pointer moves" option.
+// Eraser - Small/Medium/Large) — sheet eraser stands in for erase-all.
 function syncEraserFlyout() {
-  const modes = { stroke: $('erStroke'), segment: $('erSegment'), sheet: $('erSheet'), drag: $('erDrag') }
+  const modes = { stroke: $('erStroke'), segment: $('erSegment'), sheet: $('erSheet') }
   for (const [k, b] of Object.entries(modes)) {
     b.classList.toggle('active', S.eraserMode === k)
     b.setAttribute('aria-pressed', S.eraserMode === k ? 'true' : 'false')
   }
-  const mode = { stroke: 'Stroke', segment: 'Segment', sheet: 'Sheet', drag: 'Drag' }[S.eraserMode] || 'Stroke'
-  const label = $('erModeLabel')
-  if (label) label.textContent = mode
+  const mode = ERASER_MODE_LABEL[S.eraserMode] || 'Stroke'
   const btn = $('tbEraser')
   if (btn) {
-    btn.setAttribute('aria-label', `Eraser, ${mode} mode`)
-    btn.title = `Eraser (${mode} mode)`
-  }
-  const modeBtn = document.querySelector('.tb-modebtn[data-fly="eraserFlyout"]')
-  if (modeBtn) {
-    modeBtn.title = `Eraser mode: ${mode} — open options`
-    modeBtn.setAttribute('aria-label', `Eraser mode: ${mode}. Open options`)
+    btn.title = `Eraser (${mode} mode) — click to change`
+    btn.setAttribute('aria-label', `Eraser. Current pick: ${mode}. Open eraser options`)
   }
   $('erSizeRow').classList.toggle('hidden', S.eraserMode !== 'segment')
   document.querySelectorAll('#erSizes .er-chip').forEach(ch => {
@@ -4023,6 +4890,28 @@ function drawPenTypeSamples() {
       pts,
     })
   })
+}
+
+// The Select, Ruler and Eraser picks survive a restart, like the pen slots.
+function loadToolPrefs() {
+  try {
+    const raw = localStorage.getItem('wc:tools')
+    if (!raw) return
+    const d = JSON.parse(raw)
+    if (d && d.selectMode === 'click') S.selectMode = 'click'
+    if (d && (d.rulerMode === 'ruler' || d.rulerMode === 'protractor')) S.rulerMode = d.rulerMode
+    if (d && ERASER_MODE_LABEL[d.eraserMode]) S.eraserMode = d.eraserMode
+    if (d && [2, 5, 10].includes(+d.eraserMM)) S.eraserMM = +d.eraserMM
+  } catch { /* corrupted state — keep the defaults */ }
+}
+
+function saveToolPrefs() {
+  try {
+    localStorage.setItem('wc:tools', JSON.stringify({
+      selectMode: S.selectMode, rulerMode: S.rulerMode,
+      eraserMode: S.eraserMode, eraserMM: S.eraserMM,
+    }))
+  } catch { /* ignore */ }
 }
 
 function loadPens() {

@@ -16,14 +16,18 @@ can afford to run it on Windows, macOS and Linux for every push.
 
 | File | Covers |
 |---|---|
-| `tests/pen-paper.test.mjs` | Pen and paper pure logic, and the ruler's line/rectangle clipping. |
+| `tests/pen-paper.test.mjs` | Pen and paper pure logic, and the ruler's line/rectangle clipping, pressure and hit-testing. |
+| `tests/pen-stamper.test.mjs` | The shared stamp builder: the incremental live path and the canonical flatten path must produce the same mask, so a stroke does not change under the pen at pen-up. |
 | `tests/png-toolkit.test.mjs` | The note codec: chunk round trip, agreement with the main-process facade on template paths and orientations, legacy repair, the legacy raster fallback, read options, and malformed input (a truncated chunk must be rejected, not silently accepted). |
 | `tests/shortcuts.test.mjs` | The platform chord labels: all three targets named, `⌘` on macOS versus `Ctrl` elsewhere, the platform redo chord, page navigation on Control everywhere, and ARIA modifier names instead of glyphs. |
 | `tests/library-pages.test.mjs` | Library page operations: duplicating, deleting and the resulting index and page files. |
 | `tests/auto-merge.test.mjs` | The auto-merge policy: which pull requests merge, which are handed to a human, and which are skipped. |
 | `tests/release-notes.test.mjs` | Release subject parsing, changelog section extraction, and a release-readiness check that `CHANGELOG.md` has a section for the version in `package.json`. |
+| `tests/workflows.test.mjs` | Workflow invariants: permissions, action pinning, the Agent token, and the ban on `pull_request_target`. |
+| `tests/package.test.mjs` | The packaged build: every root file the main process opens is in `build.files`, the renderer module marker ships, all three icons exist at size, and the Store identity and AppX config are valid. |
 
-Current size, for orientation: 49 tests in 10 suites.
+Current size, for orientation: 79 tests across the nine files above. The runner
+reports 11 suites because four files group their cases in `describe` blocks.
 
 ## Adding a unit test
 

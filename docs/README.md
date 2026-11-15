@@ -1,7 +1,7 @@
 # WriteCanvas documentation
 
-Start where you are, not at the top. Everything below is self-contained, and the
-root [README](../README.md) is only a signpost to this folder.
+Start where you are, not at the top. Everything below is self-contained; the
+root [README](../README.md) is the short version and this folder goes deeper.
 
 ## If you use the app
 

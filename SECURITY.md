@@ -2,14 +2,15 @@
 
 ## Supported versions
 
-WriteCanvas is at `0.1.x`. Fixes land on `master` and are published as a new
+WriteCanvas is at `1.2.x`. Fixes land on `master` and are published as a new
 patch release; only the latest release is supported. There is no long-term
 support branch yet, and the app ships no server component, so a fix means a new
 build rather than a hotpatch.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | yes |
+| 1.2.x | yes |
+| 1.1.x | no |
 | older | no |
 
 ## Reporting a vulnerability

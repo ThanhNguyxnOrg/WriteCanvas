@@ -96,22 +96,38 @@ const hygiene = await evalJs(ws, `(() => {
 ok('toolbar: every button labelled + >=24px', hygiene.issues.length === 0, hygiene.issues.join('; '))
 ok('toolbar: no overflow/clipping', !hygiene.overflow && !hygiene.clipped, JSON.stringify({ o: hygiene.overflow, c: hygiene.clipped }))
 ok('saveState is aria-live', hygiene.live === 'polite', 'aria-live=' + hygiene.live)
+const toolOrder = await state(`[...document.querySelectorAll('#tbToggles .tb-toggle')].map(b => b.id)`)
+ok('toolbar tools follow the working order', JSON.stringify(toolOrder) === JSON.stringify(['tbEraser', 'tbLasso', 'tbText', 'tbObject', 'tbRuler', 'tbLaser', 'tbEye']), JSON.stringify(toolOrder))
 
 // ---------- 1. toggle tools (real clicks, both directions) ----------
-const toggles = [
-  ['tbLaser', 'laser'], ['tbRuler', 'ruler'], ['tbEye', 'view'], ['tbLasso', 'lasso'], ['tbEraser', 'erase'], ['tbPens', 'pen-slot'],
-]
 await realClick(`document.getElementById('tbLaser')`)
 ok('click tbLaser -> tool=laser', await state(`__wc.S.tool`) === 'laser', await state(`__wc.S.tool`))
 ok('tbLaser aria-pressed=true', await state(`document.getElementById('tbLaser').getAttribute('aria-pressed')`) === 'true')
 await realClick(`document.getElementById('tbLaser')`)
 ok('click tbLaser again -> tool=pen', await state(`__wc.S.tool`) === 'pen', await state(`__wc.S.tool`))
 
+// Select, Ruler and the Eraser open their pickers on click (like Shapes); the
+// last pick is already marked and choosing one applies it at once and closes
+// the picker.
 await realClick(`document.getElementById('tbRuler')`)
-ok('click tbRuler -> rulerOn', await state(`__wc.S.rulerOn`) === true)
+ok('click tbRuler -> ruler chooser opens', await state(`!document.getElementById('rulerFlyout').classList.contains('hidden')`))
+// the marked card must be exactly the remembered pick (it persists across runs)
+ok('ruler chooser marks exactly the remembered pick', await state(`(() => {
+  const marked = [document.getElementById('rulRuler'), document.getElementById('rulProtractor')].filter(b => b.classList.contains('active') && b.getAttribute('aria-pressed') === 'true')
+  return marked.length === 1 && marked[0].id === (__wc.S.rulerMode === 'protractor' ? 'rulProtractor' : 'rulRuler')
+})()`) === true)
+await realClick(`document.getElementById('rulRuler')`)
+ok('picking Ruler turns the stencil on', await state(`__wc.S.rulerOn`) === true && await state(`__wc.S.rulerMode`) === 'ruler')
+ok('picking a stencil closes the chooser', await state(`document.getElementById('rulerFlyout').classList.contains('hidden')`))
 ok('rulerCtl appears on screen', await state(`!!document.getElementById('rulerCtl') && !document.getElementById('rulerCtl').classList.contains('hidden')`))
 await realClick(`document.getElementById('tbRuler')`)
-ok('click tbRuler again -> rulerOff', await state(`__wc.S.rulerOn`) === false)
+await realClick(`document.getElementById('rulProtractor')`)
+ok('picking Protractor switches the stencil', await state(`__wc.S.rulerMode`) === 'protractor' && await state(`__wc.S.rulerOn`) === true)
+await realClick(`document.getElementById('tbRuler')`)
+ok('protractor pick is remembered when reopened', await state(`document.getElementById('rulProtractor').classList.contains('active')`) === true)
+await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+await sleep(80)
+ok('Escape turns the stencil off', await state(`__wc.S.rulerOn`) === false)
 
 await realClick(`document.getElementById('tbEye')`)
 ok('click tbEye -> view', await state(`__wc.S.tool`) === 'view')
@@ -119,23 +135,38 @@ await realClick(`document.getElementById('tbEye')`)
 ok('click tbEye again -> pen', await state(`__wc.S.tool`) === 'pen')
 
 await realClick(`document.getElementById('tbLasso')`)
-ok('click tbLasso -> lasso', await state(`__wc.S.tool`) === 'lasso')
+ok('click tbLasso -> select chooser opens', await state(`!document.getElementById('selectFlyout').classList.contains('hidden')`))
+await realClick(`document.getElementById('selLasso')`)
+ok('picking Lasso activates select', await state(`__wc.S.tool`) === 'lasso' && await state(`__wc.S.selectMode`) === 'lasso')
+ok('picking a select mode closes the chooser', await state(`document.getElementById('selectFlyout').classList.contains('hidden')`))
 await realClick(`document.getElementById('tbLasso')`)
-ok('click tbLasso again -> pen', await state(`__wc.S.tool`) === 'pen')
+await realClick(`document.getElementById('selClick')`)
+ok('picking Click switches the select mode', await state(`__wc.S.selectMode`) === 'click' && await state(`__wc.S.tool`) === 'lasso')
+await realClick(`document.getElementById('tbLasso')`)
+await realClick(`document.getElementById('selLasso')`)
+ok('select mode goes back to Lasso', await state(`__wc.S.selectMode`) === 'lasso')
 
+// The Eraser card behaves like Select and Shapes: the click opens its chooser
+// with the remembered pick already marked, and choosing a mode applies it at
+// once (turning the eraser on) and closes the chooser.
 await realClick(`document.getElementById('tbEraser')`)
-ok('click tbEraser -> erase', await state(`__wc.S.tool`) === 'erase')
+ok('click tbEraser -> eraser chooser opens', await state(`!document.getElementById('eraserFlyout').classList.contains('hidden')`))
+ok('eraser chooser marks exactly the remembered pick', await state(`(() => {
+  const ids = { stroke: 'erStroke', segment: 'erSegment', sheet: 'erSheet' }
+  const marked = [document.getElementById('erStroke'), document.getElementById('erSegment'), document.getElementById('erSheet')].filter(b => b.classList.contains('active') && b.getAttribute('aria-pressed') === 'true')
+  return marked.length === 1 && marked[0].id === ids[__wc.S.eraserMode]
+})()`) === true)
+await realClick(`document.getElementById('erStroke')`)
+ok('picking Stroke turns the eraser on', await state(`__wc.S.tool`) === 'erase' && await state(`__wc.S.eraserMode`) === 'stroke')
+ok('picking an eraser mode closes the chooser', await state(`document.getElementById('eraserFlyout').classList.contains('hidden')`))
 ok('tbEraser aria-pressed=true', await state(`document.getElementById('tbEraser').getAttribute('aria-pressed')`) === 'true')
-await realClick(`document.getElementById('tbEraser')`)
-ok('click tbEraser again -> pen', await state(`__wc.S.tool`) === 'pen')
 
 // ---------- 2. flyouts via their real controls ----------
-const eraserCaret = `document.querySelector('#topbar .tb-modebtn[data-fly="eraserFlyout"]')`
 const shapeButton = `document.getElementById('tbObject')`
-await realClick(eraserCaret)
-ok('eraser caret -> flyout opens', await state(`!document.getElementById('eraserFlyout').classList.contains('hidden')`))
-await realClick(eraserCaret)
-ok('eraser caret again -> flyout closes', await state(`document.getElementById('eraserFlyout').classList.contains('hidden')`))
+await realClick(`document.getElementById('tbEraser')`)
+ok('click tbEraser -> chooser opens', await state(`!document.getElementById('eraserFlyout').classList.contains('hidden')`))
+await realClick(`document.getElementById('tbEraser')`)
+ok('click tbEraser again -> chooser closes', await state(`document.getElementById('eraserFlyout').classList.contains('hidden')`))
 
 await realClick(shapeButton)
 ok('shape control -> flyout opens', await state(`!document.getElementById('shapeFlyout').classList.contains('hidden')`))
@@ -166,15 +197,21 @@ await realClick(`document.getElementById('tbPenCurrent')`)
 ok('current pen re-click -> flyout closes', await state(`document.getElementById('penFlyout').classList.contains('hidden')`))
 
 // ---------- 3. flyout options ----------
-await realClick(eraserCaret)
+// choosing a mode applies it and closes the card; the S/M/L chips adjust the
+// segment size inside the card and keep it open so sizes can be compared
+await realClick(`document.getElementById('tbEraser')`)
 await realClick(`document.getElementById('erSegment')`)
-ok('eraser option: segment applies', await state(`__wc.S.eraserMode`) === 'segment')
+ok('eraser option: segment applies', await state(`__wc.S.eraserMode`) === 'segment' && await state(`__wc.S.tool`) === 'erase')
+ok('picking a segment closes the chooser', await state(`document.getElementById('eraserFlyout').classList.contains('hidden')`))
+await realClick(`document.getElementById('tbEraser')`)
+ok('reopening shows the segment size row', await state(`!document.getElementById('erSizeRow').classList.contains('hidden')`))
 await realClick(`document.getElementById('erSizes').children[2]`)
 ok('eraser size L -> 10mm', await state(`__wc.S.eraserMM`) === 10, await state(`__wc.S.eraserMM`))
 await realClick(`document.getElementById('erSizes').children[0]`)
 ok('eraser size S -> 2mm', await state(`__wc.S.eraserMM`) === 2, await state(`__wc.S.eraserMM`))
 await realClick(`document.getElementById('erSheet')`)
 ok('eraser option: sheet applies', await state(`__wc.S.eraserMode`) === 'sheet')
+await realClick(`document.getElementById('tbEraser')`)
 await realClick(`document.getElementById('erStroke')`)
 ok('eraser option: stroke applies', await state(`__wc.S.eraserMode`) === 'stroke')
 await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
@@ -182,21 +219,106 @@ await sleep(80)
 
 await realClick(shapeButton)
 const nBeforeShape = await strokesOf()
-await realClick(`document.getElementById('shapeGrid').children[0]`)
+await realClick(`document.querySelector('#shapeGrid .sh-card')`)
 ok('shape card activates shape tool', await state(`__wc.S.tool`) === 'shape', 'tool=' + await state(`__wc.S.tool`))
 await dragDoc(700, 850, 1150, 980)
 ok('shape drag creates one vector shape', await strokesOf() === nBeforeShape + 1, `before=${nBeforeShape} after=${await strokesOf()}`)
 ok('created stroke is the selected shape kind', await state(`__wc.S.pages[__wc.S.currentPage].strokes.at(-1)?.shape?.kind`) === 'line', 'kind=' + await state(`__wc.S.pages[__wc.S.currentPage].strokes.at(-1)?.shape?.kind`))
+// a plain tap places a default-size shape instead of only hinting
+const nBeforeTap = await strokesOf()
+{
+  const cx = Math.round(geo.left + 900 * geo.zoom), cy = Math.round(geo.top + 1500 * geo.zoom)
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy, button: 'none' })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', buttons: 1, clickCount: 1 })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(160)
+}
+ok('shape tap places one default-size shape', await strokesOf() === nBeforeTap + 1, `before=${nBeforeTap} after=${await strokesOf()}`)
+const tapSpan = await state(`(() => { const st = __wc.S.pages[__wc.S.currentPage].strokes.at(-1); if (!st || st.type !== 'shape') return null; const xs = st.pts.map(p => p.x); return Math.round(Math.max(...xs) - Math.min(...xs)) })()`)
+ok('tap-placed shape has a readable default size', tapSpan >= 100 && tapSpan <= 400, 'span=' + tapSpan)
 await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
 await sleep(80)
 ok('Escape returns to the pen after shape drag', await state(`__wc.S.tool`) === 'pen', 'tool=' + await state(`__wc.S.tool`))
 
-// text tool button inside the shapes flyout
-await realClick(shapeButton)
-await realClick(`document.getElementById('btnTextTool')`)
-ok('text tool button -> tool=text', await state(`__wc.S.tool`) === 'text', 'tool=' + await state(`__wc.S.tool`))
-await realClick(`document.getElementById('tbPenCurrent')`)
-ok('current pen returns to pen tool', await state(`__wc.S.tool`) === 'pen')
+// text tool: toolbar button, tap-to-place, type, commit with Enter
+await realClick(`document.getElementById('tbText')`)
+ok('toolbar Text button -> tool=text', await state(`__wc.S.tool`) === 'text', 'tool=' + await state(`__wc.S.tool`))
+const textsOf = () => state(`__wc.S.pages[__wc.S.currentPage].texts.length`) || 0
+const nTexts0 = await textsOf()
+{
+  const cx = Math.round(geo.left + 800 * geo.zoom), cy = Math.round(geo.top + 1200 * geo.zoom)
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy, button: 'none' })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', buttons: 1, clickCount: 1 })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(120)
+}
+ok('text tap opens the in-place editor', await state(`!!document.getElementById('textEdit')`))
+await send(ws, 'Input.insertText', { text: 'Audit text' })
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+await sleep(160)
+ok('Enter commits the typed text box', await textsOf() === nTexts0 + 1, `${nTexts0} -> ${await textsOf()}`)
+const textX0 = await state(`__wc.S.pages[__wc.S.currentPage].texts.at(-1).x`)
+ok('typed text kept on the box', await state(`__wc.S.pages[__wc.S.currentPage].texts.at(-1).txt`) === 'Audit text')
+
+// select the text box with the real select chooser + click mode, then move it
+await realClick(`document.getElementById('tbLasso')`)
+await realClick(`document.getElementById('selClick')`)
+ok('Click mode applies from the select chooser', await state(`__wc.S.selectMode`) === 'click' && await state(`__wc.S.tool`) === 'lasso')
+{
+  const cx = Math.round(geo.left + 830 * geo.zoom), cy = Math.round(geo.top + 1215 * geo.zoom)
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy, button: 'none' })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', buttons: 1, clickCount: 1 })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(140)
+}
+ok('click selects the text box', await state(`(__wc.S.selection && __wc.S.selection.texts.length) || 0`) === 1, JSON.stringify(await state(`__wc.S.selection && { s: __wc.S.selection.strokes.length, t: __wc.S.selection.texts.length }`)))
+ok('selection bar appears for text', await state(`!!document.getElementById('selBar')`))
+await dragDoc(830, 1215, 1190, 1455)
+const textX1 = await state(`__wc.S.pages[__wc.S.currentPage].texts.at(-1).x`)
+ok('dragging inside the box moves the text', Math.abs(textX1 - (textX0 + 360)) < 40, `x ${textX0} -> ${textX1}`)
+// copy / paste through the real chords
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67, modifiers: 2 })
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67, modifiers: 2 })
+await sleep(120)
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: 2 })
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: 2 })
+await sleep(200)
+ok('Ctrl+C / Ctrl+V copies the text box', await textsOf() === nTexts0 + 2, 'texts=' + await textsOf())
+// Delete removes the pasted copy
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 })
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 })
+await sleep(200)
+ok('Delete removes the selected text box', await textsOf() === nTexts0 + 1, 'texts=' + await textsOf())
+// double-click re-opens the box for editing (it moved with the drag above)
+const tbPos = await state(`(() => { const t = __wc.S.pages[__wc.S.currentPage].texts.at(-1); return { x: t.x, y: t.y } })()`)
+{
+  const cx = Math.round(geo.left + (tbPos.x + 20) * geo.zoom), cy = Math.round(geo.top + (tbPos.y + 30) * geo.zoom)
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: cx, y: cy, button: 'none' })
+  for (const n of [1, 2]) {
+    await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: cx, y: cy, button: 'left', buttons: 1, clickCount: n })
+    await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: cx, y: cy, button: 'left', buttons: 0, clickCount: n })
+  }
+  await sleep(220)
+}
+ok('double-click opens the text for editing', await state(`!!document.getElementById('textEdit')`) && await state(`document.getElementById('textEdit').value === 'Audit text'`))
+await send(ws, 'Input.insertText', { text: ' (edited)' })
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+await send(ws, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+await sleep(200)
+ok('edited text saves back to the page', await state(`__wc.S.pages[__wc.S.currentPage].texts.at(-1).txt`) === 'Audit text (edited)')
+await evalJs(ws, `document.getElementById('btnUndo').click()`)
+await sleep(120)
+ok('undo restores the text before the edit', await state(`__wc.S.pages[__wc.S.currentPage].texts.at(-1).txt`) === 'Audit text', 'txt=' + await state(`__wc.S.pages[__wc.S.currentPage].texts.at(-1).txt`))
+await evalJs(ws, `document.getElementById('btnRedo').click()`)
+await sleep(120)
+ok('redo re-applies the edit', await state(`__wc.S.pages[__wc.S.currentPage].texts.at(-1).txt`) === 'Audit text (edited)')
+// back to the pen for the remaining sections
+await realClick(`document.getElementById('tbText')`)
+if (await state(`__wc.S.tool`) !== 'pen') await realClick(`document.getElementById('tbPenCurrent')`)
+await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+await sleep(80)
+ok('current pen returns to pen tool', await state(`__wc.S.tool`) === 'pen', 'tool=' + await state(`__wc.S.tool`))
 
 // quick colour swatches in the topbar (hidden below 1360px)
 const swatch = await evalJs(ws, `(() => { const s = document.querySelector('#tbQuick .tb-swatch[data-color]'); if (!s || !s.getBoundingClientRect().width) return null; return { color: s.dataset.color, i: [...s.parentElement.children].indexOf(s) } })()`)
@@ -238,24 +360,24 @@ ok('page rail switches page', await state(`__wc.S.currentPage`) === 0)
 
 // ---------- 6. direct save + save/export overflow ----------
 await realClick(`document.getElementById('btnSave')`)
-const saved = await waitFor(`document.getElementById('saveState').textContent === 'saved'`, 6000)
+const saved = await waitFor(`document.getElementById('saveState').textContent.startsWith('saved')`, 6000)
 ok('btnSave saves directly', saved, 'text=' + await state(`document.getElementById('saveState').textContent`))
 ok('direct save never opens note details', await state(`document.getElementById('saveFlyout').classList.contains('hidden')`))
 ok('page is clean after direct save', await state(`__wc.S.pages[__wc.S.currentPage].dirty`) === false)
 
 await realClick(`document.getElementById('btnSaveMore')`)
 ok('btnSaveMore -> save/export menu opens', await state(`!document.getElementById('ctxMenu').classList.contains('hidden')`))
-ok('save/export menu offers one Save', await state(`[...document.querySelectorAll('#ctxMenu button')].filter(b => /^Save\\b/.test(b.textContent)).length`) === 1)
-ok('save/export menu has no second wcanvas save', await state(`[...document.querySelectorAll('#ctxMenu button')].some(b => /wcanvas/i.test(b.textContent))`) === false)
+ok('save/export menu offers exactly one library Save', await state(`[...document.querySelectorAll('#ctxMenu button')].filter(b => /^Save all changes/.test(b.textContent)).length`) === 1)
+ok('the .wcanvas copy is presented as an export, not a second Save', await state(`[...document.querySelectorAll('#ctxMenu button')].filter(b => /wcanvas/i.test(b.textContent) && /editable copy/i.test(b.textContent)).length`) === 1)
 ok('save/export menu offers PDF export', await state(`[...document.querySelectorAll('#ctxMenu button')].some(b => b.textContent.includes('PDF'))`))
 ok('save/export menu offers note details', await state(`[...document.querySelectorAll('#ctxMenu button')].some(b => b.textContent.includes('Note details'))`))
 await realClick(`[...document.querySelectorAll('#ctxMenu button')].find(b => b.textContent.includes('Note details'))`)
 ok('Note details opens its own dialog', await state(`!document.getElementById('saveFlyout').classList.contains('hidden')`))
 const hintText = await state(`document.querySelector('#saveFlyout .fs-hint').textContent`)
-ok('note details explains the library is the editable save', /editable note/i.test(hintText || ''), 'hint=' + hintText)
+ok('note details explains the library save needs no dialog', /no file dialog/i.test(hintText || '') && /editable copy/i.test(hintText || ''), 'hint=' + hintText)
 ok('note details prefills note title', await state(`document.getElementById('saveTitle').value`) === await state(`__wc.S.note.name`), 'title=' + await state(`document.getElementById('saveTitle').value`))
 await realClick(`document.getElementById('btnSaveConfirm')`)
-const detailsSaved = await waitFor(`document.getElementById('saveState').textContent === 'saved'`, 6000)
+const detailsSaved = await waitFor(`document.getElementById('saveState').textContent.startsWith('saved')`, 6000)
 ok('Note details apply reports saved', detailsSaved, 'text=' + await state(`document.getElementById('saveState').textContent`))
 ok('note details closes after apply', await state(`document.getElementById('saveFlyout').classList.contains('hidden')`))
 
@@ -331,14 +453,99 @@ await realClick(`document.getElementById('ppThumbs').children[${Math.max(0, tpls
 ok('paper template restored', await state(`__wc.S.pages[__wc.S.currentPage].paper.template`) === tplBefore)
 await realClick(`document.getElementById('btnPaper')`)
 
-// ---------- 9. ruler rotate buttons ----------
+// ---------- 9. ruler: rotate buttons, drag handle, and near-the-edge snap only ----------
+await evalJs(ws, `(() => { __wc.ruler.angle = 0; __wc.ruler.fx = 0.5; __wc.ruler.fy = 0.35; return true })()`)
 await realClick(`document.getElementById('tbRuler')`)
+await realClick(`document.getElementById('rulRuler')`)
 ok('ruler control cluster appears', await state(`!!document.getElementById('rulerCtl')`))
 await realClick(`document.getElementById('rulCW')`)
 await realClick(`document.getElementById('rulCW')`)
 await realClick(`document.getElementById('rulCCW')`)
 ok('ruler rotate buttons run cleanly', await state(`!!document.getElementById('rulerCtl')`))
+await evalJs(ws, `(() => { __wc.ruler.angle = 0; return true })()`)
+
+const rulerPivot = await state(`(() => {
+  const inner = document.getElementById('stackInner')
+  const r = inner.getBoundingClientRect()
+  const z = r.width / inner.offsetWidth
+  return { px: __wc.ruler.fx * inner.offsetWidth, py: __wc.ruler.fy * inner.offsetHeight, z, left: r.left, top: r.top }
+})()`)
+const rDoc = (dx, dy) => ({ x: Math.round(rulerPivot.left + (rulerPivot.px + dx) * rulerPivot.z), y: Math.round(rulerPivot.top + (rulerPivot.py + dy) * rulerPivot.z) })
+const rulerDrag = async (a, b) => {
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: a.x, y: a.y, button: 'none' })
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: a.x, y: a.y, button: 'left', buttons: 1, clickCount: 1 })
+  for (let i = 1; i <= 5; i++) {
+    await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(a.x + (b.x - a.x) * i / 5), y: Math.round(a.y + (b.y - a.y) * i / 5), buttons: 1 })
+    await sleep(16)
+  }
+  await send(ws, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: b.x, y: b.y, button: 'left', buttons: 0, clickCount: 1 })
+  await sleep(150)
+}
+
+// far from the stencil: the stroke stays free-hand (it used to snap anywhere)
+const pyDoc = Math.round(rulerPivot.py)
+const nBeforeFree = await strokesOf()
+await rulerDrag(rDoc(-220, 260), rDoc(220, 330))
+const freePts = await state(`(() => { const st = __wc.S.pages[__wc.S.currentPage].strokes.at(-1); return st ? st.pts.map(p => Math.round(p.y - ${pyDoc})) : null })()`)
+ok('stroke away from the ruler stays free-hand', await strokesOf() === nBeforeFree + 1 && freePts && Math.max(...freePts.map(v => Math.abs(v))) > 120, JSON.stringify(freePts))
+
+// starting on the band: every sample rides the line
+const nBeforeSnap = await strokesOf()
+await rulerDrag(rDoc(-320, 0), rDoc(320, 90))
+const snapPts = await state(`(() => { const st = __wc.S.pages[__wc.S.currentPage].strokes.at(-1); return st ? st.pts.map(p => Math.round(p.y - ${pyDoc})) : null })()`)
+ok('stroke started on the ruler rides the line', await strokesOf() === nBeforeSnap + 1 && snapPts && snapPts.every(v => Math.abs(v) <= 1), JSON.stringify(snapPts))
+
+// the far handle rotates the stencil by hand
+const handle = await state(`(() => { const h = __wc.rulerRotateHandle(__wc.S.pages[__wc.S.currentPage]); return h && { hx: h.x, hy: h.y } })()`)
+ok('rotate handle exists on the page', !!handle && handle.hx > 0)
+if (handle) {
+  const from = rDoc(handle.hx - rulerPivot.px, handle.hy - rulerPivot.py)
+  const to = rDoc(420, -420)
+  await rulerDrag(from, to)
+  const angle = await state(`Math.round(__wc.ruler.angle)`)
+  ok('dragging the handle turns the ruler', Math.abs(angle) > 8 && Math.abs(angle) < 60, 'angle=' + angle)
+}
+// ---------- 9b. protractor: strokes that start on the arc ride the circle ----------
+await evalJs(ws, `(() => { __wc.ruler.angle = 0; __wc.ruler.fx = 0.5; __wc.ruler.fy = 0.62; return true })()`)
 await realClick(`document.getElementById('tbRuler')`)
+await realClick(`document.getElementById('rulProtractor')`)
+ok('protractor turns on from its chooser', await state(`__wc.S.rulerMode`) === 'protractor' && await state(`__wc.S.rulerOn`) === true)
+const pGeo = await state(`(() => {
+  const inner = document.getElementById('stackInner')
+  const r = inner.getBoundingClientRect()
+  const z = r.width / inner.offsetWidth
+  const w = inner.offsetWidth, h = inner.offsetHeight
+  const px = __wc.ruler.fx * w, py = __wc.ruler.fy * h
+  const radius = Math.max(220, Math.min(w, h) * __wc.protractor.r)
+  return { px, py, radius, z, left: r.left, top: r.top }
+})()`)
+const pDoc = (x, y) => ({ x: Math.round(pGeo.left + x * pGeo.z), y: Math.round(pGeo.top + y * pGeo.z) })
+// start 8 doc px inside the band at the apex, then sweep along the arc
+const nBeforeArc = await strokesOf()
+await rulerDrag(pDoc(pGeo.px, pGeo.py - pGeo.radius + 8), pDoc(pGeo.px + pGeo.radius * 0.55, pGeo.py - pGeo.radius * 0.8))
+const arcErr = await state(`(() => {
+  const st = __wc.S.pages[__wc.S.currentPage].strokes.at(-1)
+  if (!st || st.type === 'shape') return null
+  return st.pts.map(p => Math.round(Math.hypot(p.x - ${pGeo.px}, p.y - ${pGeo.py}) - ${pGeo.radius}))
+})()`)
+ok('stroke started on the arc rides the circle', await strokesOf() === nBeforeArc + 1 && arcErr && arcErr.every(v => Math.abs(v) <= 2), JSON.stringify(arcErr))
+// a stroke well away from the arc stays free-hand (start left of the pivot:
+// the floating rotate controls sit below-right and swallow a press there)
+const nBeforeFreeP = await strokesOf()
+await rulerDrag(pDoc(pGeo.px - 260, pGeo.py + 60), pDoc(pGeo.px - 520, pGeo.py + 220))
+ok('stroke away from the protractor stays free-hand', await strokesOf() === nBeforeFreeP + 1)
+// the apex handle turns the protractor
+const pHandle = await state(`(() => { const h = __wc.rulerRotateHandle(__wc.S.pages[__wc.S.currentPage]); return h && { x: h.x, y: h.y } })()`)
+ok('protractor rotate handle exists', !!pHandle && pHandle.y < pGeo.py)
+if (pHandle) {
+  await rulerDrag(pDoc(pHandle.x, pHandle.y), pDoc(pGeo.px + pGeo.radius * 0.8, pGeo.py - pGeo.radius * 0.2))
+  const pAngle = await state(`Math.round(__wc.ruler.angle)`)
+  ok('dragging the protractor handle turns it', Math.abs(pAngle) > 8 && Math.abs(pAngle) < 100, 'angle=' + pAngle)
+}
+await evalJs(ws, `(() => { __wc.ruler.angle = 0; __wc.ruler.fx = 0.5; __wc.ruler.fy = 0.55; return true })()`)
+await evalJs(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+await sleep(80)
+ok('ruler turns off cleanly', await state(`__wc.S.rulerOn`) === false)
 
 // ---------- 10. rename dialog (open + cancel) ----------
 const nameBefore = await state(`__wc.S.note.name`)
