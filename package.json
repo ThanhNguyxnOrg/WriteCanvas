@@ -42,7 +42,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "WriteCanvas.Setup.${version}.${ext}"
     },
     "mac": {
       "target": "dmg",
