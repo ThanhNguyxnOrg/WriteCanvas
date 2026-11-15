@@ -1,17 +1,22 @@
-// MSIX is not in any published electron-builder yet (26.18.0 rejects the config
-// key), but AppX is — and so is the `toolsets` option that selects a modern
-// winCodeSign bundle. The bundle that 25.x downloads carries a 2019 makeappx,
-// which rejects the manifest electron-builder generates ("package manifest is
-// not valid"); electron-builder 26 with winCodeSign 1.1.0 carries a current one.
+// electron-builder 25.x remains pinned for the normal Windows, macOS and Linux
+// release targets. The Store package uses electron-builder 26.18.0 because its
+// modern winCodeSign toolset includes the current MakeAppx tooling required by
+// the Store manifest.
 //
-// So the Store build uses 26 through npx, and the release pipeline keeps the
-// pinned 25.x for Windows NSIS, macOS and Linux.
+// The Microsoft Store Developer CLI's MSIX publisher expects a .msix package.
+// The workflow keeps the original .appx for inspection and gives the same
+// package container a .msix filename before submission. The Store MSIX path
+// requires Windows 10 build 17763 (version 1809) or newer.
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 const identity = JSON.parse(readFileSync(new URL('../store/identity.json', import.meta.url), 'utf8'))
 
-const overrides = Object.entries(identity).map(([key, value]) => `-c.appx.${key}=${value}`)
+const overrides = [
+  ...Object.entries(identity).map(([key, value]) => `-c.appx.${key}=${value}`),
+  '-c.appx.minVersion=10.0.17763.0',
+  '-c.appx.maxVersionTested=10.0.17763.0',
+]
 
 const args = [
   '--yes',
