@@ -11,6 +11,15 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-15
+
+### Fixed
+
+- The Microsoft Store submission targets Windows 10 version 1809 and later, and
+  the workflow validates the release tag and the packaged version before it
+  uploads anything, so a bad tag fails the workflow instead of reaching Partner
+  Center.
+
 ## [1.2.0] - 2026-11-15
 
 ### Added
@@ -213,18 +222,10 @@ whose installers were the first ones that ran; those builds have been withdrawn.
   `WriteCanvasHost` bridge in `preload.js`; every library path from the renderer
   is resolved and validated in the main process before it is used.
 
-[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.2.1
 [1.2.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.2.0
 [1.1.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.0.0
-
-## [1.2.1] - 2026-11-15
-
-### Bug Fixes and Performance
-
-- target Windows 10 1809 for MSIX ([3271a81](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/3271a81806a50f7fa503ffdc53e13b8a6dbbc62b))
-- enforce MSIX Windows 10 1809 minimum ([c108813](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/c1088138eba63b55c27795170b4b8e21ef297b78))
-- correct stable release tag regex ([a86d259](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/a86d25967fac5776d11336a9fce52d2902429e35))
-- complete release tag validation expression ([ad35895](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/ad358957fa8a2a7138c9c6bb626872607b85ac86))
 
