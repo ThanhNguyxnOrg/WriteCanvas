@@ -65,10 +65,10 @@
     "gifenc": "^1.0.3"
   },
   "devDependencies": {
-    "electron": "^38.0.0",
-    "electron-builder": "^25.1.8"
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0"
   },
   "allowScripts": {
-    "electron@38.8.6": true
+    "electron@45.3.2": true
   }
 }

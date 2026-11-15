@@ -8,7 +8,7 @@
 [![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-6C63FF?logo=github)](https://github.com/ThanhNguyxnOrg/WriteCanvas/security/code-scanning)
 [![Release](https://img.shields.io/github/v/release/ThanhNguyxnOrg/WriteCanvas?sort=semver&display_name=tag)](https://github.com/ThanhNguyxnOrg/WriteCanvas/releases)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Electron](https://img.shields.io/badge/electron-38-47848F?logo=electron&logoColor=white)](package.json)
+[![Electron](https://img.shields.io/badge/electron-45-47848F?logo=electron&logoColor=white)](package.json)
 [![Node](https://img.shields.io/badge/node-22%20%7C%2024-339933?logo=nodedotjs&logoColor=white)](package.json)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4B5563)](#platform-support)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)

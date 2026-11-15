@@ -4,12 +4,12 @@
 
 | Requirement | Notes |
 |---|---|
-| Node.js 22 or 24 | 22 matches the Node embedded in the pinned Electron major; 24 matches what CI also tests against. |
+| Node.js 22 or 24 | 24 matches the Node embedded in the pinned Electron major, which is what the main process runs; 22 is the oldest LTS the tooling is tested against. |
 | npm 10 or newer | Uses the committed `package-lock.json`. |
 | Windows, macOS or Linux | All three are supported for development, not just for running. |
 
-Electron 38 and `electron-builder` are dev dependencies, so `npm ci` is the only
-install step. There is no bundler, no transpiler and no build step for the
+Electron 45 and `electron-builder` 26 are dev dependencies, so `npm ci` is the
+only install step. There is no bundler, no transpiler and no build step for the
 renderer: `src/index.html` loads the ES modules in `src/js/` directly.
 
 ```bash

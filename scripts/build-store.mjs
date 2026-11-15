@@ -1,7 +1,7 @@
-// electron-builder 25.x remains pinned for the normal Windows, macOS and Linux
-// release targets. The Store package uses electron-builder 26.18.0 because its
-// modern winCodeSign toolset includes the current MakeAppx tooling required by
-// the Store manifest.
+// The repository pins electron-builder 26, whose winCodeSign toolset includes
+// the MakeAppx tooling the Store manifest requires. The version is named
+// explicitly so the Store package keeps building with the reviewed toolset even
+// if the local dependency spec moves.
 //
 // The Microsoft Store Developer CLI's MSIX publisher expects a .msix package.
 // The workflow keeps the original .appx for inspection and gives the same
