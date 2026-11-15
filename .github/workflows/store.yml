@@ -40,7 +40,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          if ($env:RELEASE_TAG -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+          if ($env:RELEASE_TAG -notmatch '^v(?<version>\\d+\\.\\d+\\.\\d+)$') {
             throw "Microsoft Store submissions require a stable vX.Y.Z release tag. Received: $env:RELEASE_TAG"
           }
 
@@ -85,6 +85,22 @@ jobs:
           }
           Write-Host "Preparing WriteCanvas $packageVersion for Microsoft Store."
 
+      # The v1.2.0 tag predates this setting, so enforce it in the checked-out
+      # release source as well as storing it in store/identity.json for future tags.
+      - name: Enforce Microsoft Store MSIX minimum Windows version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $identityPath = Join-Path $env:GITHUB_WORKSPACE 'store/identity.json'
+          if (-not (Test-Path -LiteralPath $identityPath)) {
+            throw "Store identity configuration not found: $identityPath"
+          }
+
+          $identity = Get-Content -LiteralPath $identityPath -Raw | ConvertFrom-Json
+          $identity | Add-Member -MemberType NoteProperty -Name minVersion -Value '10.0.17763.0' -Force
+          $identity | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $identityPath -Encoding utf8NoBOM
+          Write-Host "Enforced Store package MinVersion: $($identity.minVersion)"
+
       - name: Build Store AppX
         run: npm run dist:store
 
@@ -125,6 +141,19 @@ jobs:
           }
           if (-not $identity.Version.StartsWith("$expectedVersion.")) {
             throw "Package version '$($identity.Version)' does not match release '$expectedVersion'."
+          }
+
+          $targetFamilies = @($manifest.Package.Dependencies.TargetDeviceFamily)
+          if ($targetFamilies.Count -eq 0) {
+            throw 'AppxManifest.xml does not declare a TargetDeviceFamily.'
+          }
+          $requiredMinVersion = [version]'10.0.17763.0'
+          foreach ($family in $targetFamilies) {
+            $actualMinVersion = [version]$family.MinVersion
+            if ($actualMinVersion -lt $requiredMinVersion) {
+              throw "Package MinVersion '$actualMinVersion' is below required '$requiredMinVersion' for Microsoft Store MSIX submissions."
+            }
+            Write-Host "Target device family $($family.Name): MinVersion $actualMinVersion"
           }
 
           # AppX/MSIX share the same package container; the Store CLI publisher
