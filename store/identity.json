@@ -3,5 +3,6 @@
   "identityName": "ThanhNguyxn.WriteCanvas",
   "publisher": "CN=8328F2C5-2515-47AB-888E-BB7C866567C2",
   "publisherDisplayName": "ThanhNguyxn",
-  "displayName": "WriteCanvas"
+  "displayName": "WriteCanvas",
+  "minVersion": "10.0.17763.0"
 }
