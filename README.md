@@ -102,8 +102,8 @@ below is the whole set; each page is self-contained.
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Set up a working copy, use the dev scripts, and keep your real library out of harm's way. |
 | [docs/TESTING.md](docs/TESTING.md) | Run and extend the unit suite, and exercise the app without touching real notes. |
 | [docs/PLATFORMS.md](docs/PLATFORMS.md) | Check per-OS behaviour, packaging targets and the full shortcut table. |
-| [docs/AUTOMATION.md](docs/AUTOMATION.md) | Trace what CI, Dependabot, CodeQL and ThanhNguyxnAgent do, and which pull requests they will not touch. |
-| [docs/RELEASING.md](docs/RELEASING.md) | Cut a release, and understand how a `release:` commit becomes a tag and a GitHub Release. |
+| [docs/AUTOMATION.md](docs/AUTOMATION.md) | Trace the central Agent policy, the local workflow adapters, and the changes that always need a person. |
+| [docs/RELEASING.md](docs/RELEASING.md) | Prepare a version, and follow it through the central tag, build and published release. |
 | [PRIVACY.md](PRIVACY.md) | Read what the app processes, and why nothing leaves the machine. |
 | [CHANGELOG.md](CHANGELOG.md) | See what shipped in each version. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Send a change: branch, commit style, review expectations, test requirements. |

@@ -21,12 +21,11 @@ can afford to run it on Windows, macOS and Linux for every push.
 | `tests/png-toolkit.test.mjs` | The note codec: chunk round trip, agreement with the main-process facade on template paths and orientations, legacy repair, the legacy raster fallback, read options, and malformed input (a truncated chunk must be rejected, not silently accepted). |
 | `tests/shortcuts.test.mjs` | The platform chord labels: all three targets named, `⌘` on macOS versus `Ctrl` elsewhere, the platform redo chord, page navigation on Control everywhere, and ARIA modifier names instead of glyphs. |
 | `tests/library-pages.test.mjs` | Library page operations: duplicating, deleting and the resulting index and page files. |
-| `tests/auto-merge.test.mjs` | The auto-merge policy: which pull requests merge, which are handed to a human, and which are skipped. |
-| `tests/release-notes.test.mjs` | Release subject parsing, changelog section extraction, and a release-readiness check that `CHANGELOG.md` has a section for the version in `package.json`. |
-| `tests/workflows.test.mjs` | Workflow invariants: permissions, action pinning, the Agent token, and the ban on `pull_request_target`. |
+| `tests/release-notes.test.mjs` | A prepared release: the `release: vX.Y.Z` subject parser, changelog section extraction, and a check that `CHANGELOG.md` has a section for the version in `package.json`. |
+| `tests/workflows.test.mjs` | Workflow invariants: permissions, action pinning (with the one managed central relay called out), the Agent token, and the restriction on `pull_request_target`. |
 | `tests/package.test.mjs` | The packaged build: every root file the main process opens is in `build.files`, the renderer module marker ships, all three icons exist at size, and the Store identity and AppX config are valid. |
 
-Current size, for orientation: 79 tests across the nine files above. The runner
+Current size, for orientation: 67 tests across the eight files above. The runner
 reports 11 suites because four files group their cases in `describe` blocks.
 
 ## Adding a unit test
@@ -89,6 +88,6 @@ file was untouched by the run.
 
 `tests/release-notes.test.mjs` ties the version in `package.json` to the changelog:
 if you bump the version without writing the section, `npm test` fails. That guard
-exists because the publish workflow reads the same section and will refuse to
-release without it — better to find out locally. See
-[RELEASING.md](RELEASING.md).
+exists because the central release controller uses the same section as the
+release body and will not publish a tag without it — better to find out locally.
+See [RELEASING.md](RELEASING.md).

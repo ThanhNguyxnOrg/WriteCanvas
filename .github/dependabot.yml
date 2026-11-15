@@ -7,10 +7,11 @@
 # no `labels:` key appears below: asking Dependabot to label its own pull requests
 # annotated them with a bot identity and failed whenever a label was missing.
 #
-# Pull requests opened here run the normal CI. Patch and minor bumps are then
-# merged by ThanhNguyxnAgent (see .github/workflows/auto-merge.yml); a major
-# bump is treated as an important change and is assigned to a human owner
-# instead, because a major release can break the ink/file APIs the app relies on.
+# Pull requests opened here run the normal CI. A low-risk patch or minor update
+# can enter ThanhNguyxnAgent's guarded auto-merge path, controlled by the central
+# ci-policy.json. A major or security-sensitive bump is routed to a human owner,
+# because a major release can break the ink/file APIs the app relies on. A
+# workflow change is always read by a person, even when it is only an action bump.
 version: 2
 updates:
   - package-ecosystem: npm

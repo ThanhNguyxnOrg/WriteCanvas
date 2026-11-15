@@ -4,9 +4,9 @@ Every release of WriteCanvas is described here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the file layout of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-The publish workflow reads this file: a push to `master` whose subject is
-`release: vX.Y.Z` publishes the section `## [X.Y.Z]` below, so an entry has to be
-written before the release commit — see
+The central release controller reads this file: it writes the `## [X.Y.Z]`
+section for an automatic release, or uses the section a maintainer prepared for
+a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 [docs/RELEASING.md](docs/RELEASING.md).
 
 ## [Unreleased]
@@ -25,7 +25,6 @@ written before the release commit — see
   run with stills for the inactive sheets, so the end of page 1 stays visible
   while page 2 comes up, the way the original app scrolls. Only the bottom of
   the last sheet still arms the pull hint that appends a new page.
-
 - **Text in the selection** — text boxes now behave like ink in the Select
   tool: click or lasso them, drag to move, copy/cut/paste them together with
   strokes, duplicate and delete them (button or `Del`), and edit in place by

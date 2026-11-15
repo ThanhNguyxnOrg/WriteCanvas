@@ -1,5 +1,7 @@
-// Tests for .github/scripts/release-notes.mjs — the code path that decides
-// whether a push publishes a version and what the release notes say.
+// Preflight for a prepared release: the `release: vX.Y.Z` subject parser, the
+// changelog section extractor, and a check that this repository has a section
+// for its current package version. The central release controller owns the real
+// tag and release; these conventions are what a prepared release must match.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'

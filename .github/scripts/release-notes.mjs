@@ -1,12 +1,9 @@
-// Release helpers for .github/workflows/release.yml.
+// Local release preflight, used by tests/release-notes.test.mjs.
 //
-// A push to master whose subject is `release: v1.2.0` publishes that version,
-// and the notes come from the matching section of CHANGELOG.md. Nothing is
-// generated from commit subjects: the changelog is the source of truth, so a
-// release without a changelog entry fails instead of publishing empty notes.
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
-
+// The organization's central release controller owns version bumps, tags and
+// release notes. These helpers let the test suite check the same conventions
+// before a prepared `release: vX.Y.Z` commit is pushed: the subject must match,
+// and the version must have a changelog section to use as the release body.
 const VERSION_RE = /^release:\s*v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)$/
 
 export function parseVersion(message) {
@@ -26,54 +23,4 @@ export function changelogSection(markdown, version) {
   const end = rest.findIndex(line => /^##\s/.test(line))
   const body = (end === -1 ? rest : rest.slice(0, end)).join('\n').trim()
   return body || null
-}
-
-function setOutput(key, value) {
-  const file = process.env.GITHUB_OUTPUT
-  if (file) appendFileSync(file, `${key}=${value}\n`)
-  console.log(`${key}=${value}`)
-}
-
-function resolve() {
-  const fromInput = (process.env.INPUT_VERSION || '').trim().replace(/^v/, '')
-  const version = fromInput || parseVersion(process.env.COMMIT_MESSAGE)
-  if (!version) {
-    setOutput('should_release', 'false')
-    console.log('::notice::this push is not a release commit (expected a "release: vX.Y.Z" subject)')
-    return
-  }
-  setOutput('should_release', 'true')
-  setOutput('version', version)
-}
-
-function notes() {
-  const version = (process.env.VERSION || process.argv[3] || '').trim()
-  if (!version) throw new Error('no version given to the notes step')
-
-  const changelog = readFileSync('CHANGELOG.md', 'utf8')
-  const body = changelogSection(changelog, version)
-  if (!body) {
-    throw new Error(`CHANGELOG.md has no "## [${version}]" section; add the entry before releasing`)
-  }
-
-  const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
-  if (manifest.version !== version) {
-    console.log(`::warning::package.json says ${manifest.version} but the release commit says ${version}`)
-  }
-
-  const out = `${process.env.RUNNER_TEMP || '.'}/release-notes.md`
-  writeFileSync(out, `${body}\n`)
-  setOutput('notes_file', out)
-  console.log(`notes written to ${out}`)
-}
-
-// Guarded so tests can import parseVersion()/changelogSection() safely.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const mode = process.argv[2]
-  if (mode === 'resolve') resolve()
-  else if (mode === 'notes') notes()
-  else {
-    console.error('usage: release-notes.mjs resolve | notes')
-    process.exit(2)
-  }
 }

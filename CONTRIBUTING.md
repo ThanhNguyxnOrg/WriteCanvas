@@ -41,8 +41,9 @@ fix(pages): keep the stroke on the page it started on
 docs(format): describe the sRST chunk
 ```
 
-- Branch from `master`. `master` is the only long-lived branch, and it is what CI
-  and the release workflow watch.
+- Branch from `master`. `master` is the only long-lived branch. CI watches it,
+  and the central release controller reads every merge when it classifies the
+  next version.
 - One logical change per pull request. A refactor and a behaviour change in the
   same pull request cannot be reviewed or reverted independently.
 - Scopes in use: `editor`, `ink`, `paper`, `pages`, `library`, `save`, `export`,
@@ -67,12 +68,15 @@ short:
 
 ## How review works
 
-- CI has to pass before anything merges.
-- A pull request that touches `src/` and nothing sensitive is merged
-  automatically once CI is green, as long as it carries no blocking label.
-- A pull request that touches `.github/`, `main/` or `preload.js`, carries a
-  blocking label, or is a major dependency bump is assigned to a maintainer and
-  waits for a person. The rule table is in
+- CI has to pass before anything merges. The exact required checks are declared
+  once, in the organization's central `ci-policy.json`.
+- ThanhNguyxnAgent classifies every non-draft pull request from its title,
+  changed files and required checks. A low-risk Dependabot patch or minor update
+  can enter the guarded auto-merge path; every other pull request waits for a
+  person to review and merge it.
+- A change to `.github/`, `main/`, `preload.js`, a major or security-sensitive
+  dependency update, or anything else the policy marks risky is labelled
+  `needs-review` and routed to a maintainer. The rule table is in
   [docs/AUTOMATION.md](docs/AUTOMATION.md).
 - If you are unsure whether your change counts as sensitive, say so in the pull
   request and it will be treated as if it were.

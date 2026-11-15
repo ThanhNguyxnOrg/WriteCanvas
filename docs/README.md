@@ -24,8 +24,8 @@ root [README](../README.md) is the short version and this folder goes deeper.
 
 | Document | Contents |
 |---|---|
-| [AUTOMATION.md](AUTOMATION.md) | Every workflow, the secrets they use, the auto-merge policy, and the pull requests ThanhNguyxnAgent deliberately refuses to merge. |
-| [RELEASING.md](RELEASING.md) | Turn a `release: vX.Y.Z` commit into a tag and a GitHub Release, and how the changelog is read. |
+| [AUTOMATION.md](AUTOMATION.md) | Trace the central Agent control plane, the local workflow adapters, the required checks, and the changes that always need a person. |
+| [RELEASING.md](RELEASING.md) | Prepare a version, and follow how the central controller turns it into a tag, a build and a published GitHub Release. |
 | [SECURITY.md](../SECURITY.md) | Private reporting channels and what is considered in scope. |
 | [CHANGELOG.md](../CHANGELOG.md) | The released history, which is also the source of the release notes. |
 

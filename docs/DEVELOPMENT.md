@@ -94,7 +94,7 @@ do not close a window you did not open.
 | `main/` is CommonJS with `'use strict'` | It is loaded by Electron's main process, which is not an ESM host here. |
 | `src/js/` is ES modules | Loaded directly by the browser context; no bundler exists. |
 | No new runtime dependency without a reason | The app ships `gifenc` only. A dependency is a supply-chain and packaging cost on three platforms. |
-| Pure logic lives in its own module | So it can be tested in `tests/` without Electron. `release-notes.mjs` and `auto-merge.mjs` in `.github/scripts/` follow the same rule. |
+| Pure logic lives in its own module | So it can be tested in `tests/` without Electron. `release-notes.mjs` in `.github/scripts/` follows the same rule. |
 | One codec, one conversion | Chunk framing belongs to `src/js/png-toolkit.js`; millimetres to `src/js/paper.js`'s `docMM()`. Duplicate either and the two will drift. |
 | Comments explain why | A comment that restates the code is deleted in review. Hidden constraints, platform workarounds and invariants are the ones worth writing. |
 | Linux is never the fallback branch | Platform behaviour is a list of three, not "Windows and anything else". |
@@ -117,7 +117,8 @@ Scopes in use: `editor`, `ink`, `paper`, `pages`, `library`, `save`, `export`,
 - Branch from `master` and open a pull request; `master` is the only long-lived
   branch.
 - CI has to pass before anything merges. See [AUTOMATION.md](AUTOMATION.md) for
-  which pull requests merge without a human and which always wait.
+  how the Agent routes a pull request, the exact required checks, and the narrow
+  Dependabot path that can merge without a person.
 - Add a `CHANGELOG.md` entry under `## [Unreleased]` when a change is
   user-visible. The release process reads that file, and `npm test` fails if the
   current version has no section.
