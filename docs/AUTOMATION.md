@@ -40,17 +40,18 @@ from one GitHub App, so the pull request and the Release page record
 |---|---|
 | App slug | `thanhnguyxnagent` |
 | App ID | `4125740`, installed on the `ThanhNguyxnOrg` organisation |
-| Organisation secrets | `BOT_APP_ID`, `BOT_PRIVATE_KEY` |
-| Secret visibility | **Public repositories** only — see the warning below |
+| Organisation variable | `BOT_APP_ID` — the App's numeric ID, known without the private key, so it is not a secret |
+| Organisation secret | `BOT_PRIVATE_KEY` — the only credential this repository forwards |
+| Visibility | **Public repositories** only — see the warning below |
 | Token mint | Central reusable workflows and the shared release publisher; this repository never mints one itself |
 
 ### The visibility trap
 
-The two organisation secrets are scoped to *public repositories*. This repository
-is public, so they resolve. **If the repository is ever made private, the secrets
-stop being visible to these workflows and every job that forwards them fails.**
-The fix is to change the secrets' visibility to include private repositories (an
-organisation setting), not to add new secrets.
+The organisation variable and the secret are scoped to *public repositories*.
+This repository is public, so they resolve. **If the repository is ever made
+private, they stop being visible to these workflows and every job that forwards
+them fails.** The fix is to widen the visibility to include private repositories
+(an organisation setting), not to add new secrets.
 
 ### Rotating the key
 
@@ -65,9 +66,9 @@ changes, and no workflow edit is needed.
 | `ci.yml` | Push to `master`, every pull request, manual | Delegates to the organization's `ci-node.yml`, pinned to a commit SHA. Runs the unit suite on Ubuntu (Node 22 and 24), Windows and macOS (Node 22), plus a `node --check` pass over every module. Read-only. |
 | `codeql.yml` | Push to `master`, pull requests into `master`, weekly | Runs the `security-and-quality` query pack over the JavaScript and uploads code-scanning alerts. Read-only apart from the alerts. |
 | `agent-pr-signal.yml` | `pull_request_target`; and `workflow_run` of the test workflows | Metadata-only. Writes a small JSON envelope with the repository, pull-request number and head SHA, then uploads it as a one-day artifact. No checkout, no secrets, no write token, no PR code. **Managed; do not edit.** |
-| `agent-pr-worker.yml` | `workflow_run` after the signal completes | Forwards the signal artifact and `BOT_APP_ID`/`BOT_PRIVATE_KEY` to the central `agent-pr-worker.yml`. The central worker validates the event against the GitHub API and performs the actual routing or merge. **Managed; do not edit.** |
+| `agent-pr-worker.yml` | `workflow_run` after the signal completes | Forwards the signal artifact and `BOT_PRIVATE_KEY` to the central `agent-pr-worker.yml`. The central worker validates the event against the GitHub API and performs the actual routing or merge. **Managed; do not edit.** |
 | `release.yml` | A tag is created; manual dispatch with an existing tag | The build adapter. Builds the six installers from the tag, verifies each bundle, launches the packaged app on its own platform, and uploads the assets to the tag's draft release through the shared publisher. It never creates a tag or a release. |
-| `store.yml` | Manual only | Builds the Windows Store AppX, verifies the packaged bundle and checks the manifest identity against `store/identity.json`. Produces an artifact; it does not submit to the Store. |
+| `store.yml` | A stable Release is published; manual dispatch with an existing tag | Builds the Store package, checks the manifest identity and version against `store/identity.json` and the release tag, and submits the update to the Microsoft Store with the organisation's Partner Center credentials. A pre-release never triggers it. |
 
 ### The pull-request path
 

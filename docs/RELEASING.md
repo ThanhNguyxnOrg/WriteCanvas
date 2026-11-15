@@ -161,6 +161,11 @@ Re-check the notes and the commit before doing that.
 
 - Check the Release page: the actor should be ThanhNguyxnAgent, the notes should
   read as a summary rather than a file list, and all six assets should be there.
+- A published stable release also triggers `store.yml`, which rebuilds the package
+  and submits it to the Microsoft Store with the organisation's Partner Center
+  credentials. A failed submission leaves the GitHub Release untouched; work the
+  Microsoft Store job the same way you would any other build, and re-run it with
+  the tag when a credential or manifest problem is fixed.
 - Check that the CI and CodeQL badges on the README are green for the tag commit.
 - Leave `## [Unreleased]` at the top of `CHANGELOG.md`. Add entries there as work
   lands; the next release moves or generates the section above it.
