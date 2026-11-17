@@ -252,3 +252,9 @@ whose installers were the first ones that ran; those builds have been withdrawn.
 [1.1.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.0.0
 
+## [1.3.1] - 2026-11-17
+
+### Bug Fixes and Performance
+
+- build AppX with typed electron-builder config ([6930810](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/693081018729c71a46f3f50f0d6431bcb31e9034))
+
