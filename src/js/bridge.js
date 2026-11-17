@@ -25,6 +25,12 @@ const host = () => {
       async exportPDF(pages, paper) { return invoke('export_pdf', { pages, paper }) },
       async exportProject(noteId) { return invoke('export_project', { noteId }) },
       async importProject() { return invoke('project_import') },
+      // Clipboard: same contract as the Electron bridge (payload text + picture
+      // flavour out; screenshot or copied picture file in).
+      async clipboardWrite(payload) { return invoke('clipboard_write', payload) },
+      async clipboardWriteText(text) { return invoke('clipboard_write', { text }) },
+      async clipboardReadText() { return invoke('clipboard_read_text') },
+      async clipboardReadImage() { return invoke('clipboard_read_image') },
       on(cmd, cb) {
         window.__TAURI__.event.listen('cmd', e => cb(e.payload.cmd, e.payload.arg))
       },

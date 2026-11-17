@@ -20,20 +20,25 @@ can afford to run it on Windows, macOS and Linux for every push.
 | `tests/pen-stamper.test.mjs` | The shared stamp builder: the incremental live path and the canonical flatten path must produce the same mask, so a stroke does not change under the pen at pen-up. |
 | `tests/png-toolkit.test.mjs` | The note codec: chunk round trip, agreement with the main-process facade on template paths and orientations, legacy repair, the legacy raster fallback, read options, and malformed input (a truncated chunk must be rejected, not silently accepted). |
 | `tests/shortcuts.test.mjs` | The platform chord labels: all three targets named, `⌘` on macOS versus `Ctrl` elsewhere, the platform redo chord, page navigation on Control everywhere, and ARIA modifier names instead of glyphs. |
+| `tests/clipboard.test.mjs` | The clipboard contract: the copy payload across its versions, the picture and text rules for a paste, fitting a picture onto a page — and the paste-in reader itself, driven through a fake host: a screenshot bitmap, a Windows `FileNameW`/`FileName` file list, an item clipboard's `image/*` and `text/uri-list`, and every guard on what is refused. |
+| `tests/transform.test.mjs` | Resizing a selection: which corner handle a pointer grabs, which corner stays put, the clamped factor a drag produces, and what scaling does to a stroke, a text box and a pasted picture (including scaling by `s` and back by `1/s`). |
 | `tests/library-pages.test.mjs` | Library page operations: duplicating, deleting and the resulting index and page files. |
 | `tests/release-notes.test.mjs` | A prepared release: the `release: vX.Y.Z` subject parser, changelog section extraction, and a check that `CHANGELOG.md` has a section for the version in `package.json`. |
 | `tests/workflows.test.mjs` | Workflow invariants: permissions, action pinning (with the one managed central relay called out), the Agent token, and the restriction on `pull_request_target`. |
 | `tests/package.test.mjs` | The packaged build: every root file the main process opens is in `build.files`, the renderer module marker ships, all three icons exist at size, and the Store identity and AppX config are valid. |
 
-Current size, for orientation: 67 tests across the eight files above. The runner
-reports 11 suites because four files group their cases in `describe` blocks.
+Current size, for orientation: 125 tests across the ten files above. The runner
+reports 23 suites because six files group their cases in `describe` blocks.
 
 ## Adding a unit test
 
 1. Put the logic in a module that can be imported without Electron. This is the
    reason `src/js/paper.js`, `src/js/pen.js`, `src/js/ruler.js`,
-   `src/js/png-toolkit.js` and `.github/scripts/*.mjs` keep their pure functions
-   separate from anything that touches a canvas or a window.
+   `src/js/png-toolkit.js`, `src/js/clipboard.js`, `src/js/transform.js` and
+   `.github/scripts/*.mjs` keep their pure functions separate from anything that
+   touches a canvas or a window. Where the logic needs something only the host
+   can do (the OS clipboard), inject it: `src/js/clipboard.js` takes a `host`
+   and the tests pass fakes.
 2. Add `tests/<name>.test.mjs` using `node:test` and `node:assert/strict`.
 3. Append the file to the `test` script in `package.json`.
 

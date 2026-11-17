@@ -6,6 +6,8 @@ import { makeStroke, addPoint, drawStrokeAlpha, createStrokeStamper, paintStamps
 import { clipLineToRect, lineSnapPoint, pointLineDistance, knobCenter, paintRulerStencil, paintProtractorStencil } from './ruler.js'
 import { Recorder } from './replay.js'
 import { applyShortcutHints, initShortcutSheet, openShortcutSheet, isShortcutSheetOpen, modShortcut, modAria } from './shortcuts.js'
+import { buildPayload, parsePayload, validImageObject, serializeImageObject, fitImageBox, fitPageImages, wrapTextToWidth, MAX_PAGE_IMAGES, MAX_PASTE_TEXT_CHARS, JPEG_FALLBACK_CHARS } from './clipboard.js'
+import { handleAt, handlePoints, anchorFor, scaleFromDrag, scaleStroke, scaleText, scaleImage } from './transform.js'
 
 const $ = id => document.getElementById(id)
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -53,7 +55,10 @@ const COLOR_NAMES = {
   '#8E562E': 'Brown', '#613D30': 'Cocoa', '#15181D': 'Midnight', '#1C2128': 'Graphite',
   '#232833': 'Slate', '#2B303A': 'Charcoal', '#101820': 'Ink', '#1A2430': 'Navy board',
 }
-const newPage = paper => ({ paper: { ...paper }, strokes: [], texts: [], rasterBitmap: null, undo: [], redo: [], dirty: false, recorder: new Recorder(), inkGif: null })
+// `images` holds pictures pasted onto the page (screenshots and copies from
+// other apps). They are page objects like text boxes: drawn under the ink,
+// selected and moved with the Select tool, saved inside sVec.
+const newPage = paper => ({ paper: { ...paper }, strokes: [], texts: [], images: [], rasterBitmap: null, undo: [], redo: [], dirty: false, recorder: new Recorder(), inkGif: null })
 let host = null // App context, set by init()
 
 function ctxOf(id) { return $(id).getContext('2d') }
@@ -71,6 +76,11 @@ const validStroke = s => s && Array.isArray(s.pts) && s.pts.length > 0 &&
   s.pts.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y))
 const validText = t => t && typeof t.txt === 'string' && t.txt.length > 0 &&
   Number.isFinite(t.x) && Number.isFinite(t.y) && Number.isFinite(t.size)
+// Pictures saved with a page (sVec v3). A chunk written before pictures existed
+// simply has no images array, so this is empty for it.
+const imagesFromVec = v => Array.isArray(v && v.images)
+  ? v.images.filter(validImageObject).slice(0, MAX_PAGE_IMAGES).map(serializeImageObject)
+  : []
 let openSeq = 0
 // A note load replaces S.pages asynchronously. Until it finishes there is no
 // valid page to edit/save, so interaction and saving wait for it.
@@ -84,6 +94,47 @@ function disposePages() {
       try { p.rasterBitmap.close() } catch { /* already closed */ }
     }
     p.rasterBitmap = null
+  }
+}
+
+// A saved page carries pictures as data URLs; the canvas can only draw one once
+// the browser has decoded it. Decoding is async, so a picture lands a frame or
+// two after its page and the page is redrawn when it does — the same shape as
+// the imported raster base.
+function loadPastedImage(data) {
+  return new Promise(resolve => {
+    if (!data) { resolve(null); return }
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => resolve(null)
+    img.src = data
+  })
+}
+
+async function decodePageImages(page) {
+  let decoded = 0
+  for (const o of page.images || []) {
+    if (o.img || !o.data) continue
+    o.img = await loadPastedImage(o.data)
+    decoded++
+  }
+  return decoded
+}
+
+// One page's base or its pictures finished decoding while it was (or was not)
+// on screen: repaint the sheet, or drop the cached tile so the rail redraws it.
+function refreshPageAfterDecode(i) {
+  const page = S.pages[i]
+  if (!page) return
+  if (i === S.currentPage) {
+    renderPage(page)
+    refreshThumbOf(page)
+  } else {
+    page.stillDirty = true
+    queueStill(i)
+    page.thumbUrl = ''
+    thumbQueue.add(i)
+    pumpThumbs()
   }
 }
 
@@ -132,9 +183,23 @@ function drawTextObj(c, t) {
   c.restore()
 }
 
+// A pasted picture, drawn into whichever context renders the page. The decoded
+// element is a session field (`img`); the saved copy is the data URL in `data`,
+// which is why the picture reappears after a reload.
+function drawImageObj(c, o) {
+  const img = o && o.img
+  if (!img || !img.naturalWidth) return
+  c.save()
+  c.imageSmoothingEnabled = true
+  if ('imageSmoothingQuality' in c) c.imageSmoothingQuality = 'high'
+  c.drawImage(img, o.x, o.y, o.w, o.h)
+  c.restore()
+}
+
 function redrawInk(page) {
   const c = ctxOf('inkC'); const { w, h } = docSize(page)
   c.clearRect(0, 0, w, h)
+  for (const o of page.images || []) drawImageObj(c, o)
   for (const st of page.strokes) drawStrokeItem(c, w, h, st)
   if (page.texts) for (const t of page.texts) drawTextObj(c, t)
 }
@@ -147,6 +212,7 @@ function flattenToCanvas(page) {
   const c = off.getContext('2d')
   renderPaper(c, page.paper)
   if (page.rasterBitmap) { c.save(); c.imageSmoothingEnabled = true; c.drawImage(page.rasterBitmap, 0, 0); c.restore() }
+  for (const o of page.images || []) drawImageObj(c, o)
   for (const st of page.strokes) drawStrokeItem(c, w, h, st)
   if (page.texts) for (const t of page.texts) drawTextObj(c, t)
   return off
@@ -226,6 +292,14 @@ function applyTransform() {
   if (S.rulerOn) redrawRuler()
   updateSelectionChrome(page)
   ensureVisibleStills()
+  syncZoomLevel()
+}
+
+// The zoom control's readout, in step with every path that changes the zoom
+// (wheel, menu, keyboard, Fit).
+function syncZoomLevel() {
+  const btn = $('btnZoomLevel')
+  if (btn) btn.textContent = Math.round((S.zoom || 1) * 100) + '%'
 }
 
 // ---------- pull-to-add-page (last sheet only, Samsung-Notes parity) ----------
@@ -333,6 +407,7 @@ function renderStill(i) {
   g.scale(cw / w, ch / h)
   renderPaper(g, page.paper)
   if (page.rasterBitmap) g.drawImage(page.rasterBitmap, 0, 0)
+  for (const o of page.images || []) drawImageObj(g, o)
   for (const st of page.strokes) drawStrokeItem(g, w, h, st)
   if (page.texts) for (const t of page.texts) drawTextObj(g, t)
   g.restore()
@@ -635,6 +710,7 @@ export async function openNote(id) {
             if (v && Array.isArray(v.strokes)) {
               page.strokes = v.strokes.filter(validStroke)
               page.texts = Array.isArray(v.texts) ? v.texts.filter(validText) : []
+              page.images = imagesFromVec(v)
             }
           } catch { /* malformed chunk → raster fallback */ }
         }
@@ -655,14 +731,22 @@ export async function openNote(id) {
       // the rail may still show the previous note when both have the same
       // page count; force a rebuild with this note's sheets
       refreshPages()
-      // decode the clean raster base per page. Pages that only restored their
-      // vectors have nothing to decode; imported pages keep their image.
+      // decode the clean raster base and any pasted pictures per page. Pages
+      // that only restored their vectors have nothing to decode; imported pages
+      // keep their image.
       for (let i = 0; i < res.pages.length; i++) {
         // another note was opened while we were decoding: never write this
         // note's bitmap into the new note's page array
         if (seq !== openSeq || token !== noteLoadToken || S.noteId !== id) return
         const p = res.pages[i]
         if (p.inkGif) S.pages[i].inkGif = p.inkGif
+        // pictures decode independently of the base: a page can hold pictures
+        // and have no raster base at all
+        if ((S.pages[i].images || []).length) {
+          const count = await decodePageImages(S.pages[i])
+          if (seq !== openSeq || token !== noteLoadToken || S.noteId !== id) return
+          if (count) refreshPageAfterDecode(i)
+        }
         const rasterBytes = p.rasterBase || p.bytes
         if (!p.exists || !rasterBytes) continue
         try {
@@ -673,18 +757,9 @@ export async function openNote(id) {
             return
           }
           S.pages[i].rasterBitmap = bmp
-          if (i === S.currentPage) {
-            renderPage(S.pages[i])
-            refreshThumbOf(S.pages[i])
-          } else {
-            // drop the thumbnail cached before the base decoded; the rail
-            // redraws it through the queue, one page per frame
-            S.pages[i].stillDirty = true
-            queueStill(i)
-            S.pages[i].thumbUrl = ''
-            thumbQueue.add(i)
-            pumpThumbs()
-          }
+          // drop the thumbnail cached before the base decoded; the rail redraws
+          // it through the queue, one page per frame
+          refreshPageAfterDecode(i)
         } catch (err) { console.error('decode page failed', err) }
       }
       if (seq !== openSeq || token !== noteLoadToken || S.noteId !== id) return
@@ -850,6 +925,10 @@ function syncPageNav() {
   if (prev) prev.disabled = S.currentPage <= 0
   if (next) next.disabled = S.currentPage < 0 || S.currentPage >= S.pages.length - 1
   if (add) add.disabled = !S.noteId
+  for (const id of ['btnZoomIn', 'btnZoomOut', 'btnZoomLevel', 'btnZoomFit']) {
+    const b = $(id); if (b) b.disabled = !S.noteId
+  }
+  syncZoomLevel()
 }
 
 async function pageFromPayload(p) {
@@ -868,9 +947,11 @@ async function pageFromPayload(p) {
       if (v && Array.isArray(v.strokes)) {
         page.strokes = v.strokes.filter(validStroke)
         page.texts = Array.isArray(v.texts) ? v.texts.filter(validText) : []
+        page.images = imagesFromVec(v)
       }
     } catch { /* raster fallback */ }
   }
+  await decodePageImages(page)
   const rasterBytes = p.rasterBase || p.bytes
   if (rasterBytes) {
     try {
@@ -961,6 +1042,24 @@ async function deletePageAt(index) {
   }
 }
 
+// The whole sheet as a picture on the clipboard: the shortest way to hand a
+// page to a chat window or a document without a file dialog. Picture only — no
+// text flavour — so it never pastes as a payload into a text field.
+async function copyPageAsPicture(index) {
+  const page = S.pages[index]
+  if (!page || !S.noteId) return
+  try {
+    const bytes = await flattenBytes(page, 'image/png')
+    const ok = await writeClipboard({ png: bytes })
+    showHint(ok
+      ? `Page ${index + 1} is on the clipboard as a picture — paste it in another app`
+      : 'Could not copy the page to the clipboard')
+  } catch (err) {
+    console.error('copy page as picture failed', err)
+    showHint('Could not copy the page to the clipboard')
+  }
+}
+
 async function pageMenu(index, x, y) {
   const page = S.pages[index]
   if (!page || !S.noteId) return
@@ -969,6 +1068,7 @@ async function pageMenu(index, x, y) {
   pick([
     { header: `Page ${index + 1}${index === S.currentPage ? ' · current' : ''}` },
     { label: 'Duplicate page', act: () => duplicatePage(index) },
+    { label: `Copy page ${index + 1} as a picture`, act: () => copyPageAsPicture(index) },
     { label: `Export page ${index + 1} as PNG…`, act: () => exportImg('png', index) },
     '-',
     { label: 'Delete page…', danger: true, disabled: total <= 1, act: () => deletePageAt(index) },
@@ -1015,7 +1115,7 @@ function drawThumb(t, i) {
     // or before the page is left.
     t.style.backgroundImage = `url(${page.thumbUrl})`
     return
-  } else if (!page.strokes.length && !(page.texts && page.texts.length) && !page.rasterBitmap) {
+  } else if (!page.strokes.length && !(page.texts && page.texts.length) && !(page.images && page.images.length) && !page.rasterBitmap) {
     // Blank sheet: paint the paper directly at tile resolution instead of
     // flattening a full 2500×3235 document for an empty page.
     sc.save()
@@ -1195,9 +1295,20 @@ function onPointerDown(e) {
     eraseAt(page, x, y)
   } else if (S.tool === 'lasso') {
     const sel = S.selection
-    if (sel && page === sel.page && x >= sel.bbox.x - 12 && x <= sel.bbox.x + sel.bbox.w + 12 && y >= sel.bbox.y - 12 && y <= sel.bbox.y + sel.bbox.h + 12) {
-      dragSel = { lx: x, ly: y, dx: 0, dy: 0, sx: x, sy: y, moved: false }
-      return
+    if (sel && page === sel.page) {
+      const u = selChrome()
+      // A corner handle starts a resize; the box interior moves the selection.
+      const corner = handleAt(sel.bbox, SEL_PAD * u, x, y, SEL_GRAB * u)
+      if (corner) {
+        const at = anchorFor(sel.bbox, SEL_PAD * u, corner)
+        dragSel = { mode: 'scale', corner, ax: at.x, ay: at.y, sx: x, sy: y, applied: 1, moved: false }
+        return
+      }
+      const m = SEL_PAD * u
+      if (x >= sel.bbox.x - m && x <= sel.bbox.x + sel.bbox.w + m && y >= sel.bbox.y - m && y <= sel.bbox.y + sel.bbox.h + m) {
+        dragSel = { mode: 'move', lx: x, ly: y, dx: 0, dy: 0, sx: x, sy: y, moved: false }
+        return
+      }
     }
     lassoBegin(page, x, y)
   } else if (S.tool === 'laser') {
@@ -1401,9 +1512,14 @@ function onPointerMove(e) {
       if ((x - d.sx) ** 2 + (y - d.sy) ** 2 < slop * slop) return
       d.moved = true
     }
-    d.dx += x - d.lx; d.dy += y - d.ly
-    d.lx = x; d.ly = y
-    drawSelectionPreview(page)
+    if (d.mode === 'scale') {
+      const s = scaleFromDrag(d.ax, d.ay, d.sx, d.sy, x, y)
+      if (s !== d.applied) scaleSelectionLive(page, d, s)
+    } else {
+      d.dx += x - d.lx; d.dy += y - d.ly
+      d.lx = x; d.ly = y
+      drawSelectionPreview(page)
+    }
   } else if (laserLive) {
     for (const s of coalescedSamples(e)) {
       const p = s === e ? { x, y } : docPoint(s, rect, scale)
@@ -1582,11 +1698,15 @@ function paintLaser() {
   return !!(laserLive || laserSession)
 }
 
-// ---------- lasso selection (move / duplicate / delete) ----------
+// ---------- lasso selection (move / resize / duplicate / delete) ----------
 let lasso = null        // {pts:[{x,y}]} while drawing the marching ants
-let dragSel = null      // {lx,ly,dx,dy} while moving the selection
+// A selection gesture in flight: {mode:'move', lx, ly, dx, dy} while the box is
+// dragged, or {mode:'scale', corner, ax, ay, applied} while a corner handle
+// enlarges or shrinks what is selected.
+let dragSel = null
 let clipboardObjects = null // copied strokes/shapes for copy/paste
 let clipboardTexts = null   // copied text boxes, pasted with the strokes
+let clipboardImages = null  // copied pictures, pasted with the strokes
 
 function setTool(t) {
   if (S.tool === 'laser') laserStop()
@@ -1600,8 +1720,8 @@ function setTool(t) {
   stackInnerClass()
   if (t === 'laser') showHint('Laser pointer — trail fades, never saved')
   else if (t === 'lasso') showHint(S.selectMode === 'click'
-    ? 'Tap a stroke or text to select it, then drag inside the box to move'
-    : 'Circle strokes and text to select, then drag inside the box to move')
+    ? 'Tap a stroke or text to select it, then drag inside the box to move or a corner handle to resize'
+    : 'Circle strokes and text to select, then drag inside the box to move or a corner handle to resize')
   else if (t === 'view') showHint('View mode — drag anywhere to pan')
   else if (t === 'shape') showHint('Drag to size the shape, or tap to place one')
   else if (t === 'text') showHint('Tap on the page to place a text box — tap an existing one to edit')
@@ -1644,8 +1764,12 @@ function textBounds(t) {
   return { x: t.x, y: t.y, w: Math.max(w, t.size * 0.5), h: lines.length * t.size * 1.25 }
 }
 
-// Union box of everything a selection holds (strokes and text boxes). A text
-// box has no points, so the old stroke-only bbox would have left it behind.
+// A picture's box, in the shape selectionBBox pushes.
+const imageBox = o => ({ x: o.x, y: o.y, w: o.w, h: o.h })
+
+// Union box of everything a selection holds (strokes, text boxes, pictures). A
+// text box or a picture has no points, so a stroke-only bbox would leave them
+// behind.
 function selectionBBox(sel) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
   const push = b => {
@@ -1656,6 +1780,7 @@ function selectionBBox(sel) {
   }
   for (const st of sel.strokes || []) push(strokeBBox([st]))
   for (const t of sel.texts || []) push(textBounds(t))
+  for (const o of sel.images || []) push(imageBox(o))
   if (x0 === Infinity) return { x: 0, y: 0, w: 0, h: 0 }
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
 }
@@ -1671,22 +1796,34 @@ function textAt(page, x, y) {
   return null
 }
 
-// A lasso catches a text box when any sample of its area lands inside the
-// loop: corners, edge midpoints and centre — cheap and reliable for boxes a
-// loop only partly covers.
-function textInPoly(t, poly) {
-  const b = textBounds(t)
+// even-odd point-in-polygon test
+function pointInPoly(x, y, poly) {
+  let inside = false
+  for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
+    const xi = poly[j].x, yi = poly[j].y, xk = poly[k].x, yk = poly[k].y
+    if (((yi > y) !== (yk > y)) && (x < (xk - xi) * (y - yi) / (yk - yi) + xi)) inside = !inside
+  }
+  return inside
+}
+
+// A lasso catches a box-shaped object (a text box, a pasted picture) when any
+// sample of its area lands inside the loop: corners, edge midpoints and centre —
+// cheap and reliable for boxes a loop only partly covers.
+function boxInPoly(b, poly) {
   const xs = [b.x, b.x + b.w / 2, b.x + b.w]
   const ys = [b.y, b.y + b.h / 2, b.y + b.h]
   for (const px of xs) for (const py of ys) {
-    let inside = false
-    for (let j = 0, k = poly.length - 1; j < poly.length; k = j++) {
-      const xi = poly[j].x, yi = poly[j].y, xk = poly[k].x, yk = poly[k].y
-      if (((yi > py) !== (yk > py)) && (px < (xk - xi) * (py - yi) / (yk - yi) + xi)) inside = !inside
-    }
-    if (inside) return true
+    if (pointInPoly(px, py, poly)) return true
   }
   return false
+}
+
+function textInPoly(t, poly) {
+  return boxInPoly(textBounds(t), poly)
+}
+
+function imageInPoly(o, poly) {
+  return boxInPoly(imageBox(o), poly)
 }
 
 function lassoBegin(page, x, y) {
@@ -1731,18 +1868,42 @@ function strokeAt(page, x, y) {
   return null
 }
 
+// Pictures draw under the ink, so they are hit-tested after text and strokes:
+// a tap that lands on a stroke picks the stroke, not the picture behind it.
+function imageAt(page, x, y) {
+  const list = page.images || []
+  for (let i = list.length - 1; i >= 0; i--) {
+    const o = list[i]
+    if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) return o
+  }
+  return null
+}
+
 function selectItemAt(page, x, y) {
   // Text boxes render above strokes, so they win the tap first.
   const t = textAt(page, x, y)
   if (t) {
-    S.selection = { page, strokes: [], texts: [t], bbox: selectionBBox({ strokes: [], texts: [t] }) }
+    const sel = { page, strokes: [], texts: [t], images: [], bbox: null }
+    sel.bbox = selectionBBox(sel)
+    S.selection = sel
     drawSelectionBox(page)
     showSelBar(page)
     return
   }
   const st = strokeAt(page, x, y)
-  if (!st) { clearSelection(); return }
-  S.selection = { page, strokes: [st], texts: [], bbox: selectionBBox({ strokes: [st], texts: [] }) }
+  if (st) {
+    const sel = { page, strokes: [st], texts: [], images: [], bbox: null }
+    sel.bbox = selectionBBox(sel)
+    S.selection = sel
+    drawSelectionBox(page)
+    showSelBar(page)
+    return
+  }
+  const o = imageAt(page, x, y)
+  if (!o) { clearSelection(); return }
+  const sel = { page, strokes: [], texts: [], images: [o], bbox: null }
+  sel.bbox = selectionBBox(sel)
+  S.selection = sel
   drawSelectionBox(page)
   showSelBar(page)
 }
@@ -1761,29 +1922,42 @@ function lassoCommit(page) {
   if (!pts || pts.length < 3) { clearSelection(); return }
   const hits = page.strokes.filter(st => anyPtInPoly(st.pts, pts))
   const textHits = (page.texts || []).filter(t => textInPoly(t, pts))
-  if (!hits.length && !textHits.length) { clearSelection(); return }
-  S.selection = { page, strokes: hits, texts: textHits, bbox: selectionBBox({ strokes: hits, texts: textHits }) }
+  const imageHits = (page.images || []).filter(o => imageInPoly(o, pts))
+  if (!hits.length && !textHits.length && !imageHits.length) { clearSelection(); return }
+  const sel = { page, strokes: hits, texts: textHits, images: imageHits, bbox: null }
+  sel.bbox = selectionBBox(sel)
+  S.selection = sel
   drawSelectionBox(page)
   showSelBar(page)
 }
+
+// The selection box is UI chrome: the canvas is in document pixels, so every
+// size here is divided by the zoom to keep the box, its dashes and its corner
+// handles the same size on screen at any zoom. The handles are the grab points
+// for resizing, so they must stay big enough to hit.
+const SEL_PAD = 14       // screen px between the box and the objects
+const SEL_HANDLE_R = 6   // screen px radius of a drawn handle
+const SEL_GRAB = 18      // screen px grab radius around a handle
+function selChrome() { return 1 / (S.zoom || 1) }
 
 function drawSelectionBox(page) {
   const sel = S.selection
   if (!sel || sel.page !== page) return
   const b = selectionBBox(sel)
   sel.bbox = b
+  const u = selChrome()
   const lc = ctxOf('liveC')
   lc.clearRect(0, 0, docSize(page).w, docSize(page).h)
   lc.save()
-  lc.setLineDash([12, 8])
+  lc.setLineDash([12 * u, 8 * u])
   lc.strokeStyle = 'rgba(11,99,197,.95)'
-  lc.lineWidth = 2.5 / 1
-  lc.strokeRect(b.x - 14, b.y - 14, b.w + 28, b.h + 28)
-  // corner handles
+  lc.lineWidth = 2.5 * u
+  lc.strokeRect(b.x - SEL_PAD * u, b.y - SEL_PAD * u, b.w + 2 * SEL_PAD * u, b.h + 2 * SEL_PAD * u)
+  // corner handles — drag one to enlarge or shrink what is selected
   lc.setLineDash([])
   lc.fillStyle = '#fff'
-  for (const [hx, hy] of [[b.x - 14, b.y - 14], [b.x + b.w + 14, b.y - 14], [b.x - 14, b.y + b.h + 14], [b.x + b.w + 14, b.y + b.h + 14]]) {
-    lc.beginPath(); lc.arc(hx, hy, 6, 0, Math.PI * 2); lc.fill(); lc.stroke()
+  for (const h of handlePoints(b, SEL_PAD * u)) {
+    lc.beginPath(); lc.arc(h.x, h.y, SEL_HANDLE_R * u, 0, Math.PI * 2); lc.fill(); lc.stroke()
   }
   lc.restore()
 }
@@ -1797,14 +1971,18 @@ function drawSelectionPreview(page) {
   lc.translate(dragSel.dx, dragSel.dy)
   for (const st of sel.strokes) drawStrokeItem(lc, w, h, st)
   lc.restore()
-  // Text boxes ride along in the preview too, shifted by the same drag.
+  // Text boxes and pasted pictures ride along in the preview too, shifted by
+  // the same drag.
   for (const t of sel.texts || []) drawTextObj(lc, { ...t, x: t.x + dragSel.dx, y: t.y + dragSel.dy })
+  for (const o of sel.images || []) drawImageObj(lc, { ...o, x: o.x + dragSel.dx, y: o.y + dragSel.dy })
 }
 
-// Shift a selection (strokes and text boxes) by (dx, dy) in either direction.
+// Shift a selection (strokes, text boxes and pictures) by (dx, dy) in either
+// direction.
 function shiftSelection(sel, dx, dy) {
   for (const st of sel.strokes || []) for (const p of st.pts) { p.x += dx; p.y += dy }
   for (const t of sel.texts || []) { t.x += dx; t.y += dy }
+  for (const o of sel.images || []) { o.x += dx; o.y += dy }
 }
 
 function selectionCommitMove(page) {
@@ -1815,7 +1993,7 @@ function selectionCommitMove(page) {
   if (!dx && !dy) { drawSelectionBox(page); refreshSelBar(); return }
   firstCommitPreCapture(page)
   shiftSelection(sel, dx, dy)
-  page.undo.push({ t: 'move', strokes: sel.strokes, texts: sel.texts || [], dx, dy })
+  page.undo.push({ t: 'move', strokes: sel.strokes, texts: sel.texts || [], images: sel.images || [], dx, dy })
   page.redo = []
   sel.bbox = selectionBBox(sel)
   redrawInk(page)
@@ -1827,9 +2005,65 @@ function selectionCommitMove(page) {
   refreshCurrentThumb()
 }
 
+// Apply a factor to everything a selection (or an undo entry) holds. Kept in
+// one place so a live drag, its commit and its undo move the same fields.
+function scaleSelectionObjects(list, s, ax, ay) {
+  if (!list || !(s > 0) || s === 1) return
+  for (const st of list.strokes || []) scaleStroke(st, s, ax, ay)
+  for (const t of list.texts || []) scaleText(t, s, ax, ay)
+  for (const o of list.images || []) scaleImage(o, s, ax, ay)
+}
+
+// The frame-by-frame step of a corner drag: the objects are scaled by the
+// factor since the last frame and the ink layer is repainted, so what the
+// person drags is the real size (and the saved page is already correct if the
+// window closes mid-drag). The commit only records the total factor.
+function scaleSelectionLive(page, d, s) {
+  const sel = S.selection
+  if (!sel || sel.page !== page) return
+  const step = s / d.applied
+  d.applied = s
+  scaleSelectionObjects(sel, step, d.ax, d.ay)
+  sel.bbox = selectionBBox(sel)
+  redrawInk(page)
+  drawSelectionBox(page)
+  positionSelBar()
+  refreshSelBar()
+}
+
+// Commit a finished resize as one undo step. Undo scales back by 1/s around
+// the anchor the gesture grew from, like the move entry shifts back by the
+// distance it moved.
+function selectionCommitScale(page, d) {
+  const sel = S.selection
+  dragSel = null
+  if (!sel || sel.page !== page || !d.moved || d.applied === 1) {
+    if (sel && sel.page === page) { drawSelectionBox(page); refreshSelBar() }
+    return
+  }
+  firstCommitPreCapture(page)
+  page.undo.push({
+    t: 'scale', strokes: sel.strokes, texts: sel.texts || [], images: sel.images || [],
+    s: d.applied, ax: d.ax, ay: d.ay,
+  })
+  page.redo = []
+  sel.bbox = selectionBBox(sel)
+  redrawInk(page)
+  drawSelectionBox(page)
+  positionSelBar()
+  refreshSelBar()
+  captureReplay(page)
+  page.dirty = true
+  scheduleAutosave()
+  refreshCurrentThumb()
+  showHint(`Resized — ${modShortcut('Z')} undoes it`)
+}
+
 function selectionHasItems() {
   const sel = S.selection
-  return !!sel && ((sel.strokes && sel.strokes.length) || (sel.texts && sel.texts.length))
+  return !!sel && ((sel.strokes && sel.strokes.length) ||
+    (sel.texts && sel.texts.length) ||
+    (sel.images && sel.images.length))
 }
 
 function showSelBar(page) {
@@ -1873,40 +2107,105 @@ function positionSelBar() {
   bar.style.top = Math.max(2, Math.round(b.y - 90)) + 'px'
 }
 
-function selectionCopy() {
-  const sel = S.selection
-  if (!selectionHasItems()) return
-  // Deep copy so later moves/erases never touch the clipboard buffer
-  clipboardObjects = (sel.strokes || []).map(st => JSON.parse(JSON.stringify(st)))
-  clipboardTexts = (sel.texts || []).map(t => JSON.parse(JSON.stringify(t)))
-  const data = JSON.stringify({ type: 'writecanvas-objects', version: 2, objects: clipboardObjects, texts: clipboardTexts })
-  // The OS clipboard carries the copy across notes, windows and app restarts;
-  // the in-memory buffer stays as the fallback when the host has no clipboard.
-  try {
-    if (bridge && bridge.clipboardWriteText) bridge.clipboardWriteText(data).catch(() => {})
-    else if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(data).catch(() => {})
-  } catch { /* clipboard unavailable — in-memory paste still works */ }
-  const n = clipboardObjects.length + clipboardTexts.length
-  showHint(`Copied ${n} object${n === 1 ? '' : 's'} — ${modShortcut('V')} to paste`)
+// Everything a selection holds, as fresh objects shifted by (dx, dy): the
+// clipboard buffer must never share a stroke, text box or picture with a page a
+// later move or erase is allowed to change.
+function liftedObjects(sel, dx = 0, dy = 0) {
+  const strokes = (sel.strokes || []).map(st => {
+    const c = JSON.parse(JSON.stringify(st))
+    if (c.pts) for (const p of c.pts) { p.x += dx; p.y += dy }
+    return c
+  })
+  const texts = (sel.texts || []).map(t => ({ ...JSON.parse(JSON.stringify(t)), x: t.x + dx, y: t.y + dy }))
+  // A picture's decoded element is immutable, so sharing it is safe and saves a
+  // decode per paste.
+  const images = (sel.images || []).map(o => ({ ...serializeImageObject(o), x: o.x + dx, y: o.y + dy, img: o.img }))
+  return { strokes, texts, images }
 }
 
-// Read a WriteCanvas payload from the OS clipboard. Returns {strokes, texts}
-// (v1 payloads carry strokes only), or null when the clipboard holds
-// something else.
-async function readClipboardObjects() {
-  let text = ''
+// The picture flavour of a copy: the selection composited on a transparent
+// background, cropped to its own box with a small margin, at document
+// resolution — so Word, Paint or a chat window pastes exactly what was
+// selected, at the size it had on the page.
+async function selectionPngBytes(sel) {
+  const page = sel.page || current()
+  if (!page) return null
+  const { w: pw, h: ph } = docSize(page)
+  const b = selectionBBox(sel)
+  const pad = docMM(2)
+  const w = Math.max(1, Math.ceil(b.w + pad * 2))
+  const h = Math.max(1, Math.ceil(b.h + pad * 2))
+  // A pathological selection must not allocate a gigapixel canvas.
+  if (w * h > 36e6) return null
+  const off = document.createElement('canvas')
+  off.width = w; off.height = h
+  const c = off.getContext('2d')
+  c.translate(pad - b.x, pad - b.y)
+  for (const o of sel.images || []) drawImageObj(c, o)
+  for (const st of sel.strokes || []) drawStrokeItem(c, pw, ph, st)
+  for (const t of sel.texts || []) drawTextObj(c, t)
+  const blob = await new Promise(r => off.toBlob(r, 'image/png'))
+  if (!blob) return null
+  return new Uint8Array(await blob.arrayBuffer())
+}
+
+// Write to the OS clipboard through the host. A selection copy carries the
+// editable payload and a picture; a picture-only write (a whole page) leaves no
+// text flavour behind, so no payload can land in another app's text field.
+async function writeClipboard({ text = '', png = null } = {}) {
   try {
-    if (bridge && bridge.clipboardReadText) text = await bridge.clipboardReadText()
-    else if (navigator.clipboard && navigator.clipboard.readText) text = await navigator.clipboard.readText()
-  } catch { return null }
-  if (!text || text[0] !== '{') return null
+    if (bridge && bridge.clipboardWrite) {
+      await bridge.clipboardWrite(png ? { text, png } : { text })
+      return true
+    }
+    if (text && navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch { /* clipboard unavailable — the in-memory buffer still pastes */ }
+  return false
+}
+
+async function selectionCopy() {
+  const sel = S.selection
+  if (!selectionHasItems()) return
+  const lifted = liftedObjects(sel)
+  clipboardObjects = lifted.strokes
+  clipboardTexts = lifted.texts
+  clipboardImages = lifted.images
+  const payload = buildPayload({ strokes: clipboardObjects, texts: clipboardTexts, images: clipboardImages })
+  // The picture flavour is a bonus: a copy still works when the encode or the
+  // clipboard call fails, because the payload and the buffer remain.
+  let png = null
+  try { png = await selectionPngBytes(sel) } catch { png = null }
+  const ok = await writeClipboard({ text: payload, png })
+  const n = clipboardObjects.length + clipboardTexts.length + clipboardImages.length
+  // The OS clipboard carries the copy across notes, windows and app restarts;
+  // the in-memory buffer stays as the fallback when the host has no clipboard.
+  if (ok && png) showHint(`Copied ${n} object${n === 1 ? '' : 's'} — paste it here or as a picture in another app`)
+  else if (ok) showHint(`Copied ${n} object${n === 1 ? '' : 's'} — ${modShortcut('V')} to paste`)
+  else showHint(`Copied ${n} object${n === 1 ? '' : 's'} (clipboard unavailable)`)
+}
+
+// What other apps put on the clipboard: their text, a screenshot bitmap or a
+// picture file. Each read is best-effort — an unavailable clipboard simply
+// falls through to the next source.
+async function readClipboardText() {
   try {
-    const parsed = JSON.parse(text)
-    if (!parsed || parsed.type !== 'writecanvas-objects' || !Array.isArray(parsed.objects)) return null
-    const strokes = parsed.objects.filter(validStroke).map(st => JSON.parse(JSON.stringify(st)))
-    const texts = Array.isArray(parsed.texts) ? parsed.texts.filter(validText).map(t => JSON.parse(JSON.stringify(t))) : []
-    return (strokes.length || texts.length) ? { strokes, texts } : null
-  } catch { return null }
+    if (bridge && bridge.clipboardReadText) return await bridge.clipboardReadText()
+    if (navigator.clipboard && navigator.clipboard.readText) return await navigator.clipboard.readText()
+  } catch { /* clipboard unavailable */ }
+  return ''
+}
+
+async function readClipboardImage() {
+  try {
+    if (bridge && bridge.clipboardReadImage) {
+      const pic = await bridge.clipboardReadImage()
+      if (pic && typeof pic.dataUrl === 'string' && pic.dataUrl.startsWith('data:image/')) return pic
+    }
+  } catch { /* clipboard unavailable */ }
+  return null
 }
 
 function selectionDelete() {
@@ -1915,9 +2214,11 @@ function selectionDelete() {
   firstCommitPreCapture(page)
   const goneStrokes = [...(sel.strokes || [])]
   const goneTexts = [...(sel.texts || [])]
+  const goneImages = [...(sel.images || [])]
   page.strokes = page.strokes.filter(st => !goneStrokes.includes(st))
   page.texts = page.texts.filter(t => !goneTexts.includes(t))
-  page.undo.push({ t: 'erase', strokes: goneStrokes, texts: goneTexts })
+  page.images = (page.images || []).filter(o => !goneImages.includes(o))
+  page.undo.push({ t: 'erase', strokes: goneStrokes, texts: goneTexts, images: goneImages })
   page.redo = []
   clearSelection()
   redrawInk(page)
@@ -1927,36 +2228,62 @@ function selectionDelete() {
   refreshCurrentThumb()
 }
 
-async function selectionPaste() {
-  const page = current(); if (!page) return
-  let source = (clipboardObjects && clipboardObjects.length) || (clipboardTexts && clipboardTexts.length)
-    ? { strokes: clipboardObjects || [], texts: clipboardTexts || [] }
-    : null
-  if (!source) {
-    // Nothing copied in this session: fall back to the OS clipboard so paste
-    // still works after a restart, or from another window.
-    source = await readClipboardObjects()
-    if (source) { clipboardObjects = source.strokes; clipboardTexts = source.texts }
+// Where the person is looking, in document pixels, clamped to the page. A
+// paste lands there rather than at a fixed corner of the sheet.
+function viewportCentreDoc(page) {
+  const { w, h } = docSize(page)
+  const hostEl = $('canvasHost'); const inner = $('stackInner')
+  if (!hostEl || !inner || !inner.offsetWidth) return { x: w / 2, y: h / 2 }
+  const hr = hostEl.getBoundingClientRect(); const ir = inner.getBoundingClientRect()
+  const scale = ir.width / inner.offsetWidth || S.zoom || 1
+  return {
+    x: clamp((hr.left + hr.width / 2 - ir.left) / scale, 0, w),
+    y: clamp((hr.top + hr.height / 2 - ir.top) / scale, 0, h),
   }
-  if (!source || (!source.strokes.length && !source.texts.length)) {
-    showHint(`Nothing to paste — select ink and press ${modShortcut('C')} to copy first`)
-    return
+}
+
+// Re-encode a pasted picture at the size it will occupy on the page: the saved
+// copy then costs one page-scaled image instead of whatever resolution the
+// source had. A JPEG source (or one whose lossless copy would be huge) stays
+// JPEG so a photo does not bloat every later save.
+function normalisePastedPicture(sourceData, img, w, h) {
+  const off = document.createElement('canvas')
+  off.width = w; off.height = h
+  const c = off.getContext('2d')
+  c.imageSmoothingEnabled = true
+  if ('imageSmoothingQuality' in c) c.imageSmoothingQuality = 'high'
+  c.drawImage(img, 0, 0, w, h)
+  const jpegSource = /^data:image\/jpe?g/i.test(sourceData)
+  let data = off.toDataURL(jpegSource ? 'image/jpeg' : 'image/png', jpegSource ? 0.92 : undefined)
+  if (!jpegSource && data.length > JPEG_FALLBACK_CHARS) data = off.toDataURL('image/jpeg', 0.92)
+  return data
+}
+
+// Ensure every picture about to be pasted has a decoded element; a picture that
+// arrived as a payload carries only its data URL, and one that cannot be
+// decoded is dropped rather than pasted as an invisible box.
+async function readyPastedImages(list) {
+  const ready = []
+  for (const o of list) {
+    const img = o.img || await loadPastedImage(o.data)
+    if (img) ready.push({ ...o, img })
   }
-  const copies = source.strokes.map(st => {
-    const c = JSON.parse(JSON.stringify(st))
-    if (c.pts) {
-      c.pts = c.pts.map(p => ({ x: p.x + 26, y: p.y + 26 }))
-    }
-    return c
-  })
-  const textCopies = source.texts.map(t => ({ ...JSON.parse(JSON.stringify(t)), x: t.x + 26, y: t.y + 26 }))
+  return ready
+}
+
+// One commit path for everything that arrives from the clipboard: the objects
+// go on the page in a single undo step and become the selection, so a mistaken
+// paste is one Delete or one Undo away.
+function addPastedObjects(page, { strokes = [], texts = [], images = [] }) {
   firstCommitPreCapture(page)
-  page.strokes.push(...copies)
-  page.texts.push(...textCopies)
-  page.undo.push({ t: 'add', strokes: copies, texts: textCopies })
+  if (strokes.length) page.strokes.push(...strokes)
+  if (texts.length) { if (!page.texts) page.texts = []; page.texts.push(...texts) }
+  if (images.length) { if (!page.images) page.images = []; page.images.push(...images) }
+  page.undo.push({ t: 'add', strokes, texts, images })
   page.redo = []
-  S.selection = { page, strokes: copies, texts: textCopies, bbox: null }
-  S.selection.bbox = selectionBBox(S.selection)
+  const sel = { page, strokes, texts, images, bbox: null }
+  sel.bbox = selectionBBox(sel)
+  S.selection = sel
   redrawInk(page)
   drawSelectionBox(page)
   showSelBar(page)
@@ -1965,8 +2292,120 @@ async function selectionPaste() {
   page.dirty = true
   scheduleAutosave()
   refreshCurrentThumb()
-  const n = copies.length + textCopies.length
-  showHint(`Pasted ${n} object${n === 1 ? '' : 's'}`)
+}
+
+// Why a picture cannot join a page: the page holds as many as it can carry, or
+// the picture does not fit in the room that is left. Said once so the single
+// paste and the payload paste explain themselves the same way.
+function pagePictureFullHint(page) {
+  return (page.images || []).length >= MAX_PAGE_IMAGES
+    ? 'This page already holds the most pictures it can — delete one to paste another'
+    : 'Not enough room on this page for that picture — delete one or paste it on another page'
+}
+
+// A screenshot or a copied picture from another app: scaled to fit the page,
+// centred on what the person is looking at, and kept as a movable page object
+// the ink can be drawn over.
+async function pasteClipboardPicture(page, pic) {
+  const noteId = S.noteId
+  showHint('Pasting picture…')
+  const img = await loadPastedImage(pic.dataUrl)
+  if (!img || !img.naturalWidth) { showHint('That picture could not be pasted'); return }
+  // the note or the sheet can change while a big picture decodes
+  if (S.noteId !== noteId || current() !== page) return
+  const { w: pw, h: ph } = docSize(page)
+  const at = viewportCentreDoc(page)
+  const box = fitImageBox(img.naturalWidth, img.naturalHeight, pw * 0.8, ph * 0.8, at.x, at.y)
+  if (!box) return
+  box.x = Math.round(clamp(box.x, 0, Math.max(0, pw - box.w)))
+  box.y = Math.round(clamp(box.y, 0, Math.max(0, ph - box.h)))
+  let data = ''
+  try { data = normalisePastedPicture(pic.dataUrl, img, box.w, box.h) } catch { data = pic.dataUrl }
+  // Every picture on the page is written into the saved sVec, so a paste the
+  // page cannot hold is refused with a reason instead of failing the save later.
+  const obj = { ...box, data: data || pic.dataUrl, img }
+  if (!fitPageImages(page.images, [obj]).length) {
+    showHint(pagePictureFullHint(page))
+    return
+  }
+  addPastedObjects(page, { images: [obj] })
+  showHint('Pasted the picture — drag it with Select, Delete removes it')
+}
+
+// Plain text from another app becomes a text box in the page's own font,
+// wrapped to the page width, centred on the viewport and ready to edit.
+function pasteClipboardText(page, text) {
+  const clean = String(text).slice(0, MAX_PASTE_TEXT_CHARS)
+  const { w: pw, h: ph } = docSize(page)
+  const size = S.textBoxSize || 55
+  textMeasureCtx.font = textFontSpec({ size })
+  const wrapped = wrapTextToWidth(clean, s => textMeasureCtx.measureText(s).width, pw * 0.8)
+  const box = textBounds({ txt: wrapped, x: 0, y: 0, size })
+  const at = viewportCentreDoc(page)
+  const obj = {
+    txt: wrapped,
+    x: Math.round(clamp(at.x - box.w / 2, 0, Math.max(0, pw - box.w))),
+    y: Math.round(clamp(at.y - box.h / 2, 0, Math.max(0, ph - box.h))),
+    size,
+    color: curPen().color,
+    bold: false, italic: false, underline: false,
+  }
+  addPastedObjects(page, { texts: [obj] })
+  showHint('Pasted the text as a text box — double-click it to edit')
+}
+
+// Put a copied payload on the page: shifted off the original, in one undo step,
+// as the new selection. Returns false when there was nothing it could put there
+// (its own hint says why).
+async function pasteObjectSource(page, source) {
+  const shifted = liftedObjects(source, 26, 26)
+  const ready = await readyPastedImages(shifted.images)
+  if (current() !== page) return false
+  // The page only takes the pictures it has room for; ink and text always land.
+  const imageCopies = fitPageImages(page.images, ready)
+  if (!shifted.strokes.length && !shifted.texts.length && !imageCopies.length) {
+    showHint(ready.length
+      ? pagePictureFullHint(page)
+      : `Nothing to paste — select ink and press ${modShortcut('C')} to copy first`)
+    return false
+  }
+  addPastedObjects(page, { strokes: shifted.strokes, texts: shifted.texts, images: imageCopies })
+  const n = shifted.strokes.length + shifted.texts.length + imageCopies.length
+  showHint(ready.length > imageCopies.length
+    ? `Pasted ${n} object${n === 1 ? '' : 's'} — no room for the rest of the pictures on this page`
+    : `Pasted ${n} object${n === 1 ? '' : 's'}`)
+  return true
+}
+
+async function selectionPaste() {
+  const page = current(); if (!page) return
+  // What the person copied last is what a paste delivers, wherever they copied
+  // it: a screenshot taken after some ink would never paste if this session's
+  // buffer came first. The payload, then a picture from another app, then plain
+  // text; the buffer only stands in when the clipboard cannot be read.
+  const text = await readClipboardText()
+  if (current() !== page) return
+  const parsed = parsePayload(text, { validStroke, validText })
+  if (parsed) {
+    clipboardObjects = parsed.strokes
+    clipboardTexts = parsed.texts
+    clipboardImages = parsed.images
+    // The payload is this app's own copy: never fall through to pasting its
+    // JSON as a text box when the page refused part of it.
+    await pasteObjectSource(page, parsed)
+    return
+  }
+  const pic = await readClipboardImage()
+  if (current() !== page) return
+  if (pic) { await pasteClipboardPicture(page, pic); return }
+  if (text && text.trim()) { pasteClipboardText(page, text); return }
+  const buffered = (clipboardObjects && clipboardObjects.length) ||
+    (clipboardTexts && clipboardTexts.length) ||
+    (clipboardImages && clipboardImages.length)
+    ? { strokes: clipboardObjects || [], texts: clipboardTexts || [], images: clipboardImages || [] }
+    : null
+  if (buffered) { await pasteObjectSource(page, buffered); return }
+  showHint('Nothing to paste — copy a picture, some text, or ink first')
 }
 
 function selectionDuplicate() {
@@ -1974,13 +2413,16 @@ function selectionDuplicate() {
   const page = sel.page
   const copies = (sel.strokes || []).map(st => ({ ...st, pts: st.pts.map(p => ({ x: p.x + 26, y: p.y + 26 })), shape: st.shape ? { ...st.shape } : undefined }))
   const textCopies = (sel.texts || []).map(t => ({ ...JSON.parse(JSON.stringify(t)), x: t.x + 26, y: t.y + 26 }))
+  const imageCopies = (sel.images || []).map(o => ({ ...serializeImageObject(o), x: o.x + 26, y: o.y + 26, img: o.img }))
   firstCommitPreCapture(page)
   page.strokes.push(...copies)
   page.texts.push(...textCopies)
-  page.undo.push({ t: 'add', strokes: copies, texts: textCopies })
+  if (imageCopies.length) { if (!page.images) page.images = []; page.images.push(...imageCopies) }
+  page.undo.push({ t: 'add', strokes: copies, texts: textCopies, images: imageCopies })
   page.redo = []
   sel.strokes = copies
   sel.texts = textCopies
+  sel.images = imageCopies
   sel.bbox = selectionBBox(sel)
   redrawInk(page)
   drawSelectionBox(page)
@@ -2850,7 +3292,9 @@ function onPointerUp(e) {
     }
   } else if (dragSel) {
     const d = dragSel
-    if (!d.moved && S.selectMode === 'click') {
+    if (d.mode === 'scale') {
+      selectionCommitScale(page, d)
+    } else if (!d.moved && S.selectMode === 'click') {
       dragSel = null
       selectItemAt(page, d.sx, d.sy)
     } else {
@@ -2919,7 +3363,14 @@ function cancelGesture() {
   }
   if (lasso) { lasso = null; clearLive(page); return }
   if (dragSel) {
+    const d = dragSel
     dragSel = null
+    // A resize mutates the objects while the handle is dragged; cancelling the
+    // gesture puts them back where it found them.
+    if (d.mode === 'scale' && d.moved && d.applied !== 1 && page && S.selection && S.selection.page === page) {
+      scaleSelectionObjects(S.selection, 1 / d.applied, d.ax, d.ay)
+      redrawInk(page)
+    }
     if (page && S.selection && S.selection.page === page) drawSelectionBox(page)
     else clearLive(page)
     return
@@ -2945,15 +3396,20 @@ function undo() {
       const idx = page.strokes.lastIndexOf(st)
       if (idx >= 0) page.strokes.splice(idx, 1)
     }
-    // pasted/duplicated text boxes travel in the same undo entry
+    // pasted/duplicated text boxes and pictures travel in the same undo entry
     for (const t of (a.texts || [])) {
       const idx = page.texts.lastIndexOf(t)
       if (idx >= 0) page.texts.splice(idx, 1)
+    }
+    for (const o of (a.images || [])) {
+      const idx = (page.images || []).lastIndexOf(o)
+      if (idx >= 0) page.images.splice(idx, 1)
     }
     page.redo.push(a)
   } else if (a.t === 'erase') {
     page.strokes.push(...a.strokes)
     if (a.texts) page.texts.push(...a.texts)
+    if (a.images) { if (!page.images) page.images = []; page.images.push(...a.images) }
     page.redo.push(a)
   } else if (a.t === 'text') {
     const i = page.texts.indexOf(a.obj)
@@ -2980,6 +3436,10 @@ function undo() {
     shiftSelection(a, -a.dx, -a.dy)
     page.redo.push(a)
     clearSelection()
+  } else if (a.t === 'scale') {
+    scaleSelectionObjects(a, 1 / a.s, a.ax, a.ay)
+    page.redo.push(a)
+    clearSelection()
   }
   redrawInk(page)
   captureReplay(page)
@@ -2998,10 +3458,12 @@ function redo() {
     if (a.strokes) page.strokes.push(...a.strokes)
     else page.strokes.push(a.stroke)
     if (a.texts) page.texts.push(...a.texts)
+    if (a.images) { if (!page.images) page.images = []; page.images.push(...a.images) }
     page.undo.push(a)
   } else if (a.t === 'erase') {
     page.strokes = page.strokes.filter(st => !a.strokes.includes(st))
     if (a.texts) page.texts = page.texts.filter(t => !a.texts.includes(t))
+    if (a.images) page.images = (page.images || []).filter(o => !a.images.includes(o))
     page.undo.push(a)
   } else if (a.t === 'text') {
     page.texts.push(a.obj)
@@ -3019,6 +3481,10 @@ function redo() {
     page.undo.push(a)
   } else if (a.t === 'move') {
     shiftSelection(a, a.dx, a.dy)
+    page.undo.push(a)
+    clearSelection()
+  } else if (a.t === 'scale') {
+    scaleSelectionObjects(a, a.s, a.ax, a.ay)
     page.undo.push(a)
     clearSelection()
   }
@@ -3097,8 +3563,15 @@ function snapshotPage(page) {
     seq: S.editSeq,
     frames: page.recorder.changed ? page.recorder.frames.slice() : [],
     // v2: raster imports travel in sRST, so an empty v2 page must never be
-    // mistaken for a legacy flattened image when it is reopened.
-    vec: JSON.stringify({ v: 2, strokes: page.strokes, texts: page.texts || [] }),
+    // mistaken for a legacy flattened image when it is reopened. v3 adds the
+    // pasted pictures; their decoded elements stay in the session and only the
+    // stored data URL is written.
+    vec: JSON.stringify({
+      v: 3,
+      strokes: page.strokes,
+      texts: page.texts || [],
+      images: (page.images || []).map(serializeImageObject),
+    }),
     paper,
     meta: {
       sizeName: (SIZES[paper.size] || SIZES.letter).name,
@@ -3927,6 +4400,7 @@ function exportItems() {
   return [
     { label: `${page} as PNG…`, act: () => exportImg('png') },
     { label: `${page} as JPEG…`, act: () => exportImg('jpg') },
+    { label: `${page} as a picture on the clipboard`, act: () => copyPageAsPicture(S.currentPage) },
     { label: `Entire note as PDF (all ${total} page${total === 1 ? '' : 's'})…`, act: () => exportPDF() },
     { label: 'Replay as GIF…', act: () => exportGif() },
   ]
@@ -4225,6 +4699,12 @@ export function init(app) {
   $('btnAddPage').onclick = addPage
   $('btnPrevPage').onclick = () => setPage(S.currentPage - 1, false, { smooth: true })
   $('btnNextPage').onclick = () => setPage(S.currentPage + 1, false, { smooth: true })
+  // The zoom control is the visible form of the View menu's chords: −, the
+  // readout (click for 100%), +, and Fit (the width fit the app opens with).
+  $('btnZoomIn').onclick = () => zoomCenter(1)
+  $('btnZoomOut').onclick = () => zoomCenter(-1)
+  $('btnZoomLevel').onclick = () => { S.zoom = 1; S.hadZoom = true; applyTransform() }
+  $('btnZoomFit').onclick = () => fitZoom()
   syncPageNav()
   wireToolbarToggles()
   stackInnerClass()

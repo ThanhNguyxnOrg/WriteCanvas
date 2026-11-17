@@ -1,9 +1,11 @@
 'use strict'
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeImage, ClipboardItem } = require('electron')
 const path = require('node:path')
+const { fileURLToPath } = require('node:url')
 const fs = require('node:fs/promises')
 const fss = require('node:fs')
 const os = require('node:os')
+const { readClipboardPicture } = require('../src/js/clipboard.js')
 const { Library, sanitizeName, pageFileName } = require('./library')
 const { writeNotePng, readNoteMeta, readNotePage, pngIsBroken, repairPNG, legacyRasterBase } = require('./scrble-format')
 const { GIFEncoder, quantize, applyPalette } = require('gifenc')
@@ -166,6 +168,98 @@ async function encodeGif(frames) {
   return gif.bytes()
 }
 
+// ---------- clipboard ----------
+// Two clipboard shapes exist in the field, and both are supported so a copy
+// works whichever runtime the app is on:
+//   legacy  — synchronous: clipboard.readImage(), clipboard.write({text,image})
+//   items   — promise-based: clipboard.write([new ClipboardItem({...})]),
+//             clipboard.read() returning ClipboardItems by MIME type
+// Only the shape this runtime actually has is used; nothing here throws when
+// the other one is missing.
+const LEGACY_CLIPBOARD = typeof clipboard.readImage === 'function' &&
+  typeof clipboard.readBuffer === 'function' &&
+  typeof clipboard.write === 'function'
+const ITEM_CLIPBOARD = !LEGACY_CLIPBOARD &&
+  typeof ClipboardItem === 'function' &&
+  typeof clipboard.read === 'function'
+
+// The order a paste tries its sources in, and the guards on what it accepts,
+// live in src/js/clipboard.js, where the unit suite drives them with fakes.
+// This host is the part only this process can do: the clipboard and nativeImage
+// calls, plus the file checks a copied file list needs. Windows hands a picture
+// copied in the file manager over to the classic clipboard as a file list
+// (FileNameW is the Unicode flavour, FileName the ANSI one older apps still
+// write); the item clipboard exposes the same list as a text/uri-list.
+const clipboardHost = {
+  platform: process.platform,
+  readBitmap() {
+    const image = clipboard.readImage()
+    if (!image || image.isEmpty()) return null
+    const { width, height } = image.getSize()
+    return { dataUrl: image.toDataURL(), width, height }
+  },
+  readBuffer(format) {
+    if (typeof clipboard.readBuffer !== 'function') return null
+    const buf = clipboard.readBuffer(format)
+    return buf && buf.length ? buf : null
+  },
+  async readItems() {
+    if (!ITEM_CLIPBOARD) return null
+    return (await clipboard.read()) || null
+  },
+  async getItemBytes(item, type) {
+    const blob = await item.getType(type)
+    const buffer = Buffer.from(await blob.arrayBuffer())
+    return buffer.length ? buffer : null
+  },
+  imageFromBytes(bytes) {
+    const image = nativeImage.createFromBuffer(Buffer.from(bytes))
+    if (image.isEmpty()) return null
+    const { width, height } = image.getSize()
+    return { dataUrl: image.toDataURL(), width, height }
+  },
+  imageFromFile(file) {
+    const image = nativeImage.createFromPath(file)
+    if (image.isEmpty()) return null
+    const { width, height } = image.getSize()
+    return { dataUrl: image.toDataURL(), width, height }
+  },
+  async fileSize(file) {
+    const info = await fs.stat(file)
+    return info.isFile() ? info.size : null
+  },
+  toPath(uri) { return fileURLToPath(uri) },
+}
+
+// One write for both flavours. A copy that carries a picture writes the picture
+// next to the payload text; a picture-only copy (a whole page) leaves no text
+// flavour behind, so a payload can never land in another app's text field.
+async function writeClipboardData({ text = '', png = null }) {
+  const payload = String(text == null ? '' : text)
+  const image = png && png.byteLength ? Buffer.from(png) : null
+  if (LEGACY_CLIPBOARD) {
+    if (image) {
+      const native = nativeImage.createFromBuffer(image)
+      if (!native.isEmpty()) {
+        clipboard.write(payload ? { text: payload, image: native } : { image: native })
+        return true
+      }
+    }
+    clipboard.writeText(payload)
+    return true
+  }
+  if (ITEM_CLIPBOARD) {
+    const flavours = {}
+    if (payload) flavours['text/plain'] = new Blob([payload], { type: 'text/plain' })
+    if (image) flavours['image/png'] = new Blob([image], { type: 'image/png' })
+    if (!Object.keys(flavours).length) { clipboard.clear(); return true }
+    await clipboard.write([new ClipboardItem(flavours)])
+    return true
+  }
+  clipboard.writeText(payload)
+  return true
+}
+
 // ---------- IPC ----------
 async function loadPageEntry(p) {
   if (!p.file) return { file: null, exists: false }
@@ -199,12 +293,30 @@ async function loadPageEntry(p) {
 function registerIpc() {
   // Canvas copy/paste: the selection payload is JSON text, written and read
   // through the main process so it survives cross-note and cross-window paste
-  // and never needs a clipboard-read permission in the renderer.
-  ipcMain.handle('clipboard:write', (_e, text) => {
-    clipboard.writeText(String(text == null ? '' : text))
-    return true
+  // and never needs a clipboard-read permission in the renderer. A copy that
+  // carries a picture writes that flavour as well, so Word, Paint or a chat
+  // window pastes what the person drew; a picture-only copy (a whole page)
+  // leaves no text flavour behind, so no payload can land in a text field.
+  ipcMain.handle('clipboard:write', async (_e, payload) => {
+    const text = typeof payload === 'string'
+      ? payload
+      : (payload && typeof payload.text === 'string' ? payload.text : '')
+    const png = payload && typeof payload === 'object' && payload.png &&
+      typeof payload.png.byteLength === 'number' && payload.png.byteLength > 0
+      ? payload.png
+      : null
+    try {
+      await writeClipboardData({ text, png })
+      return true
+    } catch (err) {
+      // A clipboard the OS refuses to take must not break the copy: the
+      // renderer keeps its in-memory buffer and reports the failure itself.
+      console.error('clipboard write failed', err)
+      return false
+    }
   })
   ipcMain.handle('clipboard:read', () => clipboard.readText())
+  ipcMain.handle('clipboard:read-image', () => readClipboardPicture(clipboardHost))
 
   // Text fields keep the native editing behaviour the editMenu roles used to
   // give them; the renderer asks for it only when a text box or prompt has focus.

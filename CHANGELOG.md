@@ -11,6 +11,26 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ## [Unreleased]
 
+### Added
+
+- **Pictures from other apps** — a screenshot or a copied picture now pastes
+  onto the page with `Ctrl+V`/`⌘V`: it lands as a movable page object scaled to
+  fit, drawn under the ink, selected and deleted like a text box, and saved with
+  the note (a picture file copied in the file manager works too). Plain text
+  from another app pastes as a text box, wrapped to the page width.
+- **Copies that other apps can use** — copying a selection now puts a real PNG
+  picture of it on the clipboard next to the editable payload, so Word, Paint or
+  a chat window pastes what was drawn. Every page menu and the Save menu also
+  offer *This page as a picture on the clipboard*, a picture-only copy with no
+  text flavour behind it.
+- **Resize a selection** — with Select, drag a corner handle of the box to
+  enlarge or shrink the ink, text and pictures together. The anchor is the
+  opposite corner, the factor is uniform, the whole resize is one undo step, and
+  the handles keep the same size on screen at every zoom so they stay grabbable.
+- **Zoom control** — a −/%/+/Fit row under the page rail, the visible twin of
+  `Ctrl`+wheel and the View menu: the readout follows every zoom change, clicking
+  it returns to 100%, and *Fit* is the width fit a note opens with.
+
 ## [1.2.1] - 2026-11-15
 
 ### Fixed

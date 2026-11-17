@@ -76,9 +76,9 @@ const GROUPS = [
     rows: [
       ['Undo', () => modShortcut('Z')],
       ['Redo', () => redoShortcut()],
-      ['Copy selection', () => modShortcut('C')],
+      ['Copy selection (also a picture)', () => modShortcut('C')],
       ['Cut selection', () => modShortcut('X')],
-      ['Paste selection', () => modShortcut('V')],
+      ['Paste (ink, picture or text)', () => modShortcut('V')],
       ['Delete selection', () => 'Del'],
     ],
   },
@@ -133,6 +133,9 @@ export function applyShortcutHints() {
   hint('btnNew', 'New note', modShortcut('N'), modAria('N'))
   hint('btnPrevPage', 'Previous page', controlShortcut('PageUp'), 'Control+PageUp')
   hint('btnNextPage', 'Next page', controlShortcut('PageDown'), 'Control+PageDown')
+  hint('btnZoomIn', 'Zoom in', modShortcut('='), modAria('='))
+  hint('btnZoomOut', 'Zoom out', modShortcut('-'), modAria('-'))
+  hint('btnZoomLevel', 'Zoom level — click for 100%', modShortcut('0'), modAria('0'))
   const pan = document.getElementById('tbEye')
   if (pan) pan.title = 'Pan and view — hold Space to pan'
   const help = document.getElementById('libShortcutHint')

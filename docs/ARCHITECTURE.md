@@ -46,7 +46,7 @@ pixels.
 |---|---|---|
 | `paperC` | Paper size, template/pattern and board colour. | yes, composited |
 | `rasterC` | An imported or legacy raster base — the pixels of a page we did not draw. | yes, as `sRST` |
-| `inkC` | Committed strokes and text boxes. | yes, into `IDAT` and `sVec` |
+| `inkC` | Committed strokes, text boxes and pasted pictures. | yes, into `IDAT` and `sVec` |
 | `liveC` | The stroke in progress — the same pixels the scratch mask holds, so committing is a copy and not a re-render — plus previews (selection box, marching ants, shape drag). | no |
 | `laserC` | The laser pointer session. | no |
 | `rulerC` | The ruler overlay. | no |
@@ -61,10 +61,12 @@ three are interface that happens to be drawn on the page. Nothing in `liveC`,
 |---|---|
 | `src/js/app.js` | Bootstrap: wires the editor, library tree and bridge together, forwards main-process pushes, reopens the last note, and exposes the `window.__wc` test hook. |
 | `src/js/bridge.js` | The renderer-side host contract; picks the Electron bridge or the Tauri adapter. |
-| `src/js/editor.js` | The editor. Page state (`S`), the six canvases, tool dispatch, gestures, undo/redo, the save pipeline, selection, text boxes, the laser session. |
+| `src/js/editor.js` | The editor. Page state (`S`), the six canvases, tool dispatch, gestures, undo/redo, the save pipeline, selection (move and corner-handle resize), text boxes, the laser session. |
 | `src/js/paper.js` | Paper engine. Document scale (`DOC_DPI = 294.12`, sampled from the original asset: a Letter raster is 2500×3235 px for 8.5×11 in), the page-size table, template paths and `docMM()`. |
 | `src/js/pen.js` | Pen engine. The five pen types, the factory 29-colour palette, `makeStroke` and `addPoint`. Each stroke is stamped into an offscreen coverage mask (a union, so a stroke never darkens itself) and composited once with the pen's alpha. `createStrokeStamper` splits stamps into permanent ones (the settled spine, the pencil grain anchored to it, the opening cap) and a provisional tail that the editor wipes and repaints in its own region and clip; the mask at pen-up is therefore exactly the canonical build and the commit is a blit of it. |
 | `src/js/png-toolkit.js` | The one codec for the private `s*` chunks. Browser-safe, no `fs`, no `Buffer`; used by the renderer, by the Node facade and by the tests. |
+| `src/js/clipboard.js` | The clipboard contract: the copy payload (v3 adds pictures), the rules for a pasted picture object, fitting a picture onto a page and wrapping pasted text. Also the paste-in reader — the order its sources are tried in and the guards on what it accepts — written against an injected `host`, so main passes the real clipboard calls and the unit suite passes fakes. Pure — no DOM, no Electron — so the unit suite drives it. |
+| `src/js/transform.js` | Resizing a selection: the corner handles of the selection box, the anchor a drag grows from, and the uniform factor with which strokes, text boxes and pasted pictures are scaled around it. Pure maths, checked in `tests/transform.test.mjs`. |
 | `src/js/replay.js` | `Recorder`: captures composited frames after committed changes so the main process can encode the ink replay GIF. |
 | `src/js/ruler.js` | Ruler geometry (line/rectangle clipping, projection and distance for edge snapping, the angle maths) and the two stencil overlay painters (`paintRulerStencil`, `paintProtractorStencil`) the editor calls. |
 | `src/js/library.js` | Library tree UI: folders, notes, selection, drag-move, context actions. |
@@ -81,9 +83,13 @@ three are interface that happens to be drawn on the page. Nothing in `liveC`,
 2. `note:loadPage` returns the page PNG bytes.
 3. The renderer runs `readNotePng`, which hands back the paper metadata, the
    replay GIF, the `sVec` JSON and the `sRST` raster base.
-4. A page whose `sVec` parses becomes editable strokes and texts on top of the
-   raster base. A page without `sVec` — one written by Scrble Ink itself, or an
-   imported image — becomes a raster base only and is still editable on top.
+4. A page whose `sVec` parses becomes editable strokes, texts and pasted
+   pictures on top of the raster base. A page without `sVec` — one written by
+   Scrble Ink itself, or an imported image — becomes a raster base only and is
+   still editable on top.
+5. The raster base and any pasted pictures decode asynchronously; the page
+   repaints (and its thumbnail cache is dropped) when each decode lands, so a
+   picture appears a frame or two after its sheet.
 
 ## Data flow: saving
 
@@ -98,6 +104,40 @@ only dirty pages are written:
 
 Page turns flush the page being left, and the window's close handler flushes
 everything before the app exits, so a page turn or a quit never loses ink.
+
+## Data flow: the clipboard
+
+The renderer never touches the OS clipboard: `preload.js` exposes
+`clipboardWrite`, `clipboardReadText` and `clipboardReadImage`, and the main
+process owns the flavours and both clipboard shapes in the field — the
+synchronous one older Electron builds expose (`clipboard.readImage()`,
+`clipboard.write({ text, image })`) and the promise-based one newer builds moved
+to (`clipboard.write([new ClipboardItem(...)])`, `clipboard.read()`). Whichever
+the runtime has is used, and nothing throws when the other one is missing.
+
+Copying a selection writes two flavours at once. The text flavour is the
+`writecanvas-objects` payload (`src/js/clipboard.js`), which survives a restart,
+a note switch or a second window and restores the exact objects; the picture
+flavour is the selection rendered on a transparent canvas at document
+resolution, so Word, Paint or a chat window pastes what was drawn. A copy that
+is a whole page (*This page as a picture on the clipboard*) writes the picture
+with no text flavour, so a payload can never land in another app's text field.
+
+Pasting takes whatever the person copied last, wherever they copied it: the
+payload if the clipboard holds one, then a picture some other app copied — a
+screenshot bitmap, which both clipboard shapes hand over as PNG, or a picture
+file copied in the file manager, which arrives as a file list (`FileNameW` in
+the classic shape, `text/uri-list` in the item shape, so every platform is
+covered) — and finally plain text, which arrives as a text box. That order and
+every guard on what is accepted live in `src/js/clipboard.js` as
+`readClipboardPicture(host)`: main supplies the clipboard and `nativeImage`
+calls, and `tests/clipboard.test.mjs` supplies fakes, so the paste-in path is
+tested without a window. Only when the
+clipboard holds nothing usable does the copy made earlier in this session stand
+in, so a screenshot taken after some ink still pastes. A pasted picture is
+scaled to fit the page, normalised to the size it will occupy and stored as a
+page object in `sVec`; one the page has no room for, or one that cannot be
+decoded, is refused with a reason instead of pasting an invisible box.
 
 ## Invariants
 
@@ -117,6 +157,11 @@ Keep these true; each one exists because breaking it caused a real bug.
   page.
 - **Cancel means cancel.** `pointercancel` abandons the in-flight gesture rather
   than committing a partial mark.
+- **A paste is one undo step that owns its objects.** Everything the clipboard
+  delivers lands as a single `add` entry and becomes the selection, so a
+  mistaken paste is one `Del` or one Undo away. Pasted pictures are page objects
+  in `sVec` (v3), never the raster base: `sRST` is the imported page's pixels and
+  must stay exactly as it was read.
 
 ## Input notes in code
 

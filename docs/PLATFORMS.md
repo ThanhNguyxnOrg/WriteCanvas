@@ -31,9 +31,9 @@ no other platform's chord is ever advertised.
 | Open library menu | `Ctrl+O` | `⌘O` | `Ctrl+O` |
 | Undo | `Ctrl+Z` | `⌘Z` | `Ctrl+Z` |
 | Redo | `Ctrl+Y` | `⇧⌘Z` | `Ctrl+Y` |
-| Copy selection | `Ctrl+C` | `⌘C` | `Ctrl+C` |
+| Copy selection (also a picture) | `Ctrl+C` | `⌘C` | `Ctrl+C` |
 | Cut selection | `Ctrl+X` | `⌘X` | `Ctrl+X` |
-| Paste selection | `Ctrl+V` | `⌘V` | `Ctrl+V` |
+| Paste (ink, picture or text) | `Ctrl+V` | `⌘V` | `Ctrl+V` |
 | Delete selection | `Del` | `Del` | `Del` |
 | Previous page | `Ctrl+PageUp` | `⌃PageUp` | `Ctrl+PageUp` |
 | Next page | `Ctrl+PageDown` | `⌃PageDown` | `Ctrl+PageDown` |
@@ -64,6 +64,16 @@ Shortcuts` and the Edit-menu chords — `Undo`, `Redo`, `Cut`, `Copy` and
 and pastes while a focused text field keeps its native editing. The renderer
 owns the tool keys, page turns and `Esc`. Both paths are listed above and both
 are covered by `tests/shortcuts.test.mjs` for the labels.
+
+Clipboard content is read and written in the main process, so no platform
+prompt or clipboard-read permission is involved, and both clipboard shapes in
+the field are supported: the synchronous one older Electron builds expose and
+the promise-based `ClipboardItem` one newer builds moved to. A picture copied in
+the file manager pastes as a picture as well — the classic shape reads the
+Windows `FileNameW` file list (with the ANSI `FileName` as a fallback), the item
+shape the `text/uri-list` that every platform provides. The order a paste tries
+those sources in, and every guard on what it accepts, live in
+`src/js/clipboard.js` and are covered by `tests/clipboard.test.mjs`.
 
 ## Ink input
 

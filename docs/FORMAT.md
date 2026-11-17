@@ -51,7 +51,7 @@ image and ignores the rest.
 | `sPNA` | 4-byte-BE length + UTF-8 path | Template path for the page background. |
 | `sBKC` | 4-byte-BE length + UTF-8 `#AARRGGBB` | Background (board) colour. |
 | `sBRL` | 1 byte | Mirrored as read; meaning owned by the original app. |
-| `sVec` | UTF-8 JSON | **WriteCanvas extension.** The editable strokes and text. |
+| `sVec` | UTF-8 JSON | **WriteCanvas extension.** The editable strokes, text and pasted pictures. |
 | `sRST` | PNG bytes | **WriteCanvas extension.** The clean raster base the strokes sit on. |
 
 Length-prefixed strings are UTF-8 with a 4-byte big-endian length, which is how
@@ -65,7 +65,7 @@ paper, raster base and ink, so the file is a valid image for every reader; the
 
 ```json
 {
-  "v": 2,
+  "v": 3,
   "strokes": [
     { "type": "pen", "color": "#000000", "width": 14, "opacity": 1,
       "pts": [{ "x": 120, "y": 340, "p": 0.5 }] }
@@ -73,6 +73,10 @@ paper, raster base and ink, so the file is a valid image for every reader; the
   "texts": [
     { "txt": "hello", "x": 200, "y": 400, "color": "#000000",
       "size": 60, "bold": false, "italic": false, "underline": false }
+  ],
+  "images": [
+    { "x": 300, "y": 500, "w": 1600, "h": 900,
+      "data": "data:image/png;base64,<png bytes>" }
   ]
 }
 ```
@@ -88,6 +92,16 @@ paper, raster base and ink, so the file is a valid image for every reader; the
   ordinary strokes otherwise, which is why shapes can be erased and selected like
   ink.
 - Texts are optional. A page saved by an older build, or by Scrble Ink, has none.
+- `images` are the pictures pasted onto the page (screenshots and copies from
+  other apps): a box in document pixels plus the picture itself as a data URL.
+  The stored copy is normalised to the size the picture occupies on the page and
+  written as PNG — or as JPEG when the source was a photo, or when the lossless
+  copy would be very large, so a photographic paste does not bloat every later
+  save. `v` 3 is the first payload version that carries the field; older
+  payloads and pages with no pasted pictures simply have none.
+- A page takes pictures up to a budget (40 of them, and 32 MB of data URLs
+  together) so one saved `sVec` always stays inside the save limit; a paste the
+  page has no room for is refused with a reason instead of failing the save.
 
 ### `sRST`: the raster base
 

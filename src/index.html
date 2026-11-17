@@ -102,6 +102,12 @@
           <button id="btnAddPage" title="Add page" aria-label="Add page">+</button>
           <button id="btnNextPage" title="Next page" aria-label="Next page">›</button>
         </div>
+        <div id="zoomBar" role="group" aria-label="Zoom">
+          <button id="btnZoomOut" title="Zoom out" aria-label="Zoom out">−</button>
+          <button id="btnZoomLevel" title="Zoom level — click for 100%" aria-label="Zoom level">100%</button>
+          <button id="btnZoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+          <button id="btnZoomFit" title="Fit the page to the window" aria-label="Fit the page to the window">Fit</button>
+        </div>
       </aside>
 
       <section id="viewport">
@@ -218,6 +224,7 @@
             <button id="selLasso" class="er-opt active" title="Drag a loop around ink and text" aria-pressed="true"><svg><use href="#ic-lasso"/></svg>Lasso</button>
             <button id="selClick" class="er-opt" title="Tap a stroke or text box" aria-pressed="false"><svg><use href="#ic-click"/></svg>Click</button>
           </div>
+          <p class="fs-hint">Drag inside the box to move the selection; drag a corner handle to enlarge or shrink ink, text and pictures together.</p>
         </div>
 
         <div id="rulerFlyout" class="flyout hidden" role="dialog" aria-label="Ruler">

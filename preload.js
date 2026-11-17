@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('WriteCanvasHost', {
   // Canvas copy/paste payloads live on the OS clipboard as JSON text.
   async clipboardWriteText(text) { return ipcRenderer.invoke('clipboard:write', text) },
   async clipboardReadText() { return ipcRenderer.invoke('clipboard:read') },
+  // A copy also leaves a real picture on the clipboard for other apps, and a
+  // paste takes whatever picture other apps copied (screenshot bitmap or a
+  // picture file copied in the file manager), read in main.
+  async clipboardWrite(payload) { return ipcRenderer.invoke('clipboard:write', payload) },
+  async clipboardReadImage() { return ipcRenderer.invoke('clipboard:read-image') },
   // Native editing for focused text fields (what the editMenu roles used to do).
   async editNative(op) { return ipcRenderer.invoke('edit:native', op) },
   // Keep the native Windows caption overlay in step with the in-app theme.

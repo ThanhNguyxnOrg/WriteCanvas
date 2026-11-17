@@ -121,6 +121,19 @@ body.native-frame #capRow { display: none; }
 }
 #btnPrevPage:disabled, #btnNextPage:disabled { opacity: .32; cursor: default; }
 
+/* zoom control: the on-screen twin of Ctrl+wheel and the View menu, so zooming
+   does not depend on knowing a chord */
+#zoomBar { display: flex; gap: 6px; align-items: stretch; margin: 0 16px 14px; }
+#zoomBar button {
+  height: 30px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink); border-radius: 8px; cursor: pointer; line-height: 1;
+}
+#btnZoomOut, #btnZoomIn { width: 30px; min-width: 30px; font-size: 17px; }
+#btnZoomLevel { flex: 1; min-width: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+#btnZoomFit { padding: 0 10px; font-size: 12px; }
+#zoomBar button:hover:not(:disabled) { background: var(--hover); border-color: var(--accent); }
+#zoomBar button:disabled { opacity: .32; cursor: default; }
+
 /* ---------- toolbar v2: 76px command bar, labelled tools, one clear pen control ---------- */
 #main { flex: 1; display: flex; min-height: 0; min-width: 0; }
 #topbar {
