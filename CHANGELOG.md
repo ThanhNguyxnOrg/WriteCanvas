@@ -11,6 +11,8 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-17
+
 ### Added
 
 - **Pictures from other apps** — a screenshot or a copied picture now pastes
@@ -242,7 +244,8 @@ whose installers were the first ones that ran; those builds have been withdrawn.
   `WriteCanvasHost` bridge in `preload.js`; every library path from the renderer
   is resolved and validated in the main process before it is used.
 
-[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/ThanhNguyxnOrg/WriteCanvas/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.3.0
 [1.2.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.2.1
 [1.2.0]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.2.0
 [1.1.1]: https://github.com/ThanhNguyxnOrg/WriteCanvas/releases/tag/v1.1.1
