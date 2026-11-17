@@ -101,8 +101,17 @@ jobs:
           $identity | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $identityPath -Encoding utf8NoBOM
           Write-Host "Enforced Store package MinVersion: $($identity.minVersion)"
 
+      # Release tags can contain an older helper; use the current reviewed
+      # adapter while packaging the exact source checked out from the release tag.
+      - name: Checkout current Store build adapter
+        uses: actions/checkout@v7
+        with:
+          ref: master
+          path: .store-build-adapter
+          persist-credentials: false
+
       - name: Build Store AppX
-        run: npm run dist:store
+        run: node .store-build-adapter/scripts/build-store.mjs
 
       - name: Validate Store package identity and prepare MSIX input
         id: package
