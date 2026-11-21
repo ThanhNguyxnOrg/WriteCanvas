@@ -280,3 +280,12 @@ whose installers were the first ones that ran; those builds have been withdrawn.
 ### Bug Fixes and Performance
 
 - build AppX with typed electron-builder config ([6930810](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/693081018729c71a46f3f50f0d6431bcb31e9034))
+
+## [1.3.2] - 2026-11-21
+
+### Bug Fixes and Performance
+
+- import PNG notes without overwriting or long temp names ([35c54ed](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/35c54ed85ddfadb92a65479f198b5b63e592e743))
+- roll back only PNG page files the import wrote ([8e97d69](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/8e97d6997e188db5e7a206f1f0b685fd5d283b09))
+- show an error when a project file cannot be imported ([cb4c0b3](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/cb4c0b3e6d237e980432e94c1601935f5e4f4cc1))
+
