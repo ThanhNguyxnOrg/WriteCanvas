@@ -11,6 +11,19 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ## [Unreleased]
 
+### Security
+
+- **Locked-down app window** — the main process now only answers requests from
+  the WriteCanvas window itself, the window can no longer be navigated away
+  from the app or open pop-ups, and web permission prompts are denied.
+
+### Changed
+
+- **Cleaner start-up** — the window now appears once the app has finished
+  loading instead of flashing blank first, and a failed load shows an error
+  instead of an empty window. Background throttling is back on in normal use, so
+  a hidden or covered window uses less CPU and battery.
+
 ## [1.3.0] - 2026-11-17
 
 ### Added
