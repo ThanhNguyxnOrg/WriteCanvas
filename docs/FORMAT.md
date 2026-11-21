@@ -30,6 +30,12 @@ Everything here is implemented once, in `src/js/png-toolkit.js`. The Node side
   the choice lives in `config.json` inside the Electron `userData` folder, not in
   the library itself.
 
+Only one WriteCanvas instance can open a given library for editing. Close the
+first instance or switch it to another library before opening the same folder
+elsewhere. The empty `.writecanvas-lock.sqlite` file coordinates writers; it
+contains no notes. Leave it in place. The lock itself is released even if
+WriteCanvas exits unexpectedly.
+
 `index.json` is a WriteCanvas file, not a Scrble Ink one. If it is missing,
 WriteCanvas first tries to restore it from `index.json.bak`. If neither index
 is usable and `Scribble/` contains PNGs, WriteCanvas refuses to initialize an

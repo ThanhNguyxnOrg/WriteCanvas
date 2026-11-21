@@ -4,7 +4,7 @@
 
 | Requirement | Notes |
 |---|---|
-| Node.js 22 or 24 | 22 matches the Node embedded in the pinned Electron major; 24 matches what CI also tests against. |
+| Node.js 22.13+ or 24 | The library lock needs the built-in `node:sqlite` module. Electron embeds Node 22; CI also tests Node 24. |
 | npm 10 or newer | Uses the committed `package-lock.json`. |
 | Windows, macOS or Linux | All three are supported for development, not just for running. |
 

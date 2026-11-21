@@ -371,7 +371,6 @@ function registerIpc() {
   })
 
   ipcMain.handle('lib:get', async () => {
-    await lib.ensure()
     // root is exposed so QA/probe scripts can resolve note files without
     // hardcoding anyone's local directory layout
     return { ...JSON.parse(JSON.stringify(lib.index)), root: lib.root }
@@ -741,10 +740,17 @@ async function chooseRoot(dir) {
   // must leave the current library usable
   const next = new Library(resolved)
   await next.ensure()
-  const cfg = await loadConfig()
-  cfg.root = resolved
-  await saveConfig(cfg)
+  try {
+    const cfg = await loadConfig()
+    cfg.root = resolved
+    await saveConfig(cfg)
+  } catch (err) {
+    await next.close()
+    throw err
+  }
+  const previous = lib
   lib = next
+  await previous.close()
   pushLibrary()
   return { unchanged: false, root: lib.root }
 }
