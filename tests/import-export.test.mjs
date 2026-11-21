@@ -7,7 +7,7 @@ import zlib from 'node:zlib'
 import { buildNoteZip, readNoteZip, readNoteFile, readZipAll, MAX_TOTAL_BYTES, MAX_PAGE_BYTES } from '../main/wcanvas-export.js'
 import { importPngNotes } from '../main/png-import.js'
 import { renderPdf } from '../main/pdf-export.js'
-import { Library } from '../main/library.js'
+import { Library, libraryAccess } from '../main/library.js'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 
@@ -159,6 +159,26 @@ test('PNG imports retain successful files around a failed copy without phantom n
   await lib.close()
   await lib.ensure()
   assert.deepEqual(lib.index.items, items)
+})
+
+test('a folder switch cannot release a library in the middle of a PNG import', async t => {
+  const { lib, sources } = await libraryFixture(t)
+  const access = libraryAccess()
+  const result = await access.use(() => importPngNotes(lib, sources.slice(0, 1), {
+    ...fs,
+    async copyFile(...args) {
+      await fs.copyFile(...args)
+      await assert.rejects(access.switchRoot(() => lib.close()), /library is busy/)
+    },
+  }))
+  assert.deepEqual(result.errors, [])
+  await access.switchRoot(async () => {
+    await assert.rejects(access.use(() => lib.persist()), /folder is changing/)
+    await lib.close()
+  })
+  await lib.ensure()
+  assert.equal(lib.get(result.imported[0]).note.pages[0].file, 'one#01.png')
+  assert.deepEqual(await lib.readPage('one#01.png'), png)
 })
 
 test('PNG import never overwrites a page file created after the name check', async t => {

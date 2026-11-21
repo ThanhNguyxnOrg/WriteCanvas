@@ -5,7 +5,7 @@ const { fileURLToPath, pathToFileURL } = require('node:url')
 const fs = require('node:fs/promises')
 const fss = require('node:fs')
 const { readClipboardPicture } = require('../src/js/clipboard.js')
-const { Library, sanitizeName, pageFileName } = require('./library')
+const { Library, libraryAccess, sanitizeName, pageFileName } = require('./library')
 const { writeNotePng, readNotePage, pngIsBroken, repairPNG, legacyRasterBase } = require('./scrble-format')
 const { GIFEncoder, quantize, applyPalette } = require('gifenc')
 const { buildNoteZip, readNoteFile } = require('./wcanvas-export')
@@ -303,6 +303,8 @@ async function loadPageEntry(p) {
 
 function registerIpc() {
   const ipcMain = guardedIpc(electronIpcMain, () => win, trustedAppURL)
+  const access = libraryAccess()
+  const handleLibrary = (name, fn) => ipcMain.handle(name, (...args) => access.use(() => fn(...args)))
   // Canvas copy/paste: the selection payload is JSON text, written and read
   // through the main process so it survives cross-note and cross-window paste
   // and never needs a clipboard-read permission in the renderer. A copy that
@@ -370,7 +372,7 @@ function registerIpc() {
     if (win && !win.isDestroyed()) win.close()
   })
 
-  ipcMain.handle('lib:get', async () => {
+  handleLibrary('lib:get', async () => {
     // root is exposed so QA/probe scripts can resolve note files without
     // hardcoding anyone's local directory layout
     return { ...JSON.parse(JSON.stringify(lib.index)), root: lib.root }
@@ -382,7 +384,7 @@ function registerIpc() {
       : await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'], title: 'Choose library folder' })
     if (res.canceled || !res.filePaths[0]) return { canceled: true }
     try {
-      return { canceled: false, ...await chooseRoot(res.filePaths[0]) }
+      return { canceled: false, ...await access.switchRoot(() => chooseRoot(res.filePaths[0])) }
     } catch (err) {
       if (!process.env.WC_QA_LIBRARY) dialog.showErrorBox('WriteCanvas — cannot use that library folder', err.message)
       return { canceled: false, error: err.message }
@@ -391,7 +393,7 @@ function registerIpc() {
 
   ipcMain.handle('config:reveal', async () => shell.openPath(lib.root))
 
-  ipcMain.handle('lib:import', async () => {
+  handleLibrary('lib:import', async () => {
     const res = await dialog.showOpenDialog(win, {
       properties: ['openFile', 'multiSelections'], filters: [{ name: 'PNG notes', extensions: ['png'] }], title: 'Import note images',
     })
@@ -406,7 +408,7 @@ function registerIpc() {
     return imported
   })
 
-  ipcMain.handle('note:create', async (_e, { name, parentId }) => {
+  handleLibrary('note:create', async (_e, { name, parentId }) => {
     const item = lib.create('note', name, parentId)
     item.paper = { size: 'letter', orientation: 'portrait', template: 'ruled', bg: '#FFFFFFFF' }
     item.tool = { color: '#000000', widthMM: 2.5, opacity: 1 }
@@ -414,29 +416,29 @@ function registerIpc() {
     return item
   })
 
-  ipcMain.handle('folder:create', async (_e, { name, parentId }) => {
+  handleLibrary('folder:create', async (_e, { name, parentId }) => {
     const item = lib.create('folder', name, parentId)
     await lib.persist(); pushLibrary()
     return item
   })
 
-  ipcMain.handle('item:rename', async (_e, { id, name }) => {
+  handleLibrary('item:rename', async (_e, { id, name }) => {
     const item = await lib.rename(id, name)
     pushLibrary(); return item
   })
 
-  ipcMain.handle('item:move', async (_e, { id, parentId }) => {
+  handleLibrary('item:move', async (_e, { id, parentId }) => {
     const item = await lib.move(id, parentId)
     pushLibrary(); return item
   })
 
-  ipcMain.handle('item:destroy', async (_e, { id }) => {
+  handleLibrary('item:destroy', async (_e, { id }) => {
     await lib.destroy(id)
     pushLibrary()
     return null
   })
 
-  ipcMain.handle('note:load', async (_e, { id }) => {
+  handleLibrary('note:load', async (_e, { id }) => {
     const item = lib.get(Number(id))
     if (!item || item.type !== 'note') return null
     if (!item.note) item.note = { pages: [{}], currentPage: 0 }
@@ -448,7 +450,7 @@ function registerIpc() {
     return { note, pages }
   })
 
-  ipcMain.handle('note:loadPage', async (_e, { noteId, pageIndex }) => {
+  handleLibrary('note:loadPage', async (_e, { noteId, pageIndex }) => {
     const item = lib.get(Number(noteId))
     const index = Number(pageIndex)
     const p = item && item.type === 'note' && item.note && item.note.pages ? item.note.pages[index] : null
@@ -456,19 +458,19 @@ function registerIpc() {
     return await loadPageEntry(p)
   })
 
-  ipcMain.handle('note:duplicatePage', async (_e, { noteId, pageIndex }) => {
+  handleLibrary('note:duplicatePage', async (_e, { noteId, pageIndex }) => {
     const res = await lib.duplicatePage(Number(noteId), Number(pageIndex))
     pushLibrary()
     return res
   })
 
-  ipcMain.handle('note:deletePage', async (_e, { noteId, pageIndex }) => {
+  handleLibrary('note:deletePage', async (_e, { noteId, pageIndex }) => {
     const pages = await lib.deletePage(Number(noteId), Number(pageIndex))
     pushLibrary()
     return { pages }
   })
 
-  ipcMain.handle('note:savePage', async (_e, payload) => {
+  handleLibrary('note:savePage', async (_e, payload) => {
     const noteId = Number(payload && payload.noteId)
     const pageIndex = Number(payload && payload.pageIndex)
     if (!Number.isInteger(noteId) || !Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex > 9999) {
@@ -589,7 +591,7 @@ function registerIpc() {
   // QA hooks (mirrors the debug:captureWindow precedent): when WC_QA_EXPORT /
   // WC_QA_IMPORT point at a path, the native dialogs are bypassed so CDP test
   // scripts can round-trip a full project without a human at the dialog.
-  ipcMain.handle('export:project', async (_e, { noteId }) => {
+  handleLibrary('export:project', async (_e, { noteId }) => {
     const item = lib.get(Number(noteId))
     if (!item || item.type !== 'note') throw new Error('note not found')
     if (!item.note) item.note = { pages: [{}], currentPage: 0 }
@@ -659,7 +661,7 @@ function registerIpc() {
   // Open a .wcanvas project: validated zip (zip-slip guarded, exact manifest
   // pages enforced), then copied into the library as a NEW note — a project
   // file never overwrites live notes.
-  ipcMain.handle('project:import', async () => {
+  handleLibrary('project:import', async () => {
     const res = process.env.WC_QA_IMPORT
       ? { canceled: false, filePaths: [path.resolve(process.env.WC_QA_IMPORT)] }
       : await dialog.showOpenDialog(win, {

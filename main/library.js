@@ -70,6 +70,24 @@ function lockLibrary(root) {
   }
 }
 
+// IPC operations may yield between writing a page and persisting its index.
+// A folder switch must not release the writer or redirect either half.
+function libraryAccess() {
+  let active = 0, switching = false
+  return {
+    async use(fn) {
+      if (switching) throw new Error('The library folder is changing. Try again.')
+      active++
+      try { return await fn() } finally { active-- }
+    },
+    async switchRoot(fn) {
+      if (active || switching) throw new Error('The library is busy. Try changing folders again when the operation finishes.')
+      switching = true
+      try { return await fn() } finally { switching = false }
+    },
+  }
+}
+
 class Library {
   constructor(root) {
     this.root = root
@@ -527,4 +545,4 @@ class Library {
   }
 }
 
-module.exports = { Library, sanitizeName, pageFileName, renameRetry }
+module.exports = { Library, libraryAccess, sanitizeName, pageFileName, renameRetry }
