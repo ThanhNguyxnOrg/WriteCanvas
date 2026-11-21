@@ -293,3 +293,11 @@ whose installers were the first ones that ran; those builds have been withdrawn.
 - roll back only PNG page files the import wrote ([8e97d69](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/8e97d6997e188db5e7a206f1f0b685fd5d283b09))
 - show an error when a project file cannot be imported ([cb4c0b3](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/cb4c0b3e6d237e980432e94c1601935f5e4f4cc1))
 
+## [1.3.3] - 2026-11-21
+
+### Bug Fixes and Performance
+
+- protect existing pages when the index is missing ([ed70136](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/ed701363a8d9c8dbf612d13e0f2b44e3710d2511))
+- allow one writer per library folder ([d2b7f30](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/d2b7f30ce23801a951a516344ea947ab42d1c625))
+- keep the writer until library operations finish ([42ef478](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/42ef4783416ddbeec7641519ca087e6160e50755))
+
