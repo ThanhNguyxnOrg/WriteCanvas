@@ -4,12 +4,13 @@ const path = require('node:path')
 const { fileURLToPath } = require('node:url')
 const fs = require('node:fs/promises')
 const fss = require('node:fs')
-const os = require('node:os')
 const { readClipboardPicture } = require('../src/js/clipboard.js')
 const { Library, sanitizeName, pageFileName } = require('./library')
-const { writeNotePng, readNoteMeta, readNotePage, pngIsBroken, repairPNG, legacyRasterBase } = require('./scrble-format')
+const { writeNotePng, readNotePage, pngIsBroken, repairPNG, legacyRasterBase } = require('./scrble-format')
 const { GIFEncoder, quantize, applyPalette } = require('gifenc')
-const { buildNoteZip, readNoteZip } = require('./wcanvas-export')
+const { buildNoteZip, readNoteFile } = require('./wcanvas-export')
+const { importPngNotes } = require('./png-import')
+const { renderPdf } = require('./pdf-export')
 
 // Keep the compositor producing frames even when the window is fully covered.
 // Windows occlusion heuristics otherwise stop frame production while the app
@@ -385,26 +386,13 @@ function registerIpc() {
       properties: ['openFile', 'multiSelections'], filters: [{ name: 'PNG notes', extensions: ['png'] }], title: 'Import note images',
     })
     if (res.canceled || !res.filePaths[0]) return []
-    const folder = lib.get(1) ? 1 : 0 // "My Notes" or root
-    const imported = []
-    for (const src of res.filePaths) {
-      const buf = await fs.readFile(src)
-      const meta = readNoteMeta(buf)
-      const base = sanitizeName(path.basename(src, path.extname(src)))
-      // unique among index siblings AND on disk (page-0 file must not exist)
-      let finalName = base, probe = 1
-      while (lib.siblingNameTaken(folder, 'note', finalName, 0) ||
-             fss.existsSync(lib.pagePath(pageFileName(finalName, 0)))) finalName = `${base} ${++probe}`
-      const note = lib.create('note', finalName, folder)
-      const file = pageFileName(note.name, 0)
-      const target = lib.pagePath(file)
-      await fs.copyFile(src, target) // chunks preserved as-is
-      note.paper = { size: meta.size || 'letter', orientation: meta.orientation || 'portrait', template: meta.template || 'ruled', bg: meta.bgColor || '#FFFFFFFF' }
-      note.note = { pages: [{ file, paper: note.paper }], currentPage: 0 }
-      imported.push(note.id)
-    }
-    await lib.persist()
+    const { imported, errors } = await importPngNotes(lib, res.filePaths)
     pushLibrary()
+    if (errors.length) await dialog.showMessageBox(win, {
+      type: 'warning',
+      message: `Imported ${imported.length} of ${res.filePaths.length} note images`,
+      detail: errors.map(e => `${e.path}: ${e.error}`).join('\n'),
+    })
     return imported
   })
 
@@ -572,41 +560,10 @@ function registerIpc() {
     // write page PNGs + an HTML wrapper to a temp dir, then print that to one
     // PDF in the paper's physical size (loadFile, not data: — a data: page
     // cannot load file:// images).
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'wc-pdf-'))
-    const files = []
-    for (let i = 0; i < pages.length; i++) {
-      const f = path.join(tmp, `p${i}.png`)
-      await fs.writeFile(f, Buffer.from(pages[i]))
-      files.push(f)
-    }
-    const wMM = Math.round(paper.widthMM * 100) / 100
-    const hMM = Math.round(paper.heightMM * 100) / 100
-    const wIn = Math.round((wMM / 25.4) * 100) / 100
-    const hIn = Math.round((hMM / 25.4) * 100) / 100
-    const htmlFile = path.join(tmp, 'pages.html')
-    await fs.writeFile(htmlFile, `<!doctype html><html><head><style>
-      @page { size: ${wMM}mm ${hMM}mm; margin: 0 }
-      html,body{margin:0;padding:0}
-      img{display:block;width:${wMM}mm;height:${hMM}mm;object-fit:contain;page-break-after:always}
-      img:last-child{page-break-after:auto}
-    </style></head><body>${files.map(f => `<img src="file:///${f.replace(/\\/g, '/')}">`).join('')}</body></html>`, 'utf8')
-    const pdfWin = new BrowserWindow({ show: false, width: 1000, height: 900, webPreferences: { offscreen: true } })
-    try {
-      await pdfWin.loadFile(htmlFile)
-      const buf = await pdfWin.webContents.printToPDF({
-        printBackground: true,
-        pageSize: { width: wIn, height: hIn },
-        preferCSSPageSize: true,
-        margins: { marginType: 'none' },
-      })
-      await fs.writeFile(res.filePath, buf)
-      if (!process.env.WC_QA_PDF) shell.showItemInFolder(res.filePath)
-    } finally {
-      pdfWin.destroy()
-      for (const f of files) { try { await fs.unlink(f) } catch { } }
-      try { await fs.unlink(htmlFile) } catch { }
-      try { await fs.rmdir(tmp) } catch { }
-    }
+    await renderPdf(pages, paper, res.filePath, () => new BrowserWindow({
+      show: false, width: 1000, height: 900, webPreferences: { offscreen: true },
+    }))
+    if (!process.env.WC_QA_PDF) shell.showItemInFolder(res.filePath)
     return res.filePath
   })
 
@@ -696,7 +653,7 @@ function registerIpc() {
           title: 'Import WriteCanvas project',
         })
     if (res.canceled || !res.filePaths[0]) return []
-    const { manifest, files } = readNoteZip(await fs.readFile(res.filePaths[0]))
+    const { manifest, files } = await readNoteFile(res.filePaths[0])
     const byName = new Map(files.map(f => [f.name, f.data]))
     // land in the recorded project folder when it exists in this library
     let folder = lib.get(1) ? 1 : 0

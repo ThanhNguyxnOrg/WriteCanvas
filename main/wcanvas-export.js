@@ -11,9 +11,10 @@
 // Pages are exported with STORE (method 0): PNGs are already DEFLATE data, so
 // re-deflating gains ~0% and costs CPU on every save. The reader accepts
 // DEFLATE (method 8, zlib raw) entries too, for files an external tool re-zips.
-// No third-party dependencies; only node:zlib.
+// No third-party dependencies.
 
 const zlib = require('node:zlib')
+const fs = require('node:fs/promises')
 
 const SCHEMA_VERSION = 1
 const MAX_PAGES = 9999 // mirrors the page-index cap in note:savePage
@@ -155,9 +156,9 @@ function buildNoteZip({ name, createdAt, modifiedAt, project, tool, pages }, dat
 function u32le(b, o) { return b.readUInt32LE(o) }
 function u16le(b, o) { return b.readUInt16LE(o) }
 
-// Returns [{ name, method, data }] in central-directory order.
-function readZipAll(buf) {
+function readZipDirectory(buf) {
   if (!Buffer.isBuffer(buf) || buf.length < 22) throw new Error('not a .wcanvas file')
+  if (buf.length > MAX_TOTAL_BYTES) throw new Error('project too large')
   // locate the End Of Central Directory (comment may follow it)
   let eocd = -1
   const tail = Math.min(buf.length, 22 + 0xffff)
@@ -199,14 +200,31 @@ function readZipAll(buf) {
   }
   if (p !== cdEnd) throw new Error('corrupt .wcanvas directory')
 
-  return out.map(e => {
+  return out
+}
+
+function entryReader(buf, { maxTotalBytes = MAX_TOTAL_BYTES, maxPageBytes = MAX_PAGE_BYTES } = {}) {
+  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0 || maxTotalBytes > MAX_TOTAL_BYTES ||
+      !Number.isSafeInteger(maxPageBytes) || maxPageBytes <= 0 || maxPageBytes > MAX_PAGE_BYTES) throw new Error('invalid extraction limits')
+  let total = 0
+  return e => {
+    const remaining = Math.min(maxPageBytes, maxTotalBytes - total)
+    if (remaining <= 0) throw new Error('project too large')
     const comp = buf.subarray(e.dataStart, e.dataStart + e.compSize)
     let data
-    if (e.method === 0) data = comp
-    else if (e.method === 8) data = zlib.inflateRawSync(comp, { maxOutputLength: MAX_PAGE_BYTES })
+    if (e.method === 0) {
+      if (comp.length > remaining) throw new Error('project entry exceeds decoded byte budget')
+      data = comp
+    } else if (e.method === 8) data = zlib.inflateRawSync(comp, { maxOutputLength: remaining })
     else throw new Error(`unsupported compression in project entry: ${e.name} (method ${e.method})`)
-    return { name: e.name, method: e.method, data: Buffer.from(data) }
-  })
+    total += data.length
+    return { name: e.name, method: e.method, data }
+  }
+}
+
+function readZipAll(buf, limits) {
+  const entries = readZipDirectory(buf)
+  return entries.map(entryReader(buf, limits))
 }
 
 function validManifest(m) {
@@ -230,11 +248,11 @@ function validManifest(m) {
 
 // Read a .wcanvas buffer into manifest + page buffers in manifest order.
 // Missing page images are an error: a silent blank import would lose strokes.
-function readNoteZip(buf) {
-  const entries = readZipAll(buf)
-  const total = entries.reduce((n, e) => n + e.data.length, 0)
-  if (total > MAX_TOTAL_BYTES) throw new Error('project too large')
-  const manifestEntry = entries.find(e => e.name === 'manifest.json')
+function readNoteZip(buf, limits) {
+  const entries = readZipDirectory(buf)
+  const readEntry = entryReader(buf, limits)
+  const manifestInfo = entries.find(e => e.name === 'manifest.json')
+  const manifestEntry = manifestInfo && readEntry(manifestInfo)
   if (!manifestEntry) throw new Error('not a WriteCanvas project: manifest.json missing')
   let manifest
   try {
@@ -249,13 +267,20 @@ function readNoteZip(buf) {
       try { safeEntryName(p.file) } catch { throw new Error(`unusable page name in manifest: ${JSON.stringify(p.file)}`) }
     }
   }
-  const byName = new Map(entries.map(e => [e.name, e.data]))
+  const byName = new Map(entries.map(e => [e.name, e]))
   for (const [i, p] of manifest.pages.entries()) {
     if (!p.file) continue
     const data = byName.get(p.file)
     if (!data) throw new Error(`manifest page ${i + 1} (${p.file}) is missing from the project file`)
   }
-  return { manifest, files: entries.filter(e => byName.has(e.name)) }
+  const used = new Set(['manifest.json', ...manifest.pages.map(p => p.file).filter(Boolean)])
+  return { manifest, files: entries.filter(e => used.has(e.name)).map(e => e === manifestInfo ? manifestEntry : readEntry(e)) }
 }
 
-module.exports = { SCHEMA_VERSION, buildNoteZip, readNoteZip, readZipAll, safeEntryName }
+async function readNoteFile(file, io = fs) {
+  const info = await io.stat(file)
+  if (info.size > MAX_TOTAL_BYTES) throw new Error('project too large')
+  return readNoteZip(await io.readFile(file))
+}
+
+module.exports = { SCHEMA_VERSION, MAX_TOTAL_BYTES, MAX_PAGE_BYTES, buildNoteZip, readNoteZip, readNoteFile, readZipAll, safeEntryName }
