@@ -220,7 +220,8 @@ test('PDF resources are cleaned after success and every preparation/printing fai
         removed = true
       },
     }
-    const createWindow = () => {
+    const createWindow = htmlFile => {
+      assert.equal(htmlFile, path.join('/fake/wc-pdf', 'pages.html'))
       if (failure === 'window') throw new Error(failure)
       created = true
       return {

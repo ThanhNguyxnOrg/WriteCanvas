@@ -1,7 +1,7 @@
 'use strict'
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeImage, ClipboardItem } = require('electron')
+const { app, BrowserWindow, ipcMain: electronIpcMain, dialog, shell, Menu, clipboard, nativeImage, ClipboardItem } = require('electron')
 const path = require('node:path')
-const { fileURLToPath } = require('node:url')
+const { fileURLToPath, pathToFileURL } = require('node:url')
 const fs = require('node:fs/promises')
 const fss = require('node:fs')
 const { readClipboardPicture } = require('../src/js/clipboard.js')
@@ -11,12 +11,18 @@ const { GIFEncoder, quantize, applyPalette } = require('gifenc')
 const { buildNoteZip, readNoteFile } = require('./wcanvas-export')
 const { importPngNotes } = require('./png-import')
 const { renderPdf } = require('./pdf-export')
+const { guardedIpc } = require('./ipc-guard')
+const { applyWindowPolicy, applyPermissionPolicy } = require('./window-policy')
 
 // Keep the compositor producing frames even when the window is fully covered.
 // Windows occlusion heuristics otherwise stop frame production while the app
 // sits behind other windows; CDP/Playwright screenshots then stall until the
 // window is brought to front again. Pairs with backgroundThrottling: false.
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+const qaScreenshots = app.commandLine.hasSwitch('remote-debugging-port')
+if (qaScreenshots) app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+
+const appDocument = path.join(__dirname, '..', 'src', 'index.html')
+const trustedAppURL = pathToFileURL(appDocument).href
 
 let win = null
 let lib = null
@@ -43,6 +49,7 @@ async function createWindow() {
     // fits the full toolbar (left tools + title + 10 pens + 6 toggles)
     width: 1700, height: 1000, minWidth: 1420, minHeight: 760,
     backgroundColor: '#ffffff',
+    show: false,
     autoHideMenuBar: false,
     titleBarStyle: useWCO ? 'hidden' : 'default',
     titleBarOverlay: useWCO ? { color: '#ffffff', symbolColor: '#1a1a1a', height: 32 } : undefined,
@@ -51,13 +58,15 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      backgroundThrottling: false,
+      backgroundThrottling: !qaScreenshots,
     },
     // The window and taskbar icon on Linux and in development; a packaged
     // Windows build takes its icon from the executable instead.
     icon: path.join(__dirname, '..', 'src', 'img', 'writecanvas.png'),
   })
-  win.loadFile(path.join(__dirname, '..', 'src', 'index.html'))
+  applyWindowPolicy(win.webContents, trustedAppURL)
+  applyPermissionPolicy(win.webContents.session)
+  win.once('ready-to-show', () => { if (win && !win.isDestroyed()) win.show() })
   win.on('page-title-updated', e => e.preventDefault())
   // Renderer-side beforeunload cannot await IPC. Intercept close, ask the
   // renderer to flush every pending page write, then close on its handshake.
@@ -92,6 +101,7 @@ async function createWindow() {
     closePending = false
     win = null
   })
+  await win.loadFile(appDocument)
 }
 
 function pushLibrary() {
@@ -292,6 +302,7 @@ async function loadPageEntry(p) {
 }
 
 function registerIpc() {
+  const ipcMain = guardedIpc(electronIpcMain, () => win, trustedAppURL)
   // Canvas copy/paste: the selection payload is JSON text, written and read
   // through the main process so it survives cross-note and cross-window paste
   // and never needs a clipboard-read permission in the renderer. A copy that
@@ -560,9 +571,14 @@ function registerIpc() {
     // write page PNGs + an HTML wrapper to a temp dir, then print that to one
     // PDF in the paper's physical size (loadFile, not data: — a data: page
     // cannot load file:// images).
-    await renderPdf(pages, paper, res.filePath, () => new BrowserWindow({
-      show: false, width: 1000, height: 900, webPreferences: { offscreen: true },
-    }))
+    await renderPdf(pages, paper, res.filePath, htmlFile => {
+      const pdfWin = new BrowserWindow({
+        show: false, width: 1000, height: 900, webPreferences: { offscreen: true },
+      })
+      applyWindowPolicy(pdfWin.webContents, pathToFileURL(htmlFile).href)
+      applyPermissionPolicy(pdfWin.webContents.session)
+      return pdfWin
+    })
     if (!process.env.WC_QA_PDF) shell.showItemInFolder(res.filePath)
     return res.filePath
   })
@@ -761,7 +777,12 @@ app.whenReady().then(async () => {
   registerIpc()
   menu()
   await createWindow()
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow().catch(err => {
+      dialog.showErrorBox('WriteCanvas — window error', String(err))
+      app.quit()
+    })
+  })
 }).catch(err => {
   dialog.showErrorBox('WriteCanvas — startup error', err && err.stack ? err.stack : String(err))
   app.quit()

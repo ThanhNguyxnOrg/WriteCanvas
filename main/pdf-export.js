@@ -25,7 +25,7 @@ async function renderPdf(pages, paper, destination, createWindow, io = fs) {
       img{display:block;width:${wMM}mm;height:${hMM}mm;object-fit:contain;page-break-after:always}
       img:last-child{page-break-after:auto}
     </style></head><body>${files.map(f => `<img src="file:///${f.replace(/\\/g, '/')}">`).join('')}</body></html>`, 'utf8')
-    pdfWin = createWindow()
+    pdfWin = createWindow(htmlFile)
     await pdfWin.loadFile(htmlFile)
     const buf = await pdfWin.webContents.printToPDF({
       printBackground: true,
