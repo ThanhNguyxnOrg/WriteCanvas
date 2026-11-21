@@ -13,6 +13,8 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ### Fixed
 
+- **One writer per library** — opening the same library in a second WriteCanvas
+  instance no longer lets a stale save remove notes from the index.
 - **Protect notes after index loss** — WriteCanvas refuses to start an empty
   library over existing pages when the library index and its backup are missing.
 - **Safer project import** — opening an oversized or malformed `.wcanvas` file

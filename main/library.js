@@ -6,6 +6,7 @@
 const fs = require('node:fs/promises')
 const fss = require('node:fs')
 const path = require('node:path')
+const { DatabaseSync } = require('node:sqlite')
 
 const SANITIZE = /[\\/:*?"<>|]/g
 
@@ -53,10 +54,46 @@ function pageFileName(name, index) {
   return `${sanitizeName(name)}#${String(index + 1).padStart(2, '0')}.png`
 }
 
+// An empty SQLite sidecar supplies an OS-backed writer lock, including
+// between processes. The OS releases it on exit, even after a crash.
+function lockLibrary(root) {
+  const db = new DatabaseSync(path.join(root, '.writecanvas-lock.sqlite'))
+  try {
+    db.exec('BEGIN IMMEDIATE')
+    return db
+  } catch (err) {
+    db.close()
+    if (err.errcode === 5) { // SQLITE_BUSY
+      throw new Error(`Library already open: ${root}. Close the other WriteCanvas instance before opening this library.`)
+    }
+    throw err
+  }
+}
+
+// IPC operations may yield between writing a page and persisting its index.
+// A folder switch must not release the writer or redirect either half.
+function libraryAccess() {
+  let active = 0, switching = false
+  return {
+    async use(fn) {
+      if (switching) throw new Error('The library folder is changing. Try again.')
+      active++
+      try { return await fn() } finally { active-- }
+    },
+    async switchRoot(fn) {
+      if (active || switching) throw new Error('The library is busy. Try changing folders again when the operation finishes.')
+      switching = true
+      try { return await fn() } finally { switching = false }
+    },
+  }
+}
+
 class Library {
   constructor(root) {
     this.root = root
     this.index = null
+    this._writer = null
+    this._writes = Promise.resolve()
   }
 
   get indexFile() { return path.join(this.root, 'index.json') }
@@ -71,6 +108,16 @@ class Library {
 
   async ensure() {
     await fs.mkdir(this.scribbleDir, { recursive: true })
+    this._writer ??= lockLibrary(this.root)
+    try {
+      await this._loadOrCreateIndex()
+    } catch (err) {
+      await this.close()
+      throw err
+    }
+  }
+
+  async _loadOrCreateIndex() {
     let indexErr = null
     try {
       await this.loadIndex(this.indexFile)
@@ -100,9 +147,17 @@ class Library {
   }
 
   async persist() {
+    if (!this._writer) throw new Error('Library is not open for writing')
+    const snapshot = JSON.stringify(this.index, null, 1)
+    const write = this._writes.then(() => this._writeIndex(snapshot))
+    this._writes = write.catch(() => {})
+    return write
+  }
+
+  async _writeIndex(snapshot) {
     const tmp = `${this.indexFile}.${process.pid}.${Date.now()}.tmp`
     try {
-      await fs.writeFile(tmp, JSON.stringify(this.index, null, 1), 'utf8')
+      await fs.writeFile(tmp, snapshot, 'utf8')
       if (!this._skipBackup) {
         try {
           await fs.copyFile(this.indexFile, this.indexFile + '.bak')
@@ -467,8 +522,17 @@ class Library {
   }
 
   async setRoot(root) {
+    await this.close()
     this.root = root
     await this.ensure()
+  }
+
+  async close() {
+    const writer = this._writer
+    this._writer = null
+    await this._writes
+    writer?.close()
+    this.index = null
   }
 
   listFiles() { return fss.existsSync(this.scribbleDir) ? fss.readdirSync(this.scribbleDir) : [] }
@@ -481,4 +545,4 @@ class Library {
   }
 }
 
-module.exports = { Library, sanitizeName, pageFileName, renameRetry }
+module.exports = { Library, libraryAccess, sanitizeName, pageFileName, renameRetry }

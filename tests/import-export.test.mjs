@@ -7,7 +7,7 @@ import zlib from 'node:zlib'
 import { buildNoteZip, readNoteZip, readNoteFile, readZipAll, MAX_TOTAL_BYTES, MAX_PAGE_BYTES } from '../main/wcanvas-export.js'
 import { importPngNotes } from '../main/png-import.js'
 import { renderPdf } from '../main/pdf-export.js'
-import { Library } from '../main/library.js'
+import { Library, libraryAccess } from '../main/library.js'
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
 
@@ -123,8 +123,8 @@ test('archive file is statted and oversized input is rejected before any read', 
 
 async function libraryFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wc-import-test-'))
-  t.after(() => fs.rm(root, { recursive: true, force: true }))
   const lib = new Library(path.join(root, 'library'))
+  t.after(async () => { await lib.close(); await fs.rm(root, { recursive: true, force: true }) })
   await lib.ensure()
   const sources = ['one', 'two', 'three'].map(name => path.join(root, `${name}.png`))
   for (const source of sources) await fs.writeFile(source, png)
@@ -155,9 +155,30 @@ test('PNG imports retain successful files around a failed copy without phantom n
   assert.deepEqual(result.errors, [{ path: sources[1], error: 'injected copy failure' }])
   assert.deepEqual(lib.index.items.filter(i => i.type === 'note').map(i => i.name), ['one', 'three'])
   assert.deepEqual((await fs.readdir(lib.scribbleDir)).sort(), ['one#01.png', 'three#01.png'])
-  const reloaded = new Library(lib.root)
-  await reloaded.ensure()
-  assert.deepEqual(reloaded.index.items, lib.index.items)
+  const items = lib.index.items
+  await lib.close()
+  await lib.ensure()
+  assert.deepEqual(lib.index.items, items)
+})
+
+test('a folder switch cannot release a library in the middle of a PNG import', async t => {
+  const { lib, sources } = await libraryFixture(t)
+  const access = libraryAccess()
+  const result = await access.use(() => importPngNotes(lib, sources.slice(0, 1), {
+    ...fs,
+    async copyFile(...args) {
+      await fs.copyFile(...args)
+      await assert.rejects(access.switchRoot(() => lib.close()), /library is busy/)
+    },
+  }))
+  assert.deepEqual(result.errors, [])
+  await access.switchRoot(async () => {
+    await assert.rejects(access.use(() => lib.persist()), /folder is changing/)
+    await lib.close()
+  })
+  await lib.ensure()
+  assert.equal(lib.get(result.imported[0]).note.pages[0].file, 'one#01.png')
+  assert.deepEqual(await lib.readPage('one#01.png'), png)
 })
 
 test('PNG import never overwrites a page file created after the name check', async t => {
