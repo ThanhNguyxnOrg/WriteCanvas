@@ -11,6 +11,16 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ## [Unreleased]
 
+### Fixed
+
+- **Safer project import** — opening an oversized or malformed `.wcanvas` file
+  is now refused before it can exhaust memory, instead of freezing the app.
+- **No half-imported notes** — if one PNG note in a multi-file import fails, no
+  empty note is left in the library; the rest still import and a warning lists
+  what failed.
+- **PDF export leaves nothing behind** — temporary page images are always
+  removed, even when an export fails part way.
+
 ## [1.3.0] - 2026-11-17
 
 ### Added
