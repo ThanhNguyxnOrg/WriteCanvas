@@ -11,6 +11,16 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ## [Unreleased]
 
+### Fixed
+
+- **Safer project import** — opening an oversized or malformed `.wcanvas` file
+  is now refused before it can exhaust memory, instead of freezing the app.
+- **No half-imported notes** — if one PNG note in a multi-file import fails, no
+  empty note is left in the library; the rest still import and a warning lists
+  what failed.
+- **PDF export leaves nothing behind** — temporary page images are always
+  removed, even when an export fails part way.
+
 ### Security
 
 - **Locked-down app window** — the main process now only answers requests from
@@ -270,4 +280,3 @@ whose installers were the first ones that ran; those builds have been withdrawn.
 ### Bug Fixes and Performance
 
 - build AppX with typed electron-builder config ([6930810](https://github.com/ThanhNguyxnOrg/WriteCanvas/commit/693081018729c71a46f3f50f0d6431bcb31e9034))
-
