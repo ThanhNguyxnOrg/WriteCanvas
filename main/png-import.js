@@ -2,7 +2,7 @@
 
 const fs = require('node:fs/promises')
 const path = require('node:path')
-const { randomUUID } = require('node:crypto')
+const { constants } = require('node:fs')
 const { sanitizeName, pageFileName } = require('./library')
 const { readNoteMeta } = require('./scrble-format')
 
@@ -10,7 +10,7 @@ async function importPngNotes(lib, sources, io = fs) {
   const imported = [], errors = []
   const folder = lib.get(1) ? 1 : 0
   for (const src of sources) {
-    let note, tmp, target, copied = false
+    let note, target, ownsTarget = false
     try {
       const meta = readNoteMeta(await io.readFile(src))
       const base = sanitizeName(path.basename(src, path.extname(src)))
@@ -22,10 +22,15 @@ async function importPngNotes(lib, sources, io = fs) {
       note = lib.create('note', name, folder)
       const file = pageFileName(note.name, 0)
       target = lib.pagePath(file)
-      tmp = `${target}.${randomUUID()}.import`
-      await io.copyFile(src, tmp)
-      await io.rename(tmp, target)
-      copied = true
+      // EXCL never overwrites a page file that appeared after the name check;
+      // any file at target after this call is ours to roll back.
+      try {
+        await io.copyFile(src, target, constants.COPYFILE_EXCL)
+        ownsTarget = true
+      } catch (err) {
+        ownsTarget = err.code !== 'EEXIST'
+        throw err
+      }
       note.paper = { size: meta.size || 'letter', orientation: meta.orientation || 'portrait', template: meta.template || 'ruled', bg: meta.bgColor || '#FFFFFFFF' }
       note.note = { pages: [{ file, paper: note.paper }], currentPage: 0 }
       await lib.persist()
@@ -33,7 +38,7 @@ async function importPngNotes(lib, sources, io = fs) {
     } catch (err) {
       if (note) lib.index.items = lib.index.items.filter(item => item !== note)
       const cleanupErrors = []
-      for (const file of [tmp, copied && target].filter(Boolean)) {
+      for (const file of [ownsTarget && target].filter(Boolean)) {
         try { await io.unlink(file) } catch (cleanup) {
           if (cleanup.code !== 'ENOENT') cleanupErrors.push(`Could not remove ${file}: ${cleanup.message}`)
         }

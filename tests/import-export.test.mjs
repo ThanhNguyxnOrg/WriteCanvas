@@ -160,6 +160,28 @@ test('PNG imports retain successful files around a failed copy without phantom n
   assert.deepEqual(reloaded.index.items, lib.index.items)
 })
 
+test('PNG import never overwrites a page file created after the name check', async t => {
+  const { lib, sources } = await libraryFixture(t)
+  const stale = Buffer.from('existing page')
+  const result = await importPngNotes(lib, sources.slice(0, 1), { ...fs, copyFile: async (src, dest, mode) => {
+    await fs.writeFile(dest, stale)
+    return fs.copyFile(src, dest, mode)
+  } })
+  assert.equal(result.imported.length, 0)
+  assert.match(result.errors[0].error, /EEXIST/)
+  assert.deepEqual(await fs.readFile(path.join(lib.scribbleDir, 'one#01.png')), stale)
+  assert.equal(lib.index.items.filter(i => i.type === 'note').length, 0)
+})
+
+test('PNG import handles long Unicode names that fit the page filename limit', async t => {
+  const { lib } = await libraryFixture(t)
+  const source = path.join(path.dirname(lib.root), `${'é'.repeat(110)}.png`)
+  await fs.writeFile(source, png)
+  const result = await importPngNotes(lib, [source])
+  assert.deepEqual(result.errors, [])
+  assert.equal(result.imported.length, 1)
+})
+
 test('PNG import rolls back file and item on failed persistence, and handles empty input', async t => {
   const { lib, sources } = await libraryFixture(t)
   assert.deepEqual(await importPngNotes(lib, []), { imported: [], errors: [] })
