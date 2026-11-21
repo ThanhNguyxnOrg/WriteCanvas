@@ -1,12 +1,14 @@
 'use strict'
 
+const { sameAppDocument } = require('./app-document')
+
 function isTrustedSender(event, win, trustedURL) {
   if (!event || !win || win.isDestroyed()) return false
   const contents = win.webContents
   if (!contents || contents.isDestroyed()) return false
   const frame = event.senderFrame
   return event.sender === contents && !!frame && frame === contents.mainFrame &&
-    frame.url === trustedURL && contents.getURL() === trustedURL
+    sameAppDocument(frame.url, trustedURL) && sameAppDocument(contents.getURL(), trustedURL)
 }
 
 function guardedIpc(ipc, getWindow, trustedURL) {

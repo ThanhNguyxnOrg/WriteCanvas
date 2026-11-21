@@ -1,8 +1,10 @@
 'use strict'
 
+const { sameAppDocument } = require('./app-document')
+
 function applyWindowPolicy(contents, trustedURL) {
   const preventUntrusted = (event, url) => {
-    if (url !== trustedURL) event.preventDefault()
+    if (!sameAppDocument(url, trustedURL)) event.preventDefault()
   }
   contents.on('will-navigate', preventUntrusted)
   contents.on('will-redirect', preventUntrusted)

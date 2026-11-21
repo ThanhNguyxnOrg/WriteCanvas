@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { isTrustedSender, guardedIpc } from '../main/ipc-guard.js'
 import { applyWindowPolicy, applyPermissionPolicy } from '../main/window-policy.js'
+import { sameAppDocument } from '../main/app-document.js'
 
 const url = 'file:///app/src/index.html'
 function fixture() {
@@ -12,7 +13,27 @@ function fixture() {
   return { win, event: { sender: contents, senderFrame: frame } }
 }
 
-test('IPC requires the current live window, main frame, and exact document URL', () => {
+test('document matching normalizes file paths and ignores query and hash', () => {
+  for (const candidate of [url, `${url}?x=1#page`, `${url}#page`, 'file:///app/src/%69ndex.html', 'file:///app/src/../src/index.html']) {
+    assert.equal(sameAppDocument(candidate, url, 'linux'), true)
+  }
+  for (const candidate of ['file:///app/src/other.html', 'file:///app/src/INDEX.html', 'https://example.com/index.html', '', undefined, 'file:///app/%ZZ']) {
+    assert.equal(sameAppDocument(candidate, url, 'linux'), false)
+  }
+  assert.equal(sameAppDocument(url, 'https://example.com/index.html', 'linux'), false)
+  assert.equal(sameAppDocument('https://example.com', 'https://example.com', 'linux'), false)
+  assert.equal(sameAppDocument(url, undefined, 'linux'), false)
+})
+
+test('Windows document matching ignores drive and path case with decoded paths', () => {
+  const trusted = 'file:///C:/Write%20Canvas/src/index.html'
+  assert.equal(sameAppDocument('file:///c:/write%20canvas/SRC/%69ndex.html?x#page', trusted, 'win32'), true)
+  assert.equal(sameAppDocument('file:///D:/Write%20Canvas/src/index.html', trusted, 'win32'), false)
+  assert.equal(sameAppDocument('file:///c:/Write%20Canvas/src/other.html', trusted, 'win32'), false)
+  assert.equal(sameAppDocument('https://example.com/index.html', trusted, 'win32'), false)
+})
+
+test('IPC requires the current live window, main frame, and trusted document', () => {
   const { win, event } = fixture()
   assert.equal(isTrustedSender(event, win, url), true)
   for (const invalid of [null, {}, { ...event, sender: {} },
@@ -25,10 +46,13 @@ test('IPC requires the current live window, main frame, and exact document URL',
   win.webContents.isDestroyed = () => true
   assert.equal(isTrustedSender(event, win, url), false)
   win.webContents.isDestroyed = () => false
-  for (const other of ['https://example.com/', 'about:blank', `${url}?x`, `${url}#x`, '']) {
+  for (const other of ['https://example.com/', 'about:blank', 'file:///app/src/other.html', '']) {
     event.senderFrame.url = other
     assert.equal(isTrustedSender(event, win, url), false)
   }
+  event.senderFrame.url = `${url}?x#page`
+  win.webContents.getURL = () => `${url}#page`
+  assert.equal(isTrustedSender(event, win, url), true)
   event.senderFrame.url = url
   win.webContents.getURL = () => 'about:blank'
   assert.equal(isTrustedSender(event, win, url), false)
@@ -68,7 +92,7 @@ test('authorized handler errors propagate', async () => {
   await assert.rejects(handler(event), /disk failed/)
 })
 
-test('app and PDF policies allow only their exact document and deny popups', () => {
+test('app and PDF policies allow only their document including query/hash and deny popups', () => {
   for (const document of [url, 'file:///tmp/wc-pdf/pages.html']) {
     const listeners = {}
     let open
@@ -77,10 +101,10 @@ test('app and PDF policies allow only their exact document and deny popups', () 
       setWindowOpenHandler: cb => { open = cb },
     }, document)
     for (const name of ['will-navigate', 'will-redirect']) {
-      for (const target of [document, 'https://example.com', 'file:///etc/passwd', 'about:blank', '', undefined]) {
+      for (const [target, allowed] of [[document, true], [`${document}?x#page`, true], [`${document}#page`, true], ['https://example.com', false], ['file:///etc/passwd', false], ['about:blank', false], ['', false], [undefined, false]]) {
         let prevented = false
         listeners[name]({ preventDefault() { prevented = true } }, target)
-        assert.equal(prevented, target !== document)
+        assert.equal(prevented, !allowed)
       }
     }
     assert.deepEqual(open({ url: document }), { action: 'deny' })
