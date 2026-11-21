@@ -44,14 +44,12 @@ updates:
     directory: /
     target-branch: master
     schedule:
-      interval: weekly
-      day: monday
-      time: "05:00"
-      timezone: Asia/Ho_Chi_Minh
+      interval: monthly
     commit-message:
-      prefix: "chore(ci)"
+      prefix: chore
+      include: scope
     groups:
-      actions:
+      github-actions:
         patterns: ["*"]
     ignore:
       # The managed Agent signal workflow pins this action by commit digest, and
@@ -60,3 +58,6 @@ updates:
       # tests/workflows.test.mjs. A major bump here is a review decision.
       - dependency-name: actions/upload-artifact
         update-types: ["version-update:semver-major"]
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 1

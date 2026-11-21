@@ -178,7 +178,7 @@ jobs:
           "msix_file=$([System.IO.Path]::GetFileName($msixPath))" >> $env:GITHUB_OUTPUT
 
       - name: Preserve Store submission package
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7 # v7.0.2
         with:
           name: writecanvas-store-${{ env.RELEASE_TAG }}
           path: dist/*.msix
@@ -186,7 +186,7 @@ jobs:
           retention-days: 30
 
       - name: Configure Microsoft Store Developer CLI
-        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        uses: microsoft/microsoft-store-apppublisher@v1 # v1.4
 
       - name: Authenticate with Partner Center
         shell: pwsh

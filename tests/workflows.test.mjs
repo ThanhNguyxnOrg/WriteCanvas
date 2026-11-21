@@ -14,18 +14,28 @@ const read = f => readFileSync(new URL(f, DIR), 'utf8')
 
 const PINNED = /^[\w.-]+\/[\w.-]+(?:\/[\w.-]+)*@(v\d+|[0-9a-f]{40})$/
 
-// The organization's auto-onboarder writes this relay itself, and it tracks the
-// central `main` on purpose so a fix in the shared worker reaches every
-// repository without a re-onboarding commit. Editing the file would be
-// overwritten; the exception is recorded here instead.
-const MANAGED_RELAY =
-  'ThanhNguyxnOrg/.github/.github/workflows/agent-pr-worker.yml@main'
+const MANAGED_ORG =
+  /^ThanhNguyxnOrg\/\.github\/\.github\/(?:workflows\/[\w.-]+\.yml|actions\/[\w.-]+)@(agent-v1|ci-v1|release-v1)$/
 
-// The central release controller publishes releases through this shared workflow, and it tracks the
-// shared `release-v1` moving tag on purpose so a fix in the shared publisher reaches every
-// repository without a re-pinning commit. The exception is recorded here instead.
-const MANAGED_RELEASE =
-  'ThanhNguyxnOrg/.github/.github/workflows/release-publish.yml@release-v1'
+test('managed tags are restricted to central organization workflows and actions', () => {
+  for (const tag of ['agent-v1', 'ci-v1', 'release-v1']) {
+    assert.ok(MANAGED_ORG.test(`ThanhNguyxnOrg/.github/.github/workflows/ci-node.yml@${tag}`))
+    assert.ok(MANAGED_ORG.test(`ThanhNguyxnOrg/.github/.github/actions/agent-token@${tag}`))
+  }
+  for (const ref of [
+    '',
+    'actions/checkout@ci-v1',
+    'OtherOrg/.github/.github/workflows/ci-node.yml@ci-v1',
+    'ThanhNguyxnOrg/other/.github/workflows/ci-node.yml@ci-v1',
+    'ThanhNguyxnOrg/.github/.github/scripts/check@agent-v1',
+    'ThanhNguyxnOrg/.github/.github/workflows/agent-pr-worker.yml@main',
+    'ThanhNguyxnOrg/.github/.github/workflows/ci-node.yml@ci-v2',
+    'ThanhNguyxnOrg/.github/.github/actions/agent-token@agent-v1-extra',
+  ]) {
+    assert.ok(!MANAGED_ORG.test(ref), `${ref} must not be accepted as a managed org tag`)
+    assert.ok(!PINNED.test(ref), `${ref} must not be accepted as a major tag or sha`)
+  }
+})
 
 test('there is at least one workflow, and every one declares permissions', () => {
   assert.ok(files.length > 0, 'no workflow files found')
@@ -34,16 +44,17 @@ test('there is at least one workflow, and every one declares permissions', () =>
   }
 })
 
-test('every action is pinned to a major tag or a commit sha', () => {
+test('every action is pinned to a major tag, a commit sha, or a managed org tag', () => {
   for (const f of files) {
     for (const line of read(f).split('\n')) {
       const m = /^\s*(?:-\s*)?uses:\s*(\S+)\s*$/.exec(line)
       if (!m) continue
       const ref = m[1]
       if (ref.startsWith('./')) continue // a local action in this repository
-      if (ref === MANAGED_RELAY) continue // managed by the organization onboarder
-      if (ref === MANAGED_RELEASE) continue // managed by the central release controller
-      assert.ok(PINNED.test(ref), `${f}: "${ref}" is not pinned to a major version or a sha`)
+      assert.ok(
+        PINNED.test(ref) || MANAGED_ORG.test(ref),
+        `${f}: "${ref}" is not pinned to a major version, a sha, or a managed org tag`,
+      )
     }
   }
 })
