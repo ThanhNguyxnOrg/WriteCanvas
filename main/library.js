@@ -88,6 +88,10 @@ class Library {
       return
     } catch { /* no usable backup */ }
     if (indexErr.code === 'ENOENT') {
+      const pages = (await fs.readdir(this.scribbleDir)).filter(file => /\.png$/i.test(file))
+      if (pages.length) {
+        throw new Error(`Library has no usable index but contains ${pages.length} note image(s) in ${this.scribbleDir}. Restore index.json from a backup or import the pages into a separate library.`)
+      }
       this.index = { version: 1, nextId: 2, items: [{ id: 1, type: 'folder', name: 'My Notes', parent: 0, created: Date.now() }] }
       await this.persist()
       return
