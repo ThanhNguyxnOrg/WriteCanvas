@@ -147,9 +147,9 @@ test('PNG import persists valid images unchanged and reports unreadable sources'
 
 test('PNG imports retain successful files around a failed copy without phantom notes', async t => {
   const { lib, sources } = await libraryFixture(t)
-  const result = await importPngNotes(lib, sources, { ...fs, copyFile: async (src, dest) => {
-    await fs.copyFile(src, dest)
+  const result = await importPngNotes(lib, sources, { ...fs, copyFile: async (src, dest, mode) => {
     if (src === sources[1]) throw new Error('injected copy failure')
+    return fs.copyFile(src, dest, mode)
   } })
   assert.equal(result.imported.length, 2)
   assert.deepEqual(result.errors, [{ path: sources[1], error: 'injected copy failure' }])
@@ -171,6 +171,18 @@ test('PNG import never overwrites a page file created after the name check', asy
   assert.match(result.errors[0].error, /EEXIST/)
   assert.deepEqual(await fs.readFile(path.join(lib.scribbleDir, 'one#01.png')), stale)
   assert.equal(lib.index.items.filter(i => i.type === 'note').length, 0)
+})
+
+test('PNG import leaves a page file it did not write when the source vanishes', async t => {
+  const { lib, sources } = await libraryFixture(t)
+  const other = Buffer.from('another writer')
+  const result = await importPngNotes(lib, sources.slice(0, 1), { ...fs, copyFile: async (src, dest, mode) => {
+    await fs.writeFile(dest, other)
+    await fs.unlink(src)
+    return fs.copyFile(src, dest, mode)
+  } })
+  assert.match(result.errors[0].error, /ENOENT/)
+  assert.deepEqual(await fs.readFile(path.join(lib.scribbleDir, 'one#01.png')), other)
 })
 
 test('PNG import handles long Unicode names that fit the page filename limit', async t => {

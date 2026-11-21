@@ -22,15 +22,11 @@ async function importPngNotes(lib, sources, io = fs) {
       note = lib.create('note', name, folder)
       const file = pageFileName(note.name, 0)
       target = lib.pagePath(file)
-      // EXCL never overwrites a page file that appeared after the name check;
-      // any file at target after this call is ours to roll back.
-      try {
-        await io.copyFile(src, target, constants.COPYFILE_EXCL)
-        ownsTarget = true
-      } catch (err) {
-        ownsTarget = err.code !== 'EEXIST'
-        throw err
-      }
+      // EXCL never overwrites a page file that appeared after the name check.
+      // A failed copyFile removes its own partial destination (libuv), so only
+      // a completed copy is ours to roll back.
+      await io.copyFile(src, target, constants.COPYFILE_EXCL)
+      ownsTarget = true
       note.paper = { size: meta.size || 'letter', orientation: meta.orientation || 'portrait', template: meta.template || 'ruled', bg: meta.bgColor || '#FFFFFFFF' }
       note.note = { pages: [{ file, paper: note.paper }], currentPage: 0 }
       await lib.persist()
