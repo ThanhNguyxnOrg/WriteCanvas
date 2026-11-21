@@ -5,7 +5,7 @@ import { isTrustedSender, guardedIpc } from '../main/ipc-guard.js'
 import { applyWindowPolicy, applyPermissionPolicy } from '../main/window-policy.js'
 import { sameAppDocument } from '../main/app-document.js'
 
-const url = 'file:///app/src/index.html'
+const url = 'file:///C:/app/src/index.html'
 function fixture() {
   const frame = { url }
   const contents = { mainFrame: frame, getURL: () => url, isDestroyed: () => false }
@@ -14,6 +14,7 @@ function fixture() {
 }
 
 test('document matching normalizes file paths and ignores query and hash', () => {
+  const url = 'file:///app/src/index.html'
   for (const candidate of [url, `${url}?x=1#page`, `${url}#page`, 'file:///app/src/%69ndex.html', 'file:///app/src/../src/index.html']) {
     assert.equal(sameAppDocument(candidate, url, 'linux'), true)
   }
@@ -93,7 +94,7 @@ test('authorized handler errors propagate', async () => {
 })
 
 test('app and PDF policies allow only their document including query/hash and deny popups', () => {
-  for (const document of [url, 'file:///tmp/wc-pdf/pages.html']) {
+  for (const document of [url, 'file:///C:/tmp/wc-pdf/pages.html']) {
     const listeners = {}
     let open
     applyWindowPolicy({
