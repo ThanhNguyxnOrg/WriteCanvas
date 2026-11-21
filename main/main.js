@@ -653,7 +653,15 @@ function registerIpc() {
           title: 'Import WriteCanvas project',
         })
     if (res.canceled || !res.filePaths[0]) return []
-    const { manifest, files } = await readNoteFile(res.filePaths[0])
+    let manifest, files
+    try {
+      ({ manifest, files } = await readNoteFile(res.filePaths[0]))
+    } catch (err) {
+      if (process.env.WC_QA_IMPORT) throw err
+      const reason = err && err.code === 'ERR_BUFFER_TOO_LARGE' ? 'project too large' : String(err && err.message || err)
+      await dialog.showMessageBox(win, { type: 'error', message: 'Could not import the project', detail: `${path.basename(res.filePaths[0])}: ${reason}` })
+      return []
+    }
     const byName = new Map(files.map(f => [f.name, f.data]))
     // land in the recorded project folder when it exists in this library
     let folder = lib.get(1) ? 1 : 0
