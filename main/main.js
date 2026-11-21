@@ -740,20 +740,6 @@ async function chooseRoot(dir) {
   // validate the new root before replacing the working library: a bad folder
   // must leave the current library usable
   const next = new Library(resolved)
-  let hasIndex = true
-  try { await fs.access(next.indexFile) } catch {
-    try { await fs.access(next.indexFile + '.bak') } catch { hasIndex = false }
-  }
-  if (!hasIndex) {
-    // ensure() would create a fresh empty index here. If the folder already
-    // holds Scrble note images, switching would make them disappear from the
-    // library (and future saves could overwrite same-named pages).
-    let pages = []
-    try { pages = (await fs.readdir(next.scribbleDir)).filter(f => /\.png$/i.test(f)) } catch { }
-    if (pages.length) {
-      throw new Error(`That folder contains ${pages.length} note image(s) in Scribble/ but no index.json. Choose the folder that holds your WriteCanvas library, or an empty folder.`)
-    }
-  }
   await next.ensure()
   const cfg = await loadConfig()
   cfg.root = resolved

@@ -30,8 +30,11 @@ Everything here is implemented once, in `src/js/png-toolkit.js`. The Node side
   the choice lives in `config.json` inside the Electron `userData` folder, not in
   the library itself.
 
-`index.json` is a WriteCanvas file, not a Scrble Ink one. Deleting it costs the
-tree, titles and page metadata; the PNGs still open.
+`index.json` is a WriteCanvas file, not a Scrble Ink one. If it is missing,
+WriteCanvas first tries to restore it from `index.json.bak`. If neither index
+is usable and `Scribble/` contains PNGs, WriteCanvas refuses to initialize an
+empty library over them. Restore the index from backup to keep the tree and
+metadata, or import the surviving PNGs into a separate library.
 
 ## Chunks in a note PNG
 

@@ -34,6 +34,43 @@ async function exists(file) {
   try { await fs.access(file); return true } catch { return false }
 }
 
+describe('library initialization', () => {
+  async function unopenedLibrary(t) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'wc-index-'))
+    t.after(() => fs.rm(root, { recursive: true, force: true }))
+    return new Library(root)
+  }
+
+  it('refuses to initialize over existing pages when both indexes are missing', async t => {
+    const lib = await unopenedLibrary(t)
+    await fs.mkdir(lib.scribbleDir)
+    const page = lib.pagePath('Journal#01.PNG')
+    await fs.writeFile(page, 'original page')
+
+    await assert.rejects(lib.ensure(), /no usable index/i)
+    assert.deepEqual(await fs.readdir(lib.root), ['Scribble'])
+    assert.equal(await fs.readFile(page, 'utf8'), 'original page')
+  })
+
+  it('restores the backup before checking for unindexed pages', async t => {
+    const { root, lib } = await makeLibrary()
+    t.after(() => fs.rm(root, { recursive: true, force: true }))
+    await fs.rename(lib.indexFile, lib.indexFile + '.bak')
+
+    const reopened = new Library(root)
+    await reopened.ensure()
+    assert.deepEqual(reopened.index, lib.index)
+    assert.deepEqual(JSON.parse(await fs.readFile(lib.indexFile, 'utf8')), lib.index)
+  })
+
+  it('initializes a new library when there are no pages', async t => {
+    const lib = await unopenedLibrary(t)
+    await lib.ensure()
+    const index = JSON.parse(await fs.readFile(lib.indexFile, 'utf8'))
+    assert.deepEqual(index.items.map(item => item.name), ['My Notes'])
+  })
+})
+
 describe('library page operations', () => {
   it('duplicates at the end and renumbers after deleting a middle page', async () => {
     const { root, scribble, lib } = await makeLibrary()

@@ -13,6 +13,8 @@ a `release: vX.Y.Z` commit. That section becomes the GitHub Release body — see
 
 ### Fixed
 
+- **Protect notes after index loss** — WriteCanvas refuses to start an empty
+  library over existing pages when the library index and its backup are missing.
 - **Safer project import** — opening an oversized or malformed `.wcanvas` file
   is now refused before it can exhaust memory, instead of freezing the app.
 - **No half-imported notes** — if one PNG note in a multi-file import fails, no
